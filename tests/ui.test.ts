@@ -1,0 +1,95 @@
+import { expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import xterm from '@xterm/headless';
+import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
+
+// Exercise the real Bun CLI in a Unix pseudo-terminal, then inspect its rendered screen.
+test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live events and Escape', async () => {
+  let seq = 2;
+  const root = agent('root', null, { name: 'coordinator' });
+  const child = agent('worker', 'root', { name: 'worker' });
+  const initial = [event(1), event(2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Initial worker answer' } }, { agentId: 'worker' })];
+  const prompts: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: initial.filter(event => event.seq > request.params.after), oldestSeq: 1, latestSeq: seq, expired: false });
+    else if (request.method === 'agent.prompt') {
+      prompts.push(request.params);
+      const op = { ...operation('completed'), id: `op-${prompts.length}`, agentId: request.params.agentId };
+      send(socket, event(++seq, 'prompt.queued', { text: request.params.text, operationId: op.id }, { agentId: op.agentId }));
+      send(socket, event(++seq, 'operation.changed', op, { agentId: op.agentId }));
+      respond(socket, request.id, op);
+    }
+  });
+  const config = join(mock.directory, 'settings.json');
+  const terminal = new xterm.Terminal({ cols: 100, rows: 30, allowProposedApi: true });
+  const screen = () => Array.from({ length: 30 }, (_, index) => terminal.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n');
+  const childProcess = spawn('script', ['-qefc', `stty cols 100 rows 30; exec bun src/main.ts --socket '${mock.path}' --config '${config}'`, '/dev/null'], {
+    cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color' }, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let exited = false;
+  let stderr = '';
+  childProcess.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  childProcess.stdout.on('data', chunk => terminal.write(chunk));
+  childProcess.on('exit', () => { exited = true; });
+  const keys = (value: string) => { childProcess.stdin.write(value); };
+  const visible = async (text: string) => {
+    try { await waitFor(() => screen().includes(text), 5000); }
+    catch { throw new Error(`Missing ${JSON.stringify(text)}; exited=${exited}; stderr=${stderr}\n${screen()}`); }
+  };
+  try {
+    await visible('Initial worker answer');
+    expect(screen()).toContain('STATUS');
+    expect(screen()).toContain('gpt-6-luna');
+    expect(screen()).toContain('  └ worker');
+    const selectedBg = (row: number) => terminal.buffer.active.getLine(row)?.getCell(0)?.getBgColor();
+    expect(selectedBg(3)).not.toBe(selectedBg(4));
+    keys('\x1b[B');
+    await waitFor(() => selectedBg(4) === 4); // Selected agent is highlighted in blue.
+    keys('\r');
+    await visible('Interrupting prompt · worker');
+    keys('tree interruption\r');
+    await waitFor(() => prompts.length === 1);
+    await visible('LATEST TRACKED EVENT');
+    expect(prompts[0]).toEqual({ agentId: 'worker', text: 'tree interruption', queue: false });
+    keys('c'); await visible('Chat · worker');
+    for (const text of ['\n\n# A heading\n\n**Bold streamed** ', 'answer']) {
+      for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }));
+    }
+    await visible('Bold streamed answer');
+    expect(screen()).not.toContain('**Bold streamed**');
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
+
+    keys('v'); await visible('View settings');
+    keys('f'); await visible('Event filters');
+    keys('\x1b[B\x1b[B '); // agent.message, alphabetically third.
+    await visible('[ ] agent.message');
+    await waitFor(() => screen().includes('Saved '));
+    expect(JSON.parse(await readFile(config, 'utf8')).excluded).toContain('agent.message');
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Live worker answer' } }, { agentId: 'worker' }));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(screen()).not.toContain('Live worker answer');
+    keys('v'); await visible('View settings'); keys('f'); await visible('Event filters');
+    keys('\x1b[B\x1b[B '); await visible('[x] agent.message');
+    keys('\x1b'); await visible('Live worker answer');
+
+    keys('v'); await visible('View settings'); keys('l'); await visible('Event rendering levels');
+    keys('\x1b[B\x1b[B4'); await visible('4 raw');
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    keys('c'); await visible('Chat · worker');
+    await visible('"sessionUpdate": "agent_message_chunk"');
+    await visible('"text": "Live worker answer"');
+    keys('chat message\r');
+    await waitFor(() => prompts.length === 2);
+    expect(prompts[1]).toEqual({ agentId: 'worker', text: 'chat message', queue: false });
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    keys('q'); await waitFor(() => exited);
+  } finally {
+    childProcess.kill('SIGTERM');
+    terminal.dispose();
+    await mock.close();
+  }
+}, 20_000);

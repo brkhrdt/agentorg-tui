@@ -1,0 +1,28 @@
+{
+  "name": "org-tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Terminal client for the Agent Organization Server",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "blessed": "^0.1.81",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "string-width": "^7.2.0",
+    "strip-ansi": "^7.1.0",
+    "wrap-ansi": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.27",
+    "@types/bun": "^1.3.0",
+    "@types/marked-terminal": "^6.1.1",
+    "@types/node": "^24.0.0",
+    "@xterm/headless": "^6.0.0",
+    "typescript": "^5.9.0"
+  }
+}
