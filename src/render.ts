@@ -5,7 +5,7 @@ import stripAnsi from 'strip-ansi';
 import wrapAnsi from 'wrap-ansi';
 import type { ServerEvent } from './protocol.js';
 import type { Level, Settings } from './settings.js';
-import { object, truncated } from './store.js';
+import { appendMessageChunk, object, truncated } from './store.js';
 
 /** Never let remote text send terminal commands or blessed markup. */
 export function clean(value: string): string {
@@ -100,7 +100,10 @@ export function renderEvent(event: ServerEvent, level: Level, width: number): st
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
   const prefix = label(event);
   const text = clean(eventText(event));
-  if (level === 1) return clip(`${prefix.split(' · ').at(-1)}: ${text}`, width);
+  if (level === 1) {
+    const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
+    return clip(assistant ? text : `${prefix.split(' · ').at(-1)}: ${text}`, width);
+  }
   if (level === 2) {
     const lines = wrapAnsi(`${clean(prefix)}: ${text}`, width, { hard: true, trim: false }).split('\n');
     if (lines.length > 2) lines[1] = clip(lines[1]! + ' …', width);
@@ -117,13 +120,9 @@ export function chatGroups(events: ServerEvent[], settings: Settings): ServerEve
   for (const event of events) {
     if (!settings.tracked(event.type)) { adjacent = false; continue; }
     const previous = adjacent ? groups[groups.length - 1] : undefined;
-    const data = object(event.data);
-    const lastData = object(previous?.data);
-    if (event.type === 'agent.message' && settings.level(event.type) !== 4 &&
-        previous?.type === event.type && previous.agentId === event.agentId && previous.generation === event.generation &&
-        data.sessionUpdate === lastData.sessionUpdate && data.messageId === lastData.messageId &&
-        typeof data.content?.text === 'string' && typeof lastData.content?.text === 'string') {
-      groups[groups.length - 1] = { ...previous, data: { ...lastData, content: { ...lastData.content, text: lastData.content.text + data.content.text } } };
+    const merged = settings.level(event.type) !== 4 ? appendMessageChunk(previous, event) : undefined;
+    if (merged && previous) {
+      groups[groups.length - 1] = { ...previous, data: merged.data };
     } else groups.push(event);
     adjacent = true;
   }

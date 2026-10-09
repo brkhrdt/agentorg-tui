@@ -188,7 +188,8 @@ export class UI {
       const nameWidth = Math.min(28, Math.max(8, Math.floor(width * 0.24)));
       const stateWidth = Math.min(11, Math.max(5, Math.floor(width * 0.13)));
       const modelWidth = Math.min(30, Math.max(8, Math.floor(width * 0.23)));
-      const eventWidth = Math.max(0, width - nameWidth - stateWidth - modelWidth - 6);
+      // List items reserve one cell for the scrollbar, even when it is hidden.
+      const eventWidth = Math.max(0, width - nameWidth - stateWidth - modelWidth - 7);
       this.columns.setContent(clip(`${cell('AGENT', nameWidth)}  ${cell('STATUS', stateWidth)}  ${cell('MODEL', modelWidth)}  LATEST TRACKED EVENT`, width));
       const latest = store.latest(this.settings);
       this.updating = true;

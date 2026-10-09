@@ -8,6 +8,16 @@ export const truncated = (value: unknown): boolean => {
   const data = object(value);
   return data.truncated === true && typeof data.originalBytes === 'number' && typeof data.preview === 'string';
 };
+/** Join compatible stream chunks without mutating the original wire records. */
+export function appendMessageChunk(previous: ServerEvent | undefined, event: ServerEvent): ServerEvent | undefined {
+  const data = object(event.data);
+  const lastData = object(previous?.data);
+  if (event.type !== 'agent.message' || previous?.type !== event.type ||
+      previous.agentId !== event.agentId || previous.generation !== event.generation ||
+      data.sessionUpdate !== lastData.sessionUpdate || data.messageId !== lastData.messageId ||
+      typeof data.content?.text !== 'string' || typeof lastData.content?.text !== 'string') return;
+  return { ...event, data: { ...data, content: { ...data.content, text: lastData.content.text + data.content.text } } };
+}
 const terminal = (status: string) => ['completed', 'failed', 'stopped'].includes(status);
 export interface TreeRow { agent: Agent; depth: number }
 
@@ -21,10 +31,14 @@ export class Store extends EventEmitter {
   historyGap = false;
   private sortedCache?: ServerEvent[];
   private latestByType = new Map<string, Map<string, ServerEvent>>();
+  private lastByAgent = new Map<string, ServerEvent>();
+  private latestIndexedSeq = -1;
+  private latestDirty = false;
 
   reset(): void {
     this.agents.clear(); this.operations.clear(); this.events.clear();
-    this.sortedCache = undefined; this.latestByType.clear();
+    this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
+    this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
   }
   install(snapshot: Snapshot): void {
@@ -40,11 +54,9 @@ export class Store extends EventEmitter {
     this.events.set(event.seq, event);
     if (this.sortedCache && (!this.sortedCache.length || this.sortedCache.at(-1)!.seq < event.seq)) this.sortedCache.push(event);
     else this.sortedCache = undefined;
-    if (event.agentId) {
-      const types = this.latestByType.get(event.agentId) ?? new Map<string, ServerEvent>();
-      if ((types.get(event.type)?.seq ?? -1) < event.seq) types.set(event.type, event);
-      this.latestByType.set(event.agentId, types);
-    }
+    // History can arrive after live events; rebuild summaries in sequence order.
+    if (!this.latestDirty && event.seq > this.latestIndexedSeq) this.indexLatest(event);
+    else this.latestDirty = true;
     this.discovered.add(event.type);
     if (this.watermark >= 0 && event.seq > this.watermark) this.reduce(event);
     this.emit('change');
@@ -100,7 +112,21 @@ export class Store extends EventEmitter {
     for (const agent of active) if (!seen.has(agent.id)) visit(agent, 0); // Tolerate malformed plugin hierarchy.
     return rows;
   }
+  private indexLatest(event: ServerEvent): void {
+    this.latestIndexedSeq = event.seq;
+    if (!event.agentId) return;
+    const summary = appendMessageChunk(this.lastByAgent.get(event.agentId), event) ?? event;
+    this.lastByAgent.set(event.agentId, summary);
+    const types = this.latestByType.get(event.agentId) ?? new Map<string, ServerEvent>();
+    types.set(event.type, summary);
+    this.latestByType.set(event.agentId, types);
+  }
   latest(settings: Settings): Map<string, ServerEvent> {
+    if (this.latestDirty) {
+      this.latestByType.clear(); this.lastByAgent.clear();
+      for (const event of this.orderedEvents()) this.indexLatest(event);
+      this.latestDirty = false;
+    }
     const latest = new Map<string, ServerEvent>();
     for (const [agentId, types] of this.latestByType) {
       for (const event of types.values()) {

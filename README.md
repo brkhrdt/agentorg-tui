@@ -41,6 +41,9 @@ server's existing client/API. This UI does not create or start agents.
 Rows show **name, status, model, latest tracked event**. Children are indented
 by two additional cells per hierarchy level. Archived agents are hidden.
 Latest events always use the summary strategy, regardless of chat levels.
+Compatible message chunks are combined per agent, so the preview shows the
+message rather than only its last streamed chunk. Assistant previews omit the
+role label and use all available cells in the event column, truncating with `…`.
 Both live and retained history events update the tree.
 
 ### Event filters: `v f`

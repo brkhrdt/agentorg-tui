@@ -3,14 +3,16 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import xterm from '@xterm/headless';
+import { clip } from '../src/render.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
 // Exercise the real Bun CLI in a Unix pseudo-terminal, then inspect its rendered screen.
 test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live events and Escape', async () => {
-  let seq = 2;
+  let seq = 3;
   const root = agent('root', null, { name: 'coordinator' });
   const child = agent('worker', 'root', { name: 'worker' });
-  const initial = [event(1), event(2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Initial worker answer' } }, { agentId: 'worker' })];
+  const initialText = 'Initial worker answer with enough text to fill the rest of the tree row';
+  const initial = [event(1), ...[initialText, '.'].map((text, index) => event(index + 2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }))];
   const prompts: any[] = [];
   const mock = await mockServer((socket, request) => {
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [] });
@@ -27,7 +29,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   const terminal = new xterm.Terminal({ cols: 100, rows: 30, allowProposedApi: true });
   const screen = () => Array.from({ length: 30 }, (_, index) => terminal.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n');
   const childProcess = spawn('script', ['-qefc', `stty cols 100 rows 30; exec bun src/main.ts --socket '${mock.path}' --config '${config}'`, '/dev/null'], {
-    cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color' }, stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   let exited = false;
   let stderr = '';
@@ -40,7 +42,8 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     catch { throw new Error(`Missing ${JSON.stringify(text)}; exited=${exited}; stderr=${stderr}\n${screen()}`); }
   };
   try {
-    await visible('Initial worker answer');
+    await visible(clip(initialText + '.', 35));
+    expect(screen()).not.toContain('assistant:');
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
     expect(screen()).toContain('  └ worker');
@@ -69,7 +72,10 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await waitFor(() => screen().includes('Saved '));
     expect(JSON.parse(await readFile(config, 'utf8')).excluded).toContain('agent.message');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
-    for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Live worker answer' } }, { agentId: 'worker' }));
+    for (const socket of mock.sockets) {
+      send(socket, event(++seq, 'prompt.started', { operationId: 'live-op' }, { agentId: 'worker' }));
+      send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Live worker answer' } }, { agentId: 'worker' }));
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(screen()).not.toContain('Live worker answer');
     keys('v'); await visible('View settings'); keys('f'); await visible('Event filters');

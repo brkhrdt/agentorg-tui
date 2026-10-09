@@ -43,6 +43,57 @@ describe('state and transcripts', () => {
     settings.toggle('agent.message');
     expect(store.transcript('root', settings)).toHaveLength(1);
   });
+  test('latest message combines chunks per agent and keeps raw records intact', () => {
+    const store = new Store(); const settings = new Settings();
+    const chunk = (seq: number, text: string) => event(seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    store.ingest(chunk(1, 'The complete '));
+    store.ingest(event(2, 'agent.message', undefined, { agentId: 'worker' }));
+    store.ingest(chunk(3, 'answer'));
+    store.ingest(chunk(4, '.'));
+    settings.excluded.add('prompt.finished');
+    store.ingest(event(5, 'prompt.finished', { status: 'completed' }));
+    settings.levels['agent.message'] = 4; // Tree summaries are independent of chat levels.
+    const latest = store.latest(settings).get('root')!;
+    expect(latest.seq).toBe(4);
+    expect(renderEvent(latest, 1, 80)).toBe('The complete answer.');
+    expect(renderEvent(latest, 1, 12)).toBe('The complet…');
+    expect(eventText(store.events.get(4)!)).toBe('.');
+    expect(store.transcript('root', settings)).toHaveLength(3);
+    store.ingest(chunk(6, 'New response'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('New response');
+  });
+  test('message summaries handle late history, duplicate chunks and reset', () => {
+    const store = new Store(); const settings = new Settings();
+    const chunk = (seq: number, text: string) => event(seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    store.ingest(chunk(3, '.'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('.');
+    store.ingest(chunk(1, 'Hello '));
+    store.ingest(chunk(2, 'world'));
+    store.ingest(chunk(2, 'world'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world.');
+    store.ingest(chunk(4, ' More'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world. More');
+    store.reset();
+    store.ingest(chunk(1, 'Fresh'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Fresh');
+  });
+  test('message summaries respect generation, kind, message ID and hidden boundaries', () => {
+    const settings = new Settings(); settings.excluded.add('prompt.started');
+    const first = event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'Old ' } });
+    const next = event(3, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'New' } });
+    for (const boundary of [
+      { ...next, generation: 'g2' },
+      { ...next, data: { ...next.data as any, sessionUpdate: 'agent_thought_chunk' } },
+      { ...next, data: { ...next.data as any, messageId: 'm2' } },
+      event(2, 'prompt.started'),
+      event(2, 'agent.message', { content: { type: 'image', data: 'payload' } }),
+    ]) {
+      const store = new Store();
+      store.ingest(first); store.ingest(boundary);
+      if (boundary.seq === 2) store.ingest(next);
+      expect(eventText(store.latest(settings).get('root')!)).toBe('New');
+    }
+  });
   test('late acceptance responses cannot regress terminal operations', () => {
     const store = new Store();
     store.install({ seq: 0, agents: [], operations: [] });
@@ -67,7 +118,9 @@ describe('four rendering levels', () => {
     const summary = renderEvent(message, 1, 24);
     expect(summary.split('\n')).toHaveLength(1);
     expect(stringWidth(summary)).toBeLessThanOrEqual(24);
-    expect(summary).toEndWith('…');
+    expect(summary).toBe('# Heading  **bold** and…');
+    expect(summary).not.toContain('assistant:');
+    expect(renderEvent(event(2, 'agent.message', { sessionUpdate: 'user_message_chunk', content: { text: 'Hello' } }), 1, 80)).toBe('user: Hello');
     expect(clip('  child', 20)).toBe('  child');
     expect(clip('🦊🦊🦊', 5)).toBe('🦊🦊…');
     expect(clip('test', 0)).toBe('');
