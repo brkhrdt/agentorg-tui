@@ -11,7 +11,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   let seq = 3;
   const root = agent('root', null, { name: 'coordinator' });
   const child = agent('worker', 'root', { name: 'worker' });
-  const initialText = 'Initial worker answer with enough text to fill the rest of the tree row';
+  const initialText = '**Initial worker answer** with enough text to fill the rest of the tree row';
   const initial = [event(1), ...[initialText, '.'].map((text, index) => event(index + 2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }))];
   const prompts: any[] = [];
   const mock = await mockServer((socket, request) => {
@@ -42,8 +42,11 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     catch { throw new Error(`Missing ${JSON.stringify(text)}; exited=${exited}; stderr=${stderr}\n${screen()}`); }
   };
   try {
-    await visible(clip(initialText + '.', 35));
+    await visible(clip(initialText.replace(/\*\*/g, '') + '.', 35));
     expect(screen()).not.toContain('assistant:');
+    expect(screen()).not.toContain('**Initial worker answer**');
+    expect(terminal.buffer.active.getLine(4)?.getCell(64)?.isBold()).toBeTruthy();
+    expect(terminal.buffer.active.getLine(4)?.getCell(86)?.isBold()).toBeFalsy();
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
     expect(screen()).toContain('  └ worker');
@@ -64,6 +67,8 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await visible('Bold streamed answer');
     expect(screen()).not.toContain('**Bold streamed**');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    await visible('# A heading Bold streamed answer');
+    expect(screen()).not.toContain('**Bold streamed**');
 
     keys('v'); await visible('View settings');
     keys('f'); await visible('Event filters');

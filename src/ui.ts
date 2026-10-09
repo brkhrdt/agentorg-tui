@@ -1,6 +1,6 @@
 import blessed from 'blessed';
 import type { Agent } from './protocol.js';
-import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
+import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './render.js';
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session } from './session.js';
 import type { TreeRow } from './store.js';
@@ -195,7 +195,7 @@ export class UI {
       this.updating = true;
       const tableItems = this.rows.map(({ agent: rowAgent, depth }) => {
         const event = latest.get(rowAgent.id);
-        return `${cell(`${'  '.repeat(depth)}${depth ? '└ ' : ''}${rowAgent.name}`, nameWidth)}  ${cell(rowAgent.state, stateWidth)}  ${cell(rowAgent.settings.model, modelWidth)}  ${event ? renderEvent(event, 1, eventWidth) : '—'}`;
+        return `${cell(`${'  '.repeat(depth)}${depth ? '└ ' : ''}${rowAgent.name}`, nameWidth)}  ${cell(rowAgent.state, stateWidth)}  ${cell(rowAgent.settings.model, modelWidth)}  ${event ? renderTreeEvent(event, eventWidth) : '—'}`;
       });
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
         this.tree.setItems(tableItems); this.lastTreeItems = tableItems;

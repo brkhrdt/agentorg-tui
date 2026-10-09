@@ -44,6 +44,8 @@ Latest events always use the summary strategy, regardless of chat levels.
 Compatible message chunks are combined per agent, so the preview shows the
 message rather than only its last streamed chunk. Assistant previews omit the
 role label and use all available cells in the event column, truncating with `…`.
+Event previews render Markdown styles and fold blocks into a single line;
+clipping preserves styles and terminal-cell boundaries.
 Both live and retained history events update the tree.
 
 ### Event filters: `v f`

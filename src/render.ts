@@ -67,23 +67,44 @@ export function eventText(event: ServerEvent): string {
   }
 }
 
-const markdownCache = new Map<number, Marked>();
-function markdown(text: string, width: number): string {
-  let parser = markdownCache.get(width);
+const markdownCache = new Map<number | 'summary', Marked>();
+function markdown(text: string, width: number, summary = false): string {
+  const key = summary ? 'summary' : width;
+  let parser = markdownCache.get(key);
   if (!parser) {
     const style = (codes: string) => (value: string) => `\x1b[${codes}m${value}\x1b[0m`;
     parser = new Marked(markedTerminal({
-      width, reflowText: true, emoji: false,
+      width, reflowText: !summary, emoji: false,
       heading: style('1;36'), firstHeading: style('1;36'), strong: style('1'),
       em: style('3'), codespan: style('33'), blockquote: style('90'),
       link: style('34'), href: style('4;34'),
     }) as unknown as MarkedExtension);
     if (markdownCache.size > 8) markdownCache.clear();
-    markdownCache.set(width, parser);
+    markdownCache.set(key, parser);
   }
   try {
-    return wrapAnsi(parser.parse(clean(text), { async: false }) as string, width, { hard: true, trim: false }).trimEnd();
-  } catch { return wrapAnsi(clean(text), width, { hard: true, trim: false }); }
+    const rendered = parser.parse(clean(text), { async: false }) as string;
+    return summary ? rendered.replace(/\s+/g, ' ').trim() : wrapAnsi(rendered, width, { hard: true, trim: false }).trimEnd();
+  } catch {
+    return summary ? clean(text).replace(/\s+/g, ' ').trim() : wrapAnsi(clean(text), width, { hard: true, trim: false });
+  }
+}
+/** Clip locally generated SGR styles using the same grapheme/cell limits as plain text. */
+function clipStyled(value: string, width: number): string {
+  if (width <= 0) return '';
+  const plain = stripAnsi(value);
+  if (stringWidth(plain) <= width) return value + '\x1b[0m';
+  let remaining = clip(plain, width).length - 1; // Exclude the truncation marker.
+  let result = '';
+  for (const part of value.split(/(\x1b\[[\d;]*m)/)) {
+    if (remaining === 0) break;
+    if (part.startsWith('\x1b[')) result += part;
+    else {
+      result += part.slice(0, remaining);
+      remaining -= Math.min(remaining, part.length);
+    }
+  }
+  return result + '\x1b[0m…';
 }
 function label(event: ServerEvent): string {
   const data = object(event.data);
@@ -94,6 +115,13 @@ function label(event: ServerEvent): string {
   }
   if (event.type === 'prompt.queued') return 'prompt.queued · user';
   return event.type;
+}
+/** Tree previews render Markdown, but remain exactly one terminal-width-aware line. */
+export function renderTreeEvent(event: ServerEvent, width: number): string {
+  if (width <= 0) return '';
+  const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
+  const prefix = assistant ? '' : `${clean(label(event).split(' · ').at(-1)!)}: `;
+  return clipStyled(prefix + markdown(eventText(event), Math.max(1, width), true), width);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number): string {
   width = Math.max(1, width);

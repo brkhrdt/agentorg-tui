@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { chatGroups, clean, clip, eventText, renderEvent } from '../src/render.js';
+import { chatGroups, clean, clip, eventText, renderEvent, renderTreeEvent } from '../src/render.js';
 import { Settings } from '../src/settings.js';
 import { Store } from '../src/store.js';
 import { agent, event, operation } from './helpers.js';
@@ -109,6 +109,48 @@ describe('state and transcripts', () => {
     store.ingest(event(2, 'agent.session_replaced', { sessionNumber: 2 }));
     expect(refreshes).toBe(2);
     expect(store.agents.size).toBe(0);
+  });
+});
+
+describe('Markdown tree previews', () => {
+  const message = (text: string) => event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+  test('styles Markdown and folds blocks into one line without an assistant label', () => {
+    const rendered = renderTreeEvent(message('# Heading\n\n**bold** and _italic_ with `code`\n\n- item\n\n```ts\nconst x = 1;\n```'), 120);
+    expect(rendered).toContain('\x1b[1m');
+    expect(rendered).toContain('\x1b[3m');
+    expect(rendered).toContain('\x1b[33m');
+    expect(rendered.split('\n')).toHaveLength(1);
+    const text = stripAnsi(rendered);
+    expect(text).toContain('Heading bold and italic with code');
+    expect(text).toContain('item');
+    expect(text).toContain('const x = 1;');
+    expect(text).not.toContain('assistant:');
+    expect(text).not.toContain('**');
+    expect(text).not.toContain('`');
+  });
+  test('clips styled text by terminal cells and resets styles at the column boundary', () => {
+    const rendered = renderTreeEvent(message('**Hello world**'), 8);
+    expect(stripAnsi(rendered)).toBe('Hello w…');
+    expect(rendered).toStartWith('\x1b[1mHello w');
+    expect(rendered).toEndWith('\x1b[0m…');
+    expect(stringWidth(rendered)).toBe(8);
+    expect(renderTreeEvent(message('**bold**'), 0)).toBe('');
+    expect(stripAnsi(renderTreeEvent(message('**bold**'), 1))).toBe('…');
+    for (const text of ['🦊🦊🦊', '👩‍💻👩‍💻👩‍💻', 'e\u0301e\u0301e\u0301']) {
+      const preview = renderTreeEvent(message(`**${text}**`), 5);
+      expect(stripAnsi(preview)).toBe(clip(text, 5));
+      expect(stringWidth(preview)).toBeLessThanOrEqual(5);
+    }
+  });
+  test('renders other event types and sanitizes remote terminal commands before styling', () => {
+    const tool = event(1, 'tool.call', { title: '**Search**', status: 'pending' });
+    expect(stripAnsi(renderTreeEvent(tool, 80))).toBe('tool.call: Search · pending');
+    const rendered = renderTreeEvent(message('\x1b[2J**safe**\x07'), 80);
+    expect(stripAnsi(rendered)).toBe('safe');
+    expect(rendered).not.toContain('\x1b[2J');
+    expect(rendered).not.toContain('\x07');
+    expect(stripAnsi(renderTreeEvent(message('[docs](https://example.com)'), 80))).toContain('docs');
+    expect(stripAnsi(renderTreeEvent(event(1, 'agent.message', { truncated: true, originalBytes: 1000, preview: '**partial**' }), 80))).toContain('TRUNCATED');
   });
 });
 
