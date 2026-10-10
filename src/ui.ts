@@ -2,10 +2,11 @@ import blessed from 'blessed';
 import type { Agent, SkillStates, SkillState } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './render.js';
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
-import { Session } from './session.js';
+import { Session, type LifecycleMethod } from './session.js';
+import { AgentEditor, AGENT_FIELDS, type AgentField } from './agent-editor.js';
 import type { TreeRow } from './store.js';
 
-type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add';
+type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'confirm';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -38,6 +39,11 @@ export class UI {
   private footer = blessed.box({ parent: this.screen, bottom: 0, height: 1, tags: false, style: { fg: 'black', bg: 'white' } });
   private view: View = 'tree';
   private selectedAgent?: string;
+  private editor?: AgentEditor;
+  private editField?: AgentField;
+  private actionAgent?: Agent;
+  private actions: { label: string; method?: LifecycleMethod; create?: boolean; edit?: boolean }[] = [];
+  private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
   private skillDraft: SkillStates = {};
   private skillNames: string[] = [];
   private skillRevision = 0;
@@ -64,6 +70,11 @@ export class UI {
     this.tree.key('c', () => this.openChat());
     this.tree.key('v', () => this.setView('view'));
     this.tree.key('s', () => this.openSkills());
+    this.tree.key('a', () => this.openActions());
+    this.tree.key('n', () => this.openEditor(false));
+    this.tree.key('e', () => this.openEditor(true));
+    this.menu.key('y', () => { if (this.view === 'confirm') void this.runAction(); });
+    this.menu.key('n', () => { if (this.view === 'confirm') this.setView('tree'); });
     this.menu.key('a', () => {
       if (this.view === 'skills') this.changeSkill('available');
     });
@@ -82,6 +93,13 @@ export class UI {
       if (this.view === 'view') this.setView(this.menuIndex === 0 ? 'filters' : 'levels');
       else if (this.view === 'levels') this.changeLevel(1);
       else if (this.view === 'skills') void this.saveSkills();
+      else if (this.view === 'actions') this.chooseAction();
+      else if (this.view === 'agent-edit') {
+        if (this.menuIndex === AGENT_FIELDS.length) void this.saveAgent();
+        else this.openField();
+      } else if (this.view === 'confirm') {
+        if (this.menuIndex === 1) void this.runAction(); else this.setView('tree');
+      }
     });
     this.menu.key('space', () => {
       if (this.view === 'filters') {
@@ -99,8 +117,9 @@ export class UI {
       else if (key.name === 'right') this.changeLevel(1);
       else this.changeLevel(0, Number(ch) as Level);
     });
+    this.input.key('C-u', () => { if (!this.sending) { this.input.setValue(''); this.screen.render(); } });
     this.input.on('submit', (value: string) => { void this.submit(value); });
-    this.input.on('cancel', () => this.setView('tree'));
+    this.input.on('cancel', () => this.setView(this.view === 'agent-field' ? 'agent-edit' : 'tree'));
     this.input.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
       if (key.full === 'C-end') { this.follow = true; this.chat.setScrollPerc(100); }
@@ -140,7 +159,73 @@ export class UI {
     this.saveSettings(); this.draw();
   }
   private selected(): Agent | undefined { return this.selectedAgent ? this.session.store.agents.get(this.selectedAgent) : undefined; }
+  private openActions(): void {
+    if (this.sending) return;
+    this.actionAgent = this.selected();
+    this.actions = [{ label: this.actionAgent ? 'Create child (starts immediately)' : 'Create root (starts immediately)', create: true }];
+    if (this.actionAgent) this.actions.push(
+      { label: 'Modify agent', edit: true },
+      { label: 'Start / restart agent', method: 'agent.restart' },
+      { label: 'Stop agent (descendants stay active)', method: 'agent.stop' },
+      { label: 'Restart subtree (including stopped descendants)', method: 'agent.restart_subtree' },
+      { label: 'Replace session (fresh conversation)', method: 'agent.replace_session' },
+      { label: 'Remove agent and descendants (archive)', method: 'agent.remove' },
+    );
+    this.setView('actions');
+  }
+  private chooseAction(): void {
+    if (this.sending) return;
+    const action = this.actions[this.menuIndex];
+    if (!action) return;
+    if (action.create || action.edit) { this.openEditor(!!action.edit, this.actionAgent); return; }
+    if (!action.method || !this.actionAgent) return;
+    this.pendingAction = { method: action.method, agentId: this.actionAgent.id, label: `${action.label} · ${this.actionAgent.name}` };
+    this.setView('confirm');
+  }
+  private openEditor(modify: boolean, target = this.selected()): void {
+    if (this.sending || (modify && !target)) return;
+    this.editor = new AgentEditor(modify ? target!.parentId : target?.id ?? null, modify ? target : undefined);
+    if (!modify && target) {
+      this.editor.values.harness = target.settings.harness;
+      this.editor.values.model = target.settings.model ?? '';
+      this.editor.values.provider = String(target.settings.provider ?? '');
+    }
+    this.setView('agent-edit');
+  }
+  private openField(): void {
+    if (this.sending || !this.editor) return;
+    this.editField = AGENT_FIELDS[this.menuIndex];
+    if (!this.editField) return;
+    this.input.setValue(this.editor.values[this.editField]);
+    this.setView('agent-field');
+  }
+  private async saveAgent(): Promise<void> {
+    const editor = this.editor;
+    if (this.sending || !editor) return;
+    let params: Record<string, unknown>;
+    try { params = editor.params(); } catch (error) { this.showNotice((error as Error).message); return; }
+    this.sending = true;
+    this.showNotice('Applying agent changes · launch settings may interrupt active work…');
+    try {
+      const operation = await this.session.mutate(editor.agentId ? 'agent.modify' : 'agent.create', params);
+      if (!editor.agentId && operation.agentId) this.selectedAgent = operation.agentId;
+      if (this.view === 'agent-edit' && this.editor === editor) this.setView('tree');
+    } catch (error) { this.showNotice((error as Error).message); }
+    finally { this.sending = false; this.draw(); }
+  }
+  private async runAction(): Promise<void> {
+    const action = this.pendingAction;
+    if (this.sending || !action) return;
+    this.sending = true;
+    this.showNotice(`${action.method} in progress…`);
+    try {
+      await this.session.mutate(action.method, { agentId: action.agentId });
+      if (this.view === 'confirm') this.setView('tree');
+    } catch (error) { this.showNotice((error as Error).message); }
+    finally { this.sending = false; this.draw(); }
+  }
   private openSkills(): void {
+    if (this.sending) return;
     const agent = this.selected();
     if (!this.session.skillsEnabled) { this.showNotice('Skills plugin is not enabled on this server.'); return; }
     if (!agent) return;
@@ -165,6 +250,7 @@ export class UI {
     finally { this.sending = false; this.draw(); }
   }
   private openChat(): void {
+    if (this.sending) return;
     const agent = this.selected();
     if (!agent) return;
     this.chatAgent = agent.id; this.follow = true; this.lastChat = ''; this.renderedEvents.clear();
@@ -172,7 +258,7 @@ export class UI {
     this.setView('chat');
   }
   private openPrompt(): void {
-    if (!this.selected()) return;
+    if (this.sending || !this.selected()) return;
     this.input.setValue('');
     this.setView('prompt');
   }
@@ -182,7 +268,7 @@ export class UI {
     this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
-    } else if (['view', 'filters', 'levels', 'skills'].includes(view)) {
+    } else if (['view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -193,6 +279,12 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'agent-field' && this.editor && this.editField) {
+      this.editor.values[this.editField] = value;
+      const index = AGENT_FIELDS.indexOf(this.editField);
+      this.setView('agent-edit'); this.menuIndex = index; this.draw();
+      return;
+    }
     if (this.view === 'skill-add') {
       this.sending = true;
       this.showNotice('Cloning catalog skill…');
@@ -233,6 +325,10 @@ export class UI {
     const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
     const heading = this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
+      this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
+      this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
+      this.view === 'agent-field' ? `Edit ${this.editField} · ${['metadata', 'env', 'options', 'extensions'].includes(this.editField ?? '') ? 'JSON object' : 'text'}` :
+      this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
       this.view === 'skills' ? `Skills · ${agent?.name} · changes staged until Enter` :
@@ -253,16 +349,25 @@ export class UI {
       this.updating = true;
       const tableItems = this.rows.map(({ agent: rowAgent, depth }) => {
         const event = latest.get(rowAgent.id);
-        return `${cell(`${'  '.repeat(depth)}${depth ? '└ ' : ''}${rowAgent.name}`, nameWidth)}  ${cell(rowAgent.state, stateWidth)}  ${cell(rowAgent.settings.model, modelWidth)}  ${event ? renderTreeEvent(event, eventWidth) : '—'}`;
+        return `${cell(`${'  '.repeat(depth)}${depth ? '└ ' : ''}${rowAgent.name}`, nameWidth)}  ${cell(rowAgent.state, stateWidth)}  ${cell(rowAgent.settings.model ?? '—', modelWidth)}  ${event ? renderTreeEvent(event, eventWidth) : '—'}`;
       });
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
         this.tree.setItems(tableItems); this.lastTreeItems = tableItems;
       }
       this.tree.select(selectedIndex);
       this.updating = false;
-      if (!tableItems.length) this.notice.setContent('No active agents. Create an organization using the server client API.');
+      if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(` ↑↓ select   Enter prompt   c chat   ${this.session.skillsEnabled ? 's skills   ' : ''}v view settings   q quit`);
+      this.footer.setContent(` ↑↓ select  Enter prompt  c chat  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
+    } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'confirm') {
+      this.updating = true;
+      this.menu.setItems(this.view === 'actions' ? this.actions.map(action => action.label) :
+        this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
+        [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${field === 'env' ? '(hidden; Enter to edit)' : this.editor?.values[field] || '(omitted)'}`, width - 1)), 'Save changes']);
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
+        this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
+        this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / save   Esc discard · launch changes restart active agents' : ' ↑↓ action   Enter open   Esc tree');
     } else if (this.view === 'skills') {
       this.updating = true;
       this.menu.setItems(this.skillNames.map(name => {
@@ -304,6 +409,8 @@ export class UI {
         if (this.follow) this.chat.setScrollPerc(100); else this.chat.setScroll(scroll);
       }
       this.footer.setContent(' Enter interrupt/send   PgUp/PgDn scroll   Ctrl+End follow   Esc tree');
+    } else if (this.view === 'agent-field') {
+      this.footer.setContent(' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
     } else {
       this.footer.setContent(' > Type a message · Enter sends (cancels active/queued work) · Esc cancels');
     }

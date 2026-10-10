@@ -22,8 +22,8 @@ bun start --socket /absolute/path/server.sock --config ./settings.json
 bun start --help
 ```
 
-An empty organization is displayed as an empty tree; create agents through the
-server's existing client/API. This UI does not create or start agents.
+An empty organization is displayed as an empty tree. Press `n` to create its
+root agent; with an agent selected, `n` creates a child.
 
 ## Standalone binary
 
@@ -59,6 +59,9 @@ runs the interactive UI test against it. Like the source UI test, it requires
 | ↑ / ↓ | Select an agent (highlighted blue) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
+| a | Agent lifecycle actions (create, modify, start/restart, stop, restart subtree, replace session, remove) |
+| n | Create a root in an empty organization, otherwise a child of the selected agent |
+| e | Modify the selected agent |
 | s | Edit skills when the server advertises the skills plugin |
 | v, then f | Configure tracked events |
 | v, then l | Configure rendering levels |
@@ -73,6 +76,41 @@ role label and use all available cells in the event column, truncating with `…
 Event previews render Markdown styles and fold blocks into a single line;
 clipping preserves styles and terminal-cell boundaries.
 Both live and retained history events update the tree.
+
+### Agent lifecycle: `a`, `n`, `e`
+
+The editor has fields for name, harness, model, provider, working directory,
+metadata, environment, harness options, and plugin extensions. Use ↑/↓ and
+Enter to edit a field; Enter stages its value, Ctrl+U clears it, and Escape
+discards that field edit.
+Choose **Save changes** to apply the draft, or Escape from the editor to discard
+it. Metadata, environment, options, and extensions are JSON objects; environment
+values must be strings. Environment values are hidden in the field list but
+visible while editing. Treat other settings and raw events as sensitive too.
+
+Creation starts the agent immediately. Harness names depend on the server's
+loaded plugins; there is no harness/model discovery API. Model is optional.
+Child drafts copy only the parent's harness/model/provider; choose a child cwd
+that satisfies the server's containment rules. Other settings are not inherited.
+
+Modification sends only changed fields and the revision captured when opened.
+On `CONFLICT`, discard and reopen to refresh; it never overwrites automatically.
+Launch-settings changes interrupt work and restart active agents, but do not
+start stopped/failed agents. Use **Start / restart agent** for those (`agent.restart`
+is the API's start operation). Blank scalar settings cannot unset existing values;
+`{}` clears environment/options maps, while extension namespaces are replacement
+values and omitted namespaces are preserved.
+
+Start/restart, stop, restart subtree, replace session, and removal require
+confirmation (Enter on Confirm, or `y`; Escape/`n` cancels). Stop/restart affect
+only the selected agent. Subtree restart also starts stopped descendants.
+Removal archives the selected agent **and all descendants**, without deleting
+files; it cannot be undone. Replace session starts a fresh conversation.
+
+Acceptance is not completion: the UI waits for the terminal operation result,
+shows failures, and refreshes state even after partial failures. Lifecycle
+mutations are never automatically retried after disconnect/timeout; inspect the
+tree and retained operation events before retrying an unknown outcome.
 
 ### Skills: `s` (optional plugin)
 
@@ -132,7 +170,7 @@ At the bottom, **`>`** is a single-line message input:
 
 Direct API failures and asynchronous prompt failures are shown in the status
 line. Acceptance is not reported as successful execution. Stopped/failed agents
-must be started using the server API before they can receive messages.
+must be started with `a` → **Start / restart agent** before they can receive messages.
 
 ## Connection and history behavior
 
@@ -167,4 +205,6 @@ UTF-8 JSONL, response/event races, history replay, database replacement,
 filtering, rendering, and saved settings. The UI test launches the actual Bun CLI
 in a pseudo-terminal via `script` (util-linux) and checks the rendered screen
 using a headless terminal emulator, including selection highlight, `v f`, `v l`,
-live events, interrupting tree/chat prompts, and Escape navigation.
+live events, interrupting tree/chat prompts, Escape navigation, empty-tree root
+creation, child creation, revision-fenced edits, conflicts, lifecycle confirmation,
+and start/stop/restart/subtree/session/removal actions.

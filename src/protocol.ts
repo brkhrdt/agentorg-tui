@@ -6,7 +6,7 @@ export interface Agent {
   parentId: string | null;
   name: string;
   state: string;
-  settings: { model: string; harness: string; extensions?: Record<string, unknown>; [key: string]: unknown };
+  settings: { model?: string; harness: string; extensions?: Record<string, unknown>; [key: string]: unknown };
   revision: number;
   generation: string | null;
   removedAt: string | null;

@@ -137,3 +137,95 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await mock.close();
   }
 }, 20_000);
+
+test('terminal lifecycle: empty root/child creation, staged revision-fenced edits, confirmation and all actions', async () => {
+  const agents: ReturnType<typeof agent>[] = [];
+  const mutations: any[] = [];
+  let pending: any;
+  let failEdit = false;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [] });
+    else if (request.method === 'operation.wait') {
+      const params = pending.input;
+      let target = agents.find(a => a.id === params.agentId);
+      if (pending.type === 'agent.modify' && failEdit) {
+        respond(socket, request.id, { ...pending, status: 'failed', error: { code: 'CONFLICT', message: 'Revision changed' } }); return;
+      }
+      if (pending.type === 'agent.create') {
+        target = agent(agents.length ? 'child' : 'root', params.parentId, { name: params.name, settings: params.settings }); agents.push(target);
+      } else if (pending.type === 'agent.modify') { target!.name = params.name; target!.revision++; }
+      else if (pending.type === 'agent.stop') target!.state = 'stopped';
+      else if (pending.type === 'agent.remove') for (const a of agents) a.removedAt = 'archived';
+      else target!.state = 'idle';
+      respond(socket, request.id, { ...pending, agentId: target!.id, status: 'completed', result: target });
+    } else {
+      mutations.push(request);
+      pending = { id: `op-${mutations.length}`, type: request.method, agentId: request.params.agentId ?? null, input: request.params, status: 'queued' };
+      respond(socket, request.id, pending);
+    }
+  });
+  const terminal = new xterm.Terminal({ cols: 120, rows: 30, allowProposedApi: true });
+  const screen = () => Array.from({ length: 30 }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
+  let command = 'bun src/main.ts';
+  if (process.env.ORG_TUI_BINARY) {
+    const binary = join(mock.directory, 'org-tui');
+    await copyFile(resolve(process.env.ORG_TUI_BINARY), binary); await chmod(binary, 0o755); command = `'${binary}'`;
+  }
+  const childProcess = spawn('script', ['-qefc', `stty cols 120 rows 30; exec ${command} --socket '${mock.path}' --config '${join(mock.directory, 'config.json')}'`, '/dev/null'], {
+    cwd: process.env.ORG_TUI_BINARY ? mock.directory : join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color' }, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let exited = false;
+  childProcess.stdout.on('data', chunk => terminal.write(chunk));
+  childProcess.on('exit', () => { exited = true; });
+  const keys = (value: string) => { childProcess.stdin.write(value); };
+  const visible = async (text: string) => {
+    try { await waitFor(() => screen().includes(text), 5000); }
+    catch { throw new Error(`Missing ${text}; exited=${exited}\n${screen()}`); }
+  };
+  const down = (count: number) => keys('\x1b[B'.repeat(count));
+  const field = async (value: string) => {
+    keys('\r'); await visible('Edit ');
+    keys('\x15' + value + '\r'); await visible('agent ·');
+  };
+  const action = async (index: number, method: string) => {
+    keys('a'); await visible('Agent actions'); down(index); keys('\r'); await visible('Confirm ·');
+    const count = mutations.length;
+    keys('\r'); await visible('LATEST TRACKED EVENT'); // Default selection is Cancel.
+    expect(mutations).toHaveLength(count);
+    keys('a'); await visible('Agent actions'); down(index); keys('\r'); await visible('Confirm ·');
+    keys('y'); await waitFor(() => mutations.length === count + 1); await visible('LATEST TRACKED EVENT');
+    expect(mutations.at(-1).method).toBe(method);
+    expect(mutations.at(-1).params).toEqual({ agentId: 'root' });
+  };
+  try {
+    await visible('No active agents. Press n');
+    keys('n'); await visible('Create agent · root');
+    await field('coordinator'); down(1); await field('fixture');
+    down(AGENT_FIELD_COUNT - 1); keys('\r'); await visible('coordinator'); await visible('LATEST TRACKED EVENT');
+    expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture' } });
+    keys('n'); await visible('Create agent · child');
+    await field('worker'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('  └ worker');
+    expect(mutations[1].params.parentId).toBe('root');
+    keys('\x1b[A'); // Back to the root after the child was selected on creation.
+    keys('e'); await visible('Modify agent · revision 1');
+    await field('discarded'); keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    expect(mutations).toHaveLength(2);
+    keys('e'); await visible('Modify agent · revision 1');
+    await field('renamed'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('LATEST TRACKED EVENT');
+    expect(mutations[2].params).toEqual({ agentId: 'root', expectedRevision: 1, name: 'renamed' });
+    failEdit = true;
+    keys('e'); await visible('Modify agent · revision 2');
+    await field('conflicting'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('CONFLICT');
+    expect(screen()).toContain('Save changes'); // Failure retains the draft, never retries.
+    keys('\x1b'); await visible('LATEST TRACKED EVENT'); failEdit = false;
+    await action(3, 'agent.stop'); await visible('stopped');
+    await action(2, 'agent.restart');
+    await action(4, 'agent.restart_subtree');
+    await action(5, 'agent.replace_session');
+    await action(6, 'agent.remove');
+    expect(agents.every(a => a.removedAt)).toBe(true);
+    keys('q'); await waitFor(() => exited);
+  } finally { childProcess.kill('SIGTERM'); terminal.dispose(); await mock.close(); }
+}, 20_000);
+
+const AGENT_FIELD_COUNT = 9;

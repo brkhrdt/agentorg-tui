@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates } from './protocol.js';
 import { Store } from './store.js';
 
+export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | 'agent.restart' | 'agent.restart_subtree' | 'agent.replace_session' | 'agent.remove';
+
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const done = (operation: Operation) => ['completed', 'failed', 'stopped'].includes(operation.status);
 
@@ -159,6 +161,21 @@ export class Session extends EventEmitter {
     if (!done(operation)) throw new Error('Connection lost; skill mutation outcome unknown. Not retried.');
     if (operation.status !== 'completed') throw new Error(operation.error?.message ?? `Skill mutation ${operation.status}`);
   }
+  /** Mutations are submitted once; acceptance is not completion. */
+  async mutate(method: LifecycleMethod, params: Record<string, unknown>): Promise<Operation> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    try {
+      const accepted = await client.request<Operation>(method, params);
+      this.store.putOperation(accepted);
+      this.emit('notice', `${method} accepted · ${accepted.id}`);
+      const operation = await this.watch(client, accepted);
+      if (!done(operation)) throw new Error('Connection lost; mutation outcome unknown. Not retried.');
+      if (operation.status !== 'completed') throw new Error(`${operation.error?.code ?? operation.status}: ${operation.error?.message ?? method}`);
+      await this.refresh();
+      return operation;
+    } finally { this.scheduleRefresh(); }
+  }
   private async watch(client: RpcClient, accepted: Operation): Promise<Operation> {
     let operation = this.store.operations.get(accepted.id) ?? accepted;
     while (!done(operation) && !this.stopped && client === this.client) {
@@ -167,7 +184,7 @@ export class Session extends EventEmitter {
       operation = this.store.operations.get(operation.id)!;
     }
     if (done(operation)) {
-      this.emit('notice', `${operation.type === 'agent.prompt' ? 'Prompt' : 'Skill mutation'} ${operation.status}${operation.error ? ` · ${operation.error.code}: ${operation.error.message}` : ''}`);
+      this.emit('notice', `${operation.type === 'agent.prompt' ? 'Prompt' : operation.type} ${operation.status}${operation.error ? ` · ${operation.error.code}: ${operation.error.message}` : ''}`);
     }
     return operation;
   }
