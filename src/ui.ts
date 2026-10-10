@@ -1,11 +1,11 @@
 import blessed from 'blessed';
-import type { Agent } from './protocol.js';
+import type { Agent, SkillStates, SkillState } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './render.js';
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session } from './session.js';
 import type { TreeRow } from './store.js';
 
-type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt';
+type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -38,6 +38,9 @@ export class UI {
   private footer = blessed.box({ parent: this.screen, bottom: 0, height: 1, tags: false, style: { fg: 'black', bg: 'white' } });
   private view: View = 'tree';
   private selectedAgent?: string;
+  private skillDraft: SkillStates = {};
+  private skillNames: string[] = [];
+  private skillRevision = 0;
   private chatAgent?: string;
   private rows: TreeRow[] = [];
   private menuTypes: string[] = [];
@@ -60,6 +63,15 @@ export class UI {
     this.tree.key('enter', () => this.openPrompt());
     this.tree.key('c', () => this.openChat());
     this.tree.key('v', () => this.setView('view'));
+    this.tree.key('s', () => this.openSkills());
+    this.menu.key('a', () => {
+      if (this.view === 'skills') this.changeSkill('available');
+    });
+    this.menu.key('i', () => { if (this.view === 'skills') this.changeSkill('installed'); });
+    this.menu.key('u', () => { if (this.view === 'skills') this.changeSkill('unavailable'); });
+    this.menu.key('+', () => {
+      if (this.view === 'skills' && this.session.skillsEnabled) { this.input.setValue(''); this.setView('skill-add'); }
+    });
     this.tree.key('q', () => this.close());
     this.tree.key('escape', () => {});
     this.menu.key('escape', () => this.setView('tree'));
@@ -69,12 +81,17 @@ export class UI {
     this.menu.key('enter', () => {
       if (this.view === 'view') this.setView(this.menuIndex === 0 ? 'filters' : 'levels');
       else if (this.view === 'levels') this.changeLevel(1);
+      else if (this.view === 'skills') void this.saveSkills();
     });
     this.menu.key('space', () => {
       if (this.view === 'filters') {
         const type = this.menuTypes[this.menuIndex];
         if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
       } else if (this.view === 'levels') this.changeLevel(1);
+      else if (this.view === 'skills') {
+        const states: SkillState[] = ['unavailable', 'available', 'installed'];
+        this.changeSkill(states[(states.indexOf(this.skillDraft[this.skillNames[this.menuIndex]!] ?? 'unavailable') + 1) % 3]!);
+      }
     });
     this.menu.key(['left', 'right', '1', '2', '3', '4'], (ch, key) => {
       if (this.view !== 'levels') return;
@@ -123,6 +140,30 @@ export class UI {
     this.saveSettings(); this.draw();
   }
   private selected(): Agent | undefined { return this.selectedAgent ? this.session.store.agents.get(this.selectedAgent) : undefined; }
+  private openSkills(): void {
+    const agent = this.selected();
+    if (!this.session.skillsEnabled) { this.showNotice('Skills plugin is not enabled on this server.'); return; }
+    if (!agent) return;
+    this.skillDraft = Object.fromEntries(this.session.skills.map(skill => [skill.name,
+      Object.hasOwn(agent.settings.skills ?? {}, skill.name) ? agent.settings.skills![skill.name] : 'unavailable']));
+    this.skillRevision = agent.revision;
+    this.skillNames = this.session.skills.map(skill => skill.name);
+    this.setView('skills');
+  }
+  private changeSkill(state: SkillState): void {
+    const name = this.skillNames[this.menuIndex];
+    if (name && !this.sending) { this.skillDraft[name] = state; this.draw(); }
+  }
+  private async saveSkills(): Promise<void> {
+    if (this.sending || !this.selectedAgent) return;
+    this.sending = true;
+    this.showNotice('Applying skills · active agents restart…');
+    try {
+      await this.session.setSkills(this.selectedAgent, this.skillRevision, this.skillDraft);
+      if (this.view === 'skills') this.setView('tree');
+    } catch (error) { this.showNotice((error as Error).message); }
+    finally { this.sending = false; this.draw(); }
+  }
   private openChat(): void {
     const agent = this.selected();
     if (!agent) return;
@@ -141,7 +182,7 @@ export class UI {
     this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
-    } else if (['view', 'filters', 'levels'].includes(view)) {
+    } else if (['view', 'filters', 'levels', 'skills'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -152,6 +193,21 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'skill-add') {
+      this.sending = true;
+      this.showNotice('Cloning catalog skill…');
+      try {
+        const data = JSON.parse(value);
+        await this.session.addSkill(data.name, data.gitUrl);
+        this.setView('tree');
+      } catch (error) { this.showNotice((error as Error).message); }
+      finally {
+        this.sending = false;
+        if (this.view === 'skill-add') { this.input.focus(); this.input.readInput(); }
+        this.draw();
+      }
+      return;
+    }
     const view = this.view;
     const agentId = view === 'chat' ? this.chatAgent : this.selectedAgent;
     if (!agentId || !value.trim()) { this.input.focus(); this.input.readInput(); return; }
@@ -179,6 +235,8 @@ export class UI {
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
+      this.view === 'skills' ? `Skills · ${agent?.name} · changes staged until Enter` :
+      this.view === 'skill-add' ? 'Add catalog skill · enter JSON {"name":"…","gitUrl":"https://…"}' :
       this.view === 'view' ? 'View settings' : 'Agent Organization';
     this.title.setContent(`${clip(heading, width)}\n${clip(`${this.session.status} · ${this.session.socketPath}`, width)}`);
     if (this.view === 'tree') {
@@ -204,7 +262,15 @@ export class UI {
       this.updating = false;
       if (!tableItems.length) this.notice.setContent('No active agents. Create an organization using the server client API.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(' ↑↓ select   Enter interrupt prompt   c chat   v view settings   q quit');
+      this.footer.setContent(` ↑↓ select   Enter prompt   c chat   ${this.session.skillsEnabled ? 's skills   ' : ''}v view settings   q quit`);
+    } else if (this.view === 'skills') {
+      this.updating = true;
+      this.menu.setItems(this.skillNames.map(name => {
+        const skill = this.session.skills.find(s => s.name === name);
+        return clip(`${cell(this.skillDraft[name] ?? 'unavailable', 11)}  ${name} · ${skill?.description ?? ''}`, width - 1);
+      }));
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(' ↑↓ select   Space cycle   i installed   a available   u unavailable   Enter save   + add   Esc discard');
     } else if (this.view === 'view') {
       this.updating = true;
       this.menu.setItems(['f  Event filters', 'l  Event rendering levels']);

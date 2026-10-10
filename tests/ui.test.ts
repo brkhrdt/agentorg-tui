@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, chmod, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import xterm from '@xterm/headless';
 import { clip } from '../src/render.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
@@ -14,8 +14,18 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   const initialText = '**Initial worker answer** with enough text to fill the rest of the tree row';
   const initial = [event(1), ...[initialText, '.'].map((text, index) => event(index + 2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }))];
   const prompts: any[] = [];
+  const modifications: any[] = [];
+  const catalog = [{ name: 'alpha', description: 'Alpha instructions', gitUrl: 'https://github.com/org/alpha' }];
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [] });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [], capabilities: { skills: true } });
+    else if (request.method === 'skills.list') respond(socket, request.id, { skills: catalog });
+    else if (request.method === 'skills.add') { catalog.push({ ...request.params, description: 'Beta instructions' }); respond(socket, request.id, catalog.at(-1)); }
+    else if (request.method === 'agent.modify') {
+      modifications.push(request.params);
+      child.settings.skills = request.params.settings.skills;
+      child.revision++;
+      respond(socket, request.id, { ...operation('completed'), id: 'skills-change', type: 'agent.modify', agentId: child.id });
+    }
     else if (request.method === 'events.history') respond(socket, request.id, { events: initial.filter(event => event.seq > request.params.after), oldestSeq: 1, latestSeq: seq, expired: false });
     else if (request.method === 'agent.prompt') {
       prompts.push(request.params);
@@ -28,8 +38,15 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   const config = join(mock.directory, 'settings.json');
   const terminal = new xterm.Terminal({ cols: 100, rows: 30, allowProposedApi: true });
   const screen = () => Array.from({ length: 30 }, (_, index) => terminal.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n');
-  const childProcess = spawn('script', ['-qefc', `stty cols 100 rows 30; exec bun src/main.ts --socket '${mock.path}' --config '${config}'`, '/dev/null'], {
-    cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
+  let command = 'bun src/main.ts';
+  if (process.env.ORG_TUI_BINARY) {
+    const binary = join(mock.directory, 'org-tui');
+    await copyFile(resolve(process.env.ORG_TUI_BINARY), binary);
+    await chmod(binary, 0o755);
+    command = `'${binary}'`;
+  }
+  const childProcess = spawn('script', ['-qefc', `stty cols 100 rows 30; ${process.env.ORG_TUI_BINARY ? "PATH='/nonexistent' " : ''}exec ${command} --socket '${mock.path}' --config '${config}'`, '/dev/null'], {
+    cwd: process.env.ORG_TUI_BINARY ? mock.directory : join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   let exited = false;
   let stderr = '';
@@ -97,6 +114,22 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await waitFor(() => prompts.length === 2);
     expect(prompts[1]).toEqual({ agentId: 'worker', text: 'chat message', queue: false });
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    keys('s'); await visible('Skills · worker');
+    await visible('unavailable  alpha');
+    keys('i'); await visible('installed    alpha');
+    keys('\r'); await waitFor(() => modifications.length === 1);
+    expect(modifications[0]).toEqual({ agentId: 'worker', expectedRevision: 1, settings: { skills: { alpha: 'installed' } } });
+    await visible('LATEST TRACKED EVENT');
+    await new Promise(resolve => setTimeout(resolve, 250));
+    keys('s'); await visible('Skills · worker');
+    keys('u'); await visible('unavailable  alpha');
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    expect(modifications.length).toBe(1); // Escape discards staged changes.
+    keys('s'); await visible('Skills · worker');
+    keys('+'); await visible('Add catalog skill');
+    keys('{"name":"beta","gitUrl":"https://github.com/org/beta"}\r');
+    await waitFor(() => catalog.length === 2);
+    await visible('LATEST TRACKED EVENT');
     keys('q'); await waitFor(() => exited);
   } finally {
     childProcess.kill('SIGTERM');

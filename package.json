@@ -6,6 +6,8 @@
   "description": "Terminal client for the Agent Organization Server",
   "scripts": {
     "start": "bun src/main.ts",
+    "build": "bun scripts/build.ts",
+    "test:binary": "bun run build && ORG_TUI_BINARY=./dist/org-tui bun test tests/ui.test.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

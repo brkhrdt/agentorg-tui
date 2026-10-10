@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates } from './protocol.js';
 import { Store } from './store.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -8,6 +8,14 @@ const done = (operation: Operation) => ['completed', 'failed', 'stopped'].includ
 export class Session extends EventEmitter {
   readonly store = new Store();
   status = 'connecting';
+  skillsEnabled = false;
+  skills: Skill[] = [];
+  private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
+    this.skillsEnabled = snapshot.capabilities?.skills === true;
+    if (!this.skillsEnabled) { this.skills = []; return; }
+    const catalog = await client.request<{ skills: Skill[] }>('skills.list');
+    if (client === this.client && !this.stopped) this.skills = catalog.skills;
+  }
   private client?: RpcClient;
   private stopped = false;
   private refreshTimer?: ReturnType<typeof setTimeout>;
@@ -24,7 +32,13 @@ export class Session extends EventEmitter {
       const client = this.client = new RpcClient(this.socketPath);
       let buffering = true;
       const buffered: ServerEvent[] = [];
-      client.on('event', (event: ServerEvent) => buffering ? buffered.push(event) : this.store.ingest(event));
+      client.on('event', (event: ServerEvent) => {
+        if (buffering) buffered.push(event);
+        else {
+          this.store.ingest(event);
+          if (event.type === 'skills.catalog_added') this.scheduleRefresh();
+        }
+      });
       client.on('diagnostic', (message: string) => this.emit('notice', message));
       const closed = new Promise<void>(resolve => client.once('disconnect', resolve));
       let poll: ReturnType<typeof setInterval> | undefined;
@@ -45,6 +59,7 @@ export class Session extends EventEmitter {
           this.store.reset();
           this.emit('notice', 'Server history changed; loaded a new organization.');
         }
+        await this.loadSkills(client, snapshot);
         this.store.install(snapshot);
         buffered.sort((a, b) => a.seq - b.seq).forEach(event => this.store.ingest(event));
         buffering = false;
@@ -98,6 +113,8 @@ export class Session extends EventEmitter {
     try {
       const snapshot = await client.request<Snapshot>('organization.snapshot');
       if (client !== this.client || this.stopped) return;
+      await this.loadSkills(client, snapshot);
+      if (client !== this.client || this.stopped) return;
       // A refresh can be older than already received events, which install() replays.
       this.store.install(snapshot);
     } catch (error) { this.emit('notice', (error as Error).message); }
@@ -115,7 +132,24 @@ export class Session extends EventEmitter {
     this.emit('notice', `Prompt accepted · ${operation.id}`);
     void this.watch(client, operation).catch(error => this.emit('notice', error.message));
   }
-  private async watch(client: RpcClient, accepted: Operation): Promise<void> {
+  async addSkill(name: string, gitUrl: string): Promise<void> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected') || !this.skillsEnabled) throw new Error('Skills plugin is not connected');
+    await client.request('skills.add', { name, gitUrl }, 75_000);
+    this.scheduleRefresh();
+    this.emit('notice', `Added skill ${name}`);
+  }
+  async setSkills(agentId: string, expectedRevision: number, skills: SkillStates): Promise<void> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected') || !this.skillsEnabled) throw new Error('Skills plugin is not connected');
+    const accepted = await client.request<Operation>('agent.modify', { agentId, expectedRevision, settings: { skills } });
+    this.store.putOperation(accepted);
+    const operation = await this.watch(client, accepted);
+    this.scheduleRefresh();
+    if (!done(operation)) throw new Error('Connection lost; skill mutation outcome unknown. Not retried.');
+    if (operation.status !== 'completed') throw new Error(operation.error?.message ?? `Skill mutation ${operation.status}`);
+  }
+  private async watch(client: RpcClient, accepted: Operation): Promise<Operation> {
     let operation = this.store.operations.get(accepted.id) ?? accepted;
     while (!done(operation) && !this.stopped && client === this.client) {
       operation = await client.request<Operation>('operation.wait', { operationId: operation.id, waitMs: 1000 });
@@ -123,8 +157,9 @@ export class Session extends EventEmitter {
       operation = this.store.operations.get(operation.id)!;
     }
     if (done(operation)) {
-      this.emit('notice', `Prompt ${operation.status}${operation.error ? ` · ${operation.error.code}: ${operation.error.message}` : ''}`);
+      this.emit('notice', `${operation.type === 'agent.prompt' ? 'Prompt' : 'Skill mutation'} ${operation.status}${operation.error ? ` · ${operation.error.code}: ${operation.error.message}` : ''}`);
     }
+    return operation;
   }
   close(): void {
     this.stopped = true;

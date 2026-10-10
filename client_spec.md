@@ -6,7 +6,7 @@ This document specifies the **currently implemented** public client API for the 
 
 The client talks to the organization server, **not directly to Pi, ACP, or MCP**. ACP is the server-to-harness protocol; MCP is the agent-to-organization tool interface. Some public events carry ACP `SessionUpdate` payloads, described below.
 
-There is currently no protocol-version handshake, capability-discovery endpoint, model-list endpoint, or harness-list endpoint. Configure the socket path and available harness/model choices through deployment configuration. The built-in harness name is `pi`; other names depend on loaded plugins. Plugin API version `1` is not a client wire-protocol version.
+There is currently no protocol-version handshake, standalone capability-discovery endpoint, model-list endpoint, or harness-list endpoint. Current snapshots include optional `capabilities.skills`; older servers omit it. Configure the socket path and available harness/model choices through deployment configuration. There are no built-in harnesses. The separate `@agentorg/plugin-pi-agent` registers `pi` when explicitly loaded; other names depend on loaded plugins. Missing harness plugins fail creation with `INVALID_HARNESS` and restart operations with `START_FAILED` (unknown harness), without deleting records/sessions. Plugin API version `1` is not a client wire-protocol version.
 
 Source references:
 
@@ -156,6 +156,7 @@ interface AgentSettings {
   cwd?: string;
   env?: Record<string, string>;
   options: Record<string, unknown>; // Defaults to {} on creation.
+  skills?: Record<string, 'unavailable' | 'available' | 'installed'>; // Optional skills plugin selection.
 }
 ```
 
@@ -168,7 +169,7 @@ Request settings objects reject unknown top-level properties. `options` and `env
 - Children do not automatically inherit their parent's harness, model, working directory, or options. Send the intended settings explicitly.
 - Socket snapshots/events can contain settings and environment values. Treat received/logged data as potentially sensitive.
 
-For `harness: "pi"`, `model` must be an **exact Pi model ID**, with `provider` specified separately when desired. Fuzzy patterns/provider-prefixed IDs are not the adapter's supported setting format: startup verifies that Pi selected the exact requested ID/provider and fails rather than falling back.
+With the separate Pi plugin loaded, for `harness: "pi"`, `model` must be an **exact Pi model ID**, with `provider` specified separately when desired. Fuzzy patterns/provider-prefixed IDs are not the adapter's supported setting format: startup verifies that Pi selected the exact requested ID/provider and fails rather than falling back.
 
 Pi `options` accepts only:
 
@@ -313,6 +314,7 @@ interface OrganizationSnapshot {
   seq: number;
   agents: AgentRecord[];
   operations: Operation[];
+  capabilities?: { skills: boolean };
 }
 ```
 
@@ -344,6 +346,7 @@ interface CreateAgentParams {
     cwd?: string;
     env?: Record<string, string>;
     options?: Record<string, unknown>;
+    skills?: Record<string, 'unavailable' | 'available' | 'installed'>;
   };
 }
 ```
@@ -383,8 +386,8 @@ Patch behavior:
 - Omitted top-level fields preserve existing values. Omitting `settings` entirely preserves all settings.
 - `metadata` replaces the entire metadata object.
 - `settings` shallow-merges with existing settings. Within it, `env` and `options` replace their entire corresponding objects; they do not deep-merge.
-- **Current implementation quirk:** if a `settings` patch is supplied but omits `options`, schema normalization supplies `options: {}`, clearing the previous options. Include the full existing `options` map in a settings patch when you intend to preserve it. This applies even to `settings: {}` and can cause a restart. Other omitted settings keys preserve their existing values.
-- Changing `cwd`, `env`, model/provider, harness, or options counts as a launch-settings change.
+- Omitted settings keys, including `options` and `skills`, preserve their existing values. Older server builds cleared omitted `options` during patches; upgrade before using skill-only patches.
+- Changing `cwd`, `env`, model/provider, harness, options, or the target skill selection counts as a launch-settings change.
 - Launch-settings changes stop and restart a currently active agent, cancelling its prompt work; descendants are unaffected.
 - Name/metadata-only changes do not restart its process.
 - Modifying a stopped/failed agent does not start it. Follow with an explicit restart when ready.
@@ -866,7 +869,7 @@ Public clients act as operators over the whole organization. MCP callers act as 
 
 The public client normally sees descendant management as ordinary `agent.*` operations whose `caller.kind` is `agent`. It need not implement MCP to observe or manage that work. Calling `mcp.list` or `mcp.call` as an ordinary public client returns `FORBIDDEN`.
 
-Plugins can add namespaced client endpoints and additional event types. There is no public discovery mechanism; their schemas must be configured/documented separately. Unknown custom data should be preserved or displayed as generic JSON, not treated as a malformed core record.
+Plugins can add namespaced client endpoints and additional event types. Snapshot `capabilities.skills` advertises the skills plugin; there is no generic endpoint discovery mechanism. Other plugin schemas must be configured/documented separately. Unknown custom data should be preserved or displayed as generic JSON, not treated as a malformed core record.
 
 Hierarchy checks are API policies, not a filesystem/process sandbox. All public clients share the server OS user's authority; agents with shell access also run with that user's privileges unless a trusted plugin adds isolation. Client logs must not leak settings, prompts, tool arguments/results, or transcript content unintentionally.
 
@@ -941,5 +944,28 @@ Cancellation/removal acceptance does not mean completion; query their operations
 - [ ] Truncated payload handling and large-snapshot/output-buffer disconnect recovery.
 - [ ] Unknown plugin events/error codes tolerated without weakening built-in validation.
 - [ ] Sensitive data excluded/redacted from client diagnostics as appropriate.
+
+## 14. Optional skills plugin
+
+Discover support from `organization.snapshot.capabilities?.skills === true`; absence means unsupported. Keep persisted `settings.skills` visible in raw agent data even when support is disabled. Do not call skills endpoints on older/disabled servers.
+
+Client-only endpoints:
+
+| Method | Parameters | Result |
+|---|---|---|
+| `skills.add` | `{name: string, gitUrl: string}` | `{name, gitUrl, description, createdAt, path}` |
+| `skills.list` | `{}` | `{skills: Skill[], recovery: {agentId, skill, path, error?}[]}` |
+
+Catalog names and source URLs are unique; duplicates fail with `DUPLICATE`, never update an existing entry. Names are lowercase alphanumeric words separated by single hyphens, ≤64 characters. Production Git URLs are HTTPS on github.com/gitlab.com/bitbucket.org, without credentials, ports, queries, fragments or redirects. One root `SKILL.md`, matching name and nonempty description/instructions, is required. The default branch is cloned; no delete/update/pin API exists. `skills.add` can take up to the Git timeout (60 seconds); use a longer request timeout, and never automatically retry an unknown outcome. All paths refer to the server filesystem.
+
+`settings.skills` maps catalog names to `unavailable`, `available`, or `installed`. Missing entries mean unavailable. New agents default to no selection; children inherit nothing automatically. An explicit map is a complete replacement, `{}` clears it, and omission during modification is unchanged. Every reference must exist, including explicit unavailable entries. Use `expectedRevision` when saving drafts. Installed skills load into the agent; available skills are only delegable.
+
+Public-client installed/available grants add availability to all ancestors, preserving their installed states. Target and ancestor records persist atomically; changed ancestor revisions increment and `agent.modified` events follow. Grant revocation is not automatic: ancestors and existing descendants retain earlier selections. MCP `child_create`/`descendant_modify` accept the same `settings.skills` field but can grant only the caller's available/installed skills; unchanged omitted selections are not fresh grants. `skills_list` is agent-facing MCP, not a public endpoint.
+
+Mutations still return lifecycle operations and may restart active targets. Installation/validation failure does not commit selections or ancestor grants. Later launch failure leaves committed selections with a failed agent. With support disabled, new nonempty selections and launches using retained nonempty selections fail with `SKILLS_DISABLED`. Existing settings/files survive plugin disablement.
+
+All nonremoved agents must have distinct canonical cwd paths while enabled (including stopped/failed agents). `CWD_CONFLICT`, `COLLISION`, `SKILL_NOT_READY`, `FORBIDDEN`, `LIMIT`, and validation errors require inspection, not automatic retry. The cwd plugin optionally adds containment rules.
+
+Files install under `<cwd>/.agents/skills/<name>`. Downgrade/cwd changes retain old checkouts outside discovery; removal retains them in place. The plugin fetches committed work into fresh central recovery refs without committing, merging, resetting or deleting dirty/untracked work. Recovery is asynchronous on removal and is not implied by removal success. Watch `skills.error`, `skills.recovered`, `skills.catalog_added` and `plugin.error`; pending failures are returned by `skills.list`. Settings describe selections, not an unconditional guarantee of filesystem readiness. Missing/damaged managed checkouts cause launch failures and operator-visible diagnostics. Core SQLite writes and filesystem/Git work do not share a transaction; a separate durable journal supports conservative startup reconciliation.
 
 Client conformance tests should cover events arriving before acceptance responses, out-of-order responses, late queued responses after terminal events, reconnect during running work, filtered sequence gaps, stopped/failed root reuse, revision conflicts, supersession, cancellation escalation, expired history/permissions, and response truncation. Deterministic protocol tests need no model calls; any model-backed testing for this project must use only `gpt-6-luna`.

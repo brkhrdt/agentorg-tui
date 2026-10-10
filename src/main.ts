@@ -5,7 +5,7 @@ import { UI } from './ui.js';
 
 const help = `Agent Organization TUI
 
-Usage: bun start [--socket PATH] [--config PATH]
+Usage: org-tui [--socket PATH] [--config PATH]
 
   --socket PATH  Unix socket (default: ORG_SOCKET or .org/server.sock)
   --config PATH  Event filters/levels (default: $XDG_CONFIG_HOME/org-tui/settings.json)

@@ -25,6 +25,31 @@ bun start --help
 An empty organization is displayed as an empty tree; create agents through the
 server's existing client/API. This UI does not create or start agents.
 
+## Standalone binary
+
+Build with **Bun 1.4.3+**:
+
+```sh
+bun install --frozen-lockfile
+bun run build                       # dist/org-tui
+./dist/org-tui --help
+./dist/org-tui --socket /absolute/path/server.sock
+# Optional cross-compilation:
+bun run build --target=bun-linux-x64
+# Other examples: bun-linux-arm64, bun-darwin-arm64, bun-linux-x64-baseline
+```
+
+Distribute **only `dist/org-tui`**. It includes the runtime, dependencies, and
+fallback terminal data; Bun, Node, `node_modules`, and this repository are not
+needed on the destination. Build for the destination OS/CPU (`-baseline` for
+older x64 CPUs). An interactive Unix terminal and a separately running compatible
+organization server are still required; Windows is not supported. Socket/config
+flags and environment defaults are unchanged.
+
+`bun run test:binary` builds the binary, copies it outside the repository, and
+runs the interactive UI test against it. Like the source UI test, it requires
+`script` (util-linux) and `stty` on the development machine.
+
 ## Keys
 
 ### Agent tree (default)
@@ -34,6 +59,7 @@ server's existing client/API. This UI does not create or start agents.
 | ↑ / ↓ | Select an agent (highlighted blue) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
+| s | Edit skills when the server advertises the skills plugin |
 | v, then f | Configure tracked events |
 | v, then l | Configure rendering levels |
 | q / Ctrl+C | Quit the client, leaving server work running |
@@ -47,6 +73,14 @@ role label and use all available cells in the event column, truncating with `…
 Event previews render Markdown styles and fold blocks into a single line;
 clipping preserves styles and terminal-cell boundaries.
 Both live and retained history events update the tree.
+
+### Skills: `s` (optional plugin)
+
+The client discovers `organization.snapshot.capabilities.skills`; older or disabled servers show no skills action and receive no skills requests. Select an agent and press `s` to see the catalog, descriptions and its selection. ↑/↓ selects a skill; Space cycles states; `i` installs, `a` makes available for delegation, and `u` marks unavailable. **Enter saves the complete replacement** with the revision captured when the editor opened; Escape discards the draft. Active targets may restart. On revision conflict, Escape and reopen to refresh instead of overwriting another client's changes.
+
+Press `+` in the skills editor to add a catalog skill using JSON, e.g. `{"name":"alpha","gitUrl":"https://github.com/org/alpha"}`. The root `SKILL.md` must declare that same name. Catalog additions can take a minute; disconnect/timeouts have unknown outcomes and are never retried automatically. Inspect the catalog before retrying.
+
+Public-client installed/available grants add availability to ancestors without installing there. Removal/downgrade retains earlier grants and preserved working copies. Selected `installed` is not a guarantee of filesystem readiness: inspect operation errors and `skills.error` events. See [the skills API contract](client_spec.md#14-optional-skills-plugin).
 
 ### Event filters: `v f`
 

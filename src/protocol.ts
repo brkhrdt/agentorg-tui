@@ -6,7 +6,7 @@ export interface Agent {
   parentId: string | null;
   name: string;
   state: string;
-  settings: { model: string; harness: string; [key: string]: unknown };
+  settings: { model: string; harness: string; skills?: SkillStates; [key: string]: unknown };
   revision: number;
   generation: string | null;
   removedAt: string | null;
@@ -31,7 +31,10 @@ export interface ServerEvent {
   generation?: string;
   data: unknown;
 }
-export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[] }
+export type SkillState = 'unavailable' | 'available' | 'installed';
+export type SkillStates = Record<string, SkillState>;
+export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
+export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { skills?: boolean } }
 export interface HistoryPage {
   events: ServerEvent[];
   oldestSeq: number;
