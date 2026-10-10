@@ -144,7 +144,12 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
   let pending: any;
   let failEdit = false;
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [], capabilities: { harnesses: ['fixture'] } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [], capabilities: { harnesses: ['fixture'], modelDiscovery: ['fixture'] } });
+    else if (request.method === 'organization.providers') respond(socket, request.id, { providers: ['provider-a', 'provider-b'] });
+    else if (request.method === 'organization.models') {
+      expect(request.params.provider).toBe('provider-a');
+      respond(socket, request.id, { models: [{ id: 'gpt-6-luna', name: 'Luna' }] });
+    }
     else if (request.method === 'operation.wait') {
       const params = pending.input;
       let target = agents.find(a => a.id === params.agentId);
@@ -201,8 +206,14 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     await visible('No active agents. Press n');
     keys('n'); await visible('Create agent · root');
     await field('coordinator'); down(1); keys('\r'); await visible('Select harness'); keys('\r'); await visible('Create agent · root');
-    down(AGENT_FIELD_COUNT - 1); keys('\r'); await visible('coordinator'); await visible('LATEST TRACKED EVENT');
-    expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture' } });
+    down(2); keys('\r'); await visible('Select a provider before choosing a model.');
+    keys('\x1b[A'); keys('\r'); await visible('Select provider'); await visible('provider-b');
+    keys('\x1b'); await visible('Create agent · root'); // Escape keeps the provider unset.
+    keys('\r'); await visible('Select provider'); keys('\r'); await visible('Create agent · root');
+    down(1); keys('\r'); await visible('Select model · provider-a'); await visible('gpt-6-luna · Luna');
+    keys('\r'); await visible('Create agent · root');
+    down(AGENT_FIELD_COUNT - 3); keys('\r'); await visible('coordinator'); await visible('LATEST TRACKED EVENT');
+    expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture', provider: 'provider-a', model: 'gpt-6-luna' } });
     keys('n'); await visible('Create agent · child');
     await field('worker'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('  └ worker');
     expect(mutations[1].params.parentId).toBe('root');

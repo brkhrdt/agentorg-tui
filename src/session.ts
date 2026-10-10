@@ -13,6 +13,24 @@ export class Session extends EventEmitter {
   skillsEnabled = false;
   skills: Skill[] = [];
   harnesses: string[] = [];
+  modelDiscovery: string[] = [];
+  async agentChoices(field: 'provider' | 'model', values: Record<string, string>): Promise<{ value: string; label: string }[]> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    if (field === 'model' && !values.provider?.trim()) throw new Error('Select a provider before choosing a model.');
+    const params = {
+      harness: values.harness,
+      ...(field === 'model' && { provider: values.provider }),
+      ...(values.cwd?.trim() && { cwd: values.cwd.trim() }),
+      env: JSON.parse(values.env || '{}'), options: JSON.parse(values.options || '{}'),
+    };
+    if (field === 'provider') {
+      const result = await client.request<{ providers: string[] }>('organization.providers', params);
+      return result.providers.map(value => ({ value, label: value }));
+    }
+    const result = await client.request<{ models: { id: string; name?: string }[] }>('organization.models', params);
+    return result.models.map(model => ({ value: model.id, label: model.name && model.name !== model.id ? `${model.id} · ${model.name}` : model.id }));
+  }
   private skillsNamespace = 'skills';
   private skillsList = '';
   private skillsAdd = '';
@@ -21,6 +39,7 @@ export class Session extends EventEmitter {
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
+    this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
     if (!this.skillsEnabled) { this.skills = []; return; }

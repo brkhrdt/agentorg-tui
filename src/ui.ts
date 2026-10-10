@@ -41,6 +41,9 @@ export class UI {
   private selectedAgent?: string;
   private editor?: AgentEditor;
   private editField?: AgentField;
+  private optionField: 'harness' | 'provider' | 'model' = 'harness';
+  private agentOptions: { value: string; label: string }[] = [];
+  private choicesRequest = 0;
   private actionAgent?: Agent;
   private actions: { label: string; method?: LifecycleMethod; create?: boolean; edit?: boolean }[] = [];
   private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
@@ -88,7 +91,7 @@ export class UI {
     this.menu.key('escape', () => {
       if (this.view === 'harness-options') {
         this.setView('agent-edit');
-        this.menuIndex = AGENT_FIELDS.indexOf('harness');
+        this.menuIndex = AGENT_FIELDS.indexOf(this.optionField);
         this.draw();
       } else this.setView('tree');
     });
@@ -101,16 +104,19 @@ export class UI {
       else if (this.view === 'skills') void this.saveSkills();
       else if (this.view === 'actions') this.chooseAction();
       else if (this.view === 'harness-options') {
-        const harness = this.session.harnesses[this.menuIndex];
-        if (harness && this.editor) {
-          this.editor.values.harness = harness;
+        const choice = this.agentOptions[this.menuIndex];
+        if (choice && this.editor) {
+          this.editor.select(this.optionField, choice.value);
           this.setView('agent-edit');
-          this.menuIndex = AGENT_FIELDS.indexOf('harness');
+          this.menuIndex = AGENT_FIELDS.indexOf(this.optionField);
           this.draw();
+        } else if (this.menuIndex === this.agentOptions.length) {
+          this.menuIndex = AGENT_FIELDS.indexOf(this.optionField);
+          this.openField();
         }
       } else if (this.view === 'agent-edit') {
         if (this.menuIndex === AGENT_FIELDS.length) void this.saveAgent();
-        else if (!this.editor?.agentId && AGENT_FIELDS[this.menuIndex] === 'harness') this.openHarnessOptions();
+        else if (['harness', 'provider', 'model'].includes(AGENT_FIELDS[this.menuIndex] ?? '')) void this.openAgentOptions();
         else this.openField();
       } else if (this.view === 'confirm') {
         if (this.menuIndex === 1) void this.runAction(); else this.setView('tree');
@@ -219,12 +225,27 @@ export class UI {
     }
     this.setView('agent-edit');
   }
-  private openHarnessOptions(): void {
-    if (!this.editor || !this.session.harnesses.length) return;
-    this.setView('harness-options');
-    const selected = this.session.harnesses.indexOf(this.editor.values.harness);
-    this.menuIndex = selected >= 0 ? selected : 0;
-    this.draw();
+  private async openAgentOptions(): Promise<void> {
+    const editor = this.editor;
+    const field = AGENT_FIELDS[this.menuIndex];
+    if (!editor || this.sending || !['harness', 'provider', 'model'].includes(field ?? '')) return;
+    this.optionField = field as typeof this.optionField;
+    if (field !== 'harness' && !this.session.modelDiscovery.includes(editor.values.harness)) { this.openField(); return; }
+    if (field === 'model' && !editor.values.provider.trim()) { this.showNotice('Select a provider before choosing a model.'); return; }
+    const request = ++this.choicesRequest;
+    const values = { ...editor.values };
+    if (field !== 'harness') this.showNotice(`Loading available ${field === 'provider' ? 'providers' : 'models'}…`);
+    try {
+      const choices = field === 'harness' ? this.session.harnesses.map(value => ({ value, label: value })) :
+        await this.session.agentChoices(field as 'provider' | 'model', values);
+      if (this.closing || this.sending || request !== this.choicesRequest || this.editor !== editor || this.view !== 'agent-edit' || AGENT_FIELDS[this.menuIndex] !== field || JSON.stringify(editor.values) !== JSON.stringify(values)) return;
+      this.optionField = field as typeof this.optionField;
+      this.agentOptions = choices;
+      this.setView('harness-options');
+      this.menuIndex = Math.max(0, choices.findIndex(choice => choice.value === editor.values[this.optionField]));
+      this.showNotice(choices.length ? '' : `No available ${field}s; enter a value manually or go back.`);
+      this.draw();
+    } catch (error) { if (!this.closing && request === this.choicesRequest && this.editor === editor && this.view === 'agent-edit') this.showNotice((error as Error).message); }
   }
   private openField(): void {
     if (this.sending || !this.editor) return;
@@ -314,7 +335,8 @@ export class UI {
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
     if (this.view === 'agent-field' && this.editor && this.editField) {
-      this.editor.values[this.editField] = value;
+      if (['harness', 'provider', 'model'].includes(this.editField)) this.editor.select(this.editField as 'harness' | 'provider' | 'model', value);
+      else this.editor.values[this.editField] = value;
       const index = AGENT_FIELDS.indexOf(this.editField);
       this.setView('agent-edit'); this.menuIndex = index; this.draw();
       return;
@@ -362,7 +384,7 @@ export class UI {
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
       this.view === 'agent-field' ? `Edit ${this.editField} · ${['metadata', 'env', 'options', 'extensions'].includes(this.editField ?? '') ? 'JSON object' : 'text'}` :
-      this.view === 'harness-options' ? 'Select harness' :
+      this.view === 'harness-options' ? `Select ${this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
@@ -398,12 +420,12 @@ export class UI {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => action.label) :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
-        this.view === 'harness-options' ? this.session.harnesses.map(harness => `${harness === this.editor?.values.harness ? '●' : '○'} ${harness}`) :
+        this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
         [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${field === 'env' ? '(hidden; Enter to edit)' : this.editor?.values[field] || '(omitted)'}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
-        this.view === 'harness-options' ? ' ↑↓ select harness   Enter choose   Esc back' :
+        this.view === 'harness-options' ? ' ↑↓ select   Enter choose   Esc back' :
         this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : ' ↑↓ action   Enter open   Esc tree');
     } else if (this.view === 'skills') {
       this.updating = true;

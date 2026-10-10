@@ -79,7 +79,7 @@ Both live and retained history events update the tree.
 
 ### Agent lifecycle: `a`, `n`, `e`
 
-The editor has fields for name, harness, model, provider, working directory,
+The editor has fields for name, harness, provider, model, working directory,
 metadata, environment, harness options, and plugin extensions. Use ↑/↓ and
 Enter to edit a field; Enter stages its value, Ctrl+U clears it, and Escape
 discards that field edit.
@@ -88,8 +88,15 @@ it. Metadata, environment, options, and extensions are JSON objects; environment
 values must be strings. Environment values are hidden in the field list but
 visible while editing. Treat other settings and raw events as sensitive too.
 
-Creation starts the agent immediately. Harness names depend on the server's
-loaded plugins; there is no harness/model discovery API. Model is optional.
+Creation starts the agent immediately. Harness choices come from the server's
+loaded plugins. For discovery-capable harnesses, Enter on provider opens its
+available providers; select a provider before opening the model picker. The
+model picker lists only that provider's models and saves their exact IDs.
+Changing harness clears provider/model; changing provider clears model.
+Catalog queries use the draft cwd, environment, and harness options. Pickers
+support manual entry, and older servers/unsupported harnesses use text fields.
+Escape returns without selecting; discovery errors retain the draft. Model is
+optional on creation (omit it to use the harness default).
 Press `n` with an agent selected to create its child; if selection is momentarily
 missing while agents exist, the root is used as the parent rather than submitting
 a duplicate root. Child drafts copy the parent's harness/model/provider; other

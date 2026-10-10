@@ -1,6 +1,6 @@
 import type { Agent } from './protocol.js';
 
-export const AGENT_FIELDS = ['name', 'harness', 'model', 'provider', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
+export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
 export type AgentField = typeof AGENT_FIELDS[number];
 const maps = new Set<AgentField>(['metadata', 'env', 'options', 'extensions']);
 
@@ -18,6 +18,12 @@ export class AgentEditor {
       return [field, maps.has(field) ? JSON.stringify(value ?? {}) : String(value ?? '')];
     })) as Record<AgentField, string>;
     this.original = { ...this.values };
+  }
+  select(field: 'harness' | 'provider' | 'model', value: string): void {
+    if (this.values[field] === value) return;
+    this.values[field] = value;
+    if (field === 'harness') this.values.provider = '';
+    if (field !== 'model') this.values.model = '';
   }
   params(): Record<string, unknown> {
     const params: Record<string, unknown> = this.agentId ? { agentId: this.agentId, expectedRevision: this.revision } : { parentId: this.parentId };

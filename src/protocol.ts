@@ -34,7 +34,7 @@ export interface ServerEvent {
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
 export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
-export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { harnesses?: string[]; plugins?: Record<string, unknown> } }
+export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { harnesses?: string[]; modelDiscovery?: string[]; plugins?: Record<string, unknown> } }
 export interface HistoryPage {
   events: ServerEvent[];
   oldestSeq: number;
