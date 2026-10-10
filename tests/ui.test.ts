@@ -17,7 +17,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   const modifications: any[] = [];
   const catalog = [{ name: 'alpha', description: 'Alpha instructions', gitUrl: 'https://github.com/org/alpha' }];
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [], capabilities: { plugins: { skills: { settingsNamespace: 'skills', endpoints: { list: 'skills.list', add: 'skills.add' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [], capabilities: { harnesses: ['fixture'], plugins: { skills: { settingsNamespace: 'skills', endpoints: { list: 'skills.list', add: 'skills.add' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: catalog });
     else if (request.method === 'skills.add') { catalog.push({ ...request.params, description: 'Beta instructions' }); respond(socket, request.id, catalog.at(-1)); }
     else if (request.method === 'agent.modify') {
@@ -144,7 +144,7 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
   let pending: any;
   let failEdit = false;
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [] });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [], capabilities: { harnesses: ['fixture'] } });
     else if (request.method === 'operation.wait') {
       const params = pending.input;
       let target = agents.find(a => a.id === params.agentId);
@@ -200,7 +200,7 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
   try {
     await visible('No active agents. Press n');
     keys('n'); await visible('Create agent · root');
-    await field('coordinator'); down(1); await field('fixture');
+    await field('coordinator'); down(1); keys('\r'); await visible('Select harness'); keys('\r'); await visible('Create agent · root');
     down(AGENT_FIELD_COUNT - 1); keys('\r'); await visible('coordinator'); await visible('LATEST TRACKED EVENT');
     expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture' } });
     keys('n'); await visible('Create agent · child');

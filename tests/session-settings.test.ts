@@ -37,7 +37,7 @@ test('session readiness, fixed-target paginated replay, expiry, live dedup and i
         send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'NOT_READY', message: 'starting' } });
       } else {
         send(socket, event(3)); // Before the response; must be kept for chat.
-        respond(socket, request.id, { seq: 3, agents: [agent('root')], operations: [] });
+        respond(socket, request.id, { seq: 3, agents: [agent('root')], operations: [], capabilities: { harnesses: ['fixture', 'alpha'] } });
       }
     } else if (request.method === 'events.history') {
       const page = history.filter(event => event.seq > request.params.after).slice(0, 2);
@@ -55,6 +55,7 @@ test('session readiness, fixed-target paginated replay, expiry, live dedup and i
   const running = session.run();
   try {
     await waitFor(() => session.status === 'connected');
+    expect(session.harnesses).toEqual(['alpha', 'fixture']);
     expect(session.store.orderedEvents().map(event => event.seq)).toEqual([1, 2, 3]);
     expect(session.store.historyCursor).toBe(3);
     expect(session.store.historyGap).toBe(true);

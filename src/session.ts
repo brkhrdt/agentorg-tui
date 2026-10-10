@@ -12,6 +12,7 @@ export class Session extends EventEmitter {
   status = 'connecting';
   skillsEnabled = false;
   skills: Skill[] = [];
+  harnesses: string[] = [];
   private skillsNamespace = 'skills';
   private skillsList = '';
   private skillsAdd = '';
@@ -19,6 +20,7 @@ export class Session extends EventEmitter {
     return (this.store.agents.get(agentId)?.settings.extensions?.[this.skillsNamespace] ?? {}) as SkillStates;
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
+    this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
     if (!this.skillsEnabled) { this.skills = []; return; }
