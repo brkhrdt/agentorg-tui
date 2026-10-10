@@ -31,7 +31,6 @@ describe('state and transcripts', () => {
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
     store.ingest(event(1));
     store.ingest(event(2, 'tool.update', { title: 'hidden' }));
-    settings.toggle('agent.state');
     store.ingest(event(3, 'agent.state', { state: 'failed' }, { generation: undefined }));
     expect(store.agents.get('root')!.state).toBe('failed');
     expect(store.agents.get('root')!.generation).toBeNull();

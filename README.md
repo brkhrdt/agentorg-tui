@@ -131,9 +131,10 @@ recalculates the tree's latest event from previously received types.
 
 Filters are **local presentation filters**. The socket stays subscribed to all
 events, so hiding state/operation events cannot freeze agent status. All built-in
-event types are listed, plus unknown/plugin types as they arrive. New types are
-tracked by default. Initially `operation.changed`, `tool.update`, and
-`agent.update` are hidden to reduce noise.
+event types are listed, plus unknown/plugin types as they arrive. By default,
+`agent.message`, `prompt.queued`, `tool.call`, and `tool.result` are tracked;
+other listed built-in events are hidden. New unknown/plugin types are tracked.
+Existing saved filters are preserved.
 
 ### Rendering levels: `v l`
 

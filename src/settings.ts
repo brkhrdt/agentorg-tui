@@ -14,7 +14,12 @@ export const EVENT_TYPES = [
 export const defaultConfigPath = () => join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'org-tui', 'settings.json');
 
 export class Settings {
-  excluded = new Set(['operation.changed', 'tool.update', 'agent.update']);
+  excluded = new Set([
+    'agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed',
+    'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed',
+    'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling',
+    'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped', 'tool.update',
+  ]);
   levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.result': 2, 'agent.plan': 3 };
   tracked(type: string): boolean { return !this.excluded.has(type); }
   level(type: string): Level { return this.levels[type] ?? 1; }
