@@ -90,8 +90,11 @@ visible while editing. Treat other settings and raw events as sensitive too.
 
 Creation starts the agent immediately. Harness names depend on the server's
 loaded plugins; there is no harness/model discovery API. Model is optional.
-Child drafts copy only the parent's harness/model/provider; choose a child cwd
-that satisfies the server's containment rules. Other settings are not inherited.
+Press `n` with an agent selected to create its child; if selection is momentarily
+missing while agents exist, the root is used as the parent rather than submitting
+a duplicate root. Child drafts copy the parent's harness/model/provider; other
+settings are not inherited. If the server's optional `cwd` plugin is enabled,
+enter an existing strict subdirectory of the parent's cwd for each child.
 
 Modification sends only changed fields and the revision captured when opened.
 On `CONFLICT`, discard and reopen to refresh; it never overwrites automatically.

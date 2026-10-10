@@ -159,9 +159,16 @@ export class UI {
     this.saveSettings(); this.draw();
   }
   private selected(): Agent | undefined { return this.selectedAgent ? this.session.store.agents.get(this.selectedAgent) : undefined; }
+  private createParent(target = this.selected()): Agent | undefined {
+    if (target) return target;
+    // Never submit a second root just because selection was temporarily lost
+    // during a snapshot refresh or a menu transition.
+    const rows = this.session.store.tree();
+    return rows.find(row => row.agent.parentId === null)?.agent ?? rows[0]?.agent;
+  }
   private openActions(): void {
     if (this.sending) return;
-    this.actionAgent = this.selected();
+    this.actionAgent = this.createParent();
     this.actions = [{ label: this.actionAgent ? 'Create child (starts immediately)' : 'Create root (starts immediately)', create: true }];
     if (this.actionAgent) this.actions.push(
       { label: 'Modify agent', edit: true },
@@ -184,11 +191,12 @@ export class UI {
   }
   private openEditor(modify: boolean, target = this.selected()): void {
     if (this.sending || (modify && !target)) return;
-    this.editor = new AgentEditor(modify ? target!.parentId : target?.id ?? null, modify ? target : undefined);
-    if (!modify && target) {
-      this.editor.values.harness = target.settings.harness;
-      this.editor.values.model = target.settings.model ?? '';
-      this.editor.values.provider = String(target.settings.provider ?? '');
+    const parent = modify ? undefined : this.createParent(target);
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined);
+    if (!modify && parent) {
+      this.editor.values.harness = parent.settings.harness;
+      this.editor.values.model = parent.settings.model ?? '';
+      this.editor.values.provider = String(parent.settings.provider ?? '');
     }
     this.setView('agent-edit');
   }
