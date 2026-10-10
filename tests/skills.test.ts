@@ -6,12 +6,12 @@ test('skills capability, catalog, replacement mutation with revision and catalog
   let enabled = true;
   const requests: any[] = [];
   const skills = [{ name: 'alpha', description: 'Alpha skill', gitUrl: 'https://github.com/org/alpha' }];
-  const root = agent('root');
+  const root = agent('root', null, { settings: { harness: 'fixture', model: 'test', extensions: { managed: { alpha: 'available' }, other: { retained: true } } } });
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { skills: enabled } });
-    else if (request.method === 'skills.list') respond(socket, request.id, { skills });
-    else if (request.method === 'skills.add') { skills.push({ ...request.params, description: 'new' }); respond(socket, request.id, skills.at(-1)); }
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { plugins: enabled ? { skills: { settingsNamespace: 'managed', endpoints: { list: 'feature.catalog', add: 'feature.add' } } } : {} } });
+    else if (request.method === 'feature.catalog') respond(socket, request.id, { skills });
+    else if (request.method === 'feature.add') { skills.push({ ...request.params, description: 'new' }); respond(socket, request.id, skills.at(-1)); }
     else if (request.method === 'agent.modify') respond(socket, request.id, { id: 'change', type: 'agent.modify', agentId: 'root', input: request.params, status: 'queued' });
     else if (request.method === 'operation.wait') respond(socket, request.id, { id: 'change', type: 'agent.modify', agentId: 'root', input: {}, status: 'completed' });
   });
@@ -21,8 +21,9 @@ test('skills capability, catalog, replacement mutation with revision and catalog
     await waitFor(() => session.status === 'connected');
     expect(session.skillsEnabled).toBe(true);
     expect(session.skills[0]?.name).toBe('alpha');
+    expect(session.skillStates('root')).toEqual({ alpha: 'available' });
     await session.setSkills('root', 7, { alpha: 'installed' });
-    expect(requests.find(r => r.method === 'agent.modify').params).toEqual({ agentId: 'root', expectedRevision: 7, settings: { skills: { alpha: 'installed' } } });
+    expect(requests.find(r => r.method === 'agent.modify').params).toEqual({ agentId: 'root', expectedRevision: 7, settings: { extensions: { managed: { alpha: 'installed' } } } });
     expect(requests.filter(r => r.method === 'agent.modify')).toHaveLength(1);
     await session.addSkill('beta', 'https://github.com/org/beta');
     await waitFor(() => session.skills.length === 2);

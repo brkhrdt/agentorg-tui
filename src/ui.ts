@@ -145,7 +145,7 @@ export class UI {
     if (!this.session.skillsEnabled) { this.showNotice('Skills plugin is not enabled on this server.'); return; }
     if (!agent) return;
     this.skillDraft = Object.fromEntries(this.session.skills.map(skill => [skill.name,
-      Object.hasOwn(agent.settings.skills ?? {}, skill.name) ? agent.settings.skills![skill.name] : 'unavailable']));
+      Object.hasOwn(this.session.skillStates(agent.id), skill.name) ? this.session.skillStates(agent.id)[skill.name] : 'unavailable']));
     this.skillRevision = agent.revision;
     this.skillNames = this.session.skills.map(skill => skill.name);
     this.setView('skills');

@@ -10,10 +10,20 @@ export class Session extends EventEmitter {
   status = 'connecting';
   skillsEnabled = false;
   skills: Skill[] = [];
+  private skillsNamespace = 'skills';
+  private skillsList = '';
+  private skillsAdd = '';
+  skillStates(agentId: string): SkillStates {
+    return (this.store.agents.get(agentId)?.settings.extensions?.[this.skillsNamespace] ?? {}) as SkillStates;
+  }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
-    this.skillsEnabled = snapshot.capabilities?.skills === true;
+    const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
+    this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
     if (!this.skillsEnabled) { this.skills = []; return; }
-    const catalog = await client.request<{ skills: Skill[] }>('skills.list');
+    this.skillsNamespace = capability!.settingsNamespace as string;
+    this.skillsList = capability!.endpoints!.list as string;
+    this.skillsAdd = capability!.endpoints!.add as string;
+    const catalog = await client.request<{ skills: Skill[] }>(this.skillsList);
     if (client === this.client && !this.stopped) this.skills = catalog.skills;
   }
   private client?: RpcClient;
@@ -135,14 +145,14 @@ export class Session extends EventEmitter {
   async addSkill(name: string, gitUrl: string): Promise<void> {
     const client = this.client;
     if (!client || !this.status.startsWith('connected') || !this.skillsEnabled) throw new Error('Skills plugin is not connected');
-    await client.request('skills.add', { name, gitUrl }, 75_000);
+    await client.request(this.skillsAdd, { name, gitUrl }, 75_000);
     this.scheduleRefresh();
     this.emit('notice', `Added skill ${name}`);
   }
   async setSkills(agentId: string, expectedRevision: number, skills: SkillStates): Promise<void> {
     const client = this.client;
     if (!client || !this.status.startsWith('connected') || !this.skillsEnabled) throw new Error('Skills plugin is not connected');
-    const accepted = await client.request<Operation>('agent.modify', { agentId, expectedRevision, settings: { skills } });
+    const accepted = await client.request<Operation>('agent.modify', { agentId, expectedRevision, settings: { extensions: { [this.skillsNamespace]: skills } } });
     this.store.putOperation(accepted);
     const operation = await this.watch(client, accepted);
     this.scheduleRefresh();

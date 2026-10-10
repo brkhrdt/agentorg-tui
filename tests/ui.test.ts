@@ -17,12 +17,12 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   const modifications: any[] = [];
   const catalog = [{ name: 'alpha', description: 'Alpha instructions', gitUrl: 'https://github.com/org/alpha' }];
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [], capabilities: { skills: true } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq, agents: [child, root], operations: [], capabilities: { plugins: { skills: { settingsNamespace: 'skills', endpoints: { list: 'skills.list', add: 'skills.add' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: catalog });
     else if (request.method === 'skills.add') { catalog.push({ ...request.params, description: 'Beta instructions' }); respond(socket, request.id, catalog.at(-1)); }
     else if (request.method === 'agent.modify') {
       modifications.push(request.params);
-      child.settings.skills = request.params.settings.skills;
+      child.settings.extensions = request.params.settings.extensions;
       child.revision++;
       respond(socket, request.id, { ...operation('completed'), id: 'skills-change', type: 'agent.modify', agentId: child.id });
     }
@@ -118,7 +118,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await visible('unavailable  alpha');
     keys('i'); await visible('installed    alpha');
     keys('\r'); await waitFor(() => modifications.length === 1);
-    expect(modifications[0]).toEqual({ agentId: 'worker', expectedRevision: 1, settings: { skills: { alpha: 'installed' } } });
+    expect(modifications[0]).toEqual({ agentId: 'worker', expectedRevision: 1, settings: { extensions: { skills: { alpha: 'installed' } } } });
     await visible('LATEST TRACKED EVENT');
     await new Promise(resolve => setTimeout(resolve, 250));
     keys('s'); await visible('Skills · worker');
