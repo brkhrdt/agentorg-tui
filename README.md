@@ -158,6 +158,29 @@ shows failures, and refreshes state even after partial failures. Lifecycle
 mutations are never automatically retried after disconnect/timeout; inspect the
 tree and retained operation events before retrying an unknown outcome.
 
+### Plugin-advertised settings fields
+
+The server can advertise `capabilities.settingsEditors[namespace].fields` from a
+plugin's `registerSettings({ namespace, validate, ui: { fields } })`. The TUI
+adds those fields to the agent editor automatically—no client plugin code or
+endpoint-specific UI is needed. Supported editors are text, number, boolean,
+string/object maps, string lists, single directories/file paths, and directory/
+file-path lists. Fields bind to top-level keys in `settings.extensions[namespace]`.
+
+For example, `{ key: "inputs", label: "Input files", editor: "paths" }` reuses
+the list editor and server file suggestions. Tab inserts files **without** a
+trailing slash; directories descend as in cwd. `sensitive: true` masks values in
+lists and the agent editor. Complex map values show counts until explicitly
+opened. Numbers/booleans validate before staging; errors retain the input.
+
+Only edited fields are sent, as a complete namespace replacement preserving
+unexposed siblings and the revision captured at open. Untouched absent fields
+are not silently added. Do not edit the same namespace through both advertised
+fields and raw extensions in one draft; ambiguous saves are rejected. Unknown
+editor kinds are ignored; old servers retain the structured extensions editor.
+Podman keeps its specialized image-scope confirmation and avoids duplicate grant
+fields. See the [server contract](../agentorg/EXTENSIONS.md#reusable-client-settings-editors).
+
 ### Skills: `s` (optional plugin)
 
 The client discovers the plugin-owned descriptor in `organization.snapshot.capabilities.plugins.skills` (advertised endpoints and settings namespace); older or disabled servers show no skills action and receive no skills requests. Select an agent and press `s` to see the catalog, descriptions and its selection. ↑/↓ selects a skill; Space cycles states; `i` installs, `a` makes available for delegation, and `u` marks unavailable. **Enter saves the complete replacement** with the revision captured when the editor opened; Escape discards the draft. Active targets may restart. On revision conflict, Escape and reopen to refresh instead of overwriting another client's changes.
@@ -254,4 +277,8 @@ in a pseudo-terminal via `script` (util-linux) and checks the rendered screen
 using a headless terminal emulator, including selection highlight, `v f`, `v l`,
 live events, interrupting tree/chat prompts, Escape navigation, empty-tree root
 creation, child creation, revision-fenced edits, conflicts, lifecycle confirmation,
-and start/stop/restart/subtree/session/removal actions.
+and start/stop/restart/subtree/session/removal actions. Additional PTY tests cover
+contextual key discovery and immediate invocation, text/shortcut isolation,
+masked environment filtering/forms, collection stage/save/cancel and validation,
+Podman directory grant completion, stale suggestions, and a future fixture
+plugin's advertised lists, file paths, sensitive fields, and typed scalars.

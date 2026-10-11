@@ -4,7 +4,7 @@ import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './r
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js';
-import { StructuredEditor, collection, parseTyped, valueText, valueType, type ValueType } from './structured-editor.js';
+import { StructuredEditor, collection, parseTyped, previewValue, valueText, valueType, type ValueType } from './structured-editor.js';
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
 
@@ -51,6 +51,7 @@ export class UI {
   private structured?: StructuredEditor;
   private structuredField?: AgentField;
   private structuredIndex = 0;
+  private entryIndex = 0;
   private entry: { id?: string; key: string; text: string; type: ValueType } = { key: '', text: '', type: 'string' };
   private notice = blessed.box({ parent: this.screen, bottom: 1, height: 1, tags: false, style: { fg: 'yellow' } });
   private footer = blessed.box({ parent: this.screen, bottom: 0, height: 1, tags: false, style: { fg: 'black', bg: 'white' } });
@@ -251,7 +252,7 @@ export class UI {
       action('d', 'Remove selected entry from draft', () => { const entry = this.structured?.entries()[this.menuIndex]; if (entry) { this.structured!.remove(entry.id); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); } }),
       action('/', 'Filter (all keys become text)', () => { this.input.setValue(this.structured!.filter); this.setView('structured-filter'); }),
       action('S', 'Stage list / map in agent draft', () => this.stageStructured()),
-      action('J', 'Advanced raw JSON', () => { this.input.setValue(this.structured!.serialize()); this.setView('structured-raw'); }),
+      action('J', 'Advanced raw JSON', () => { this.entryIndex = this.menuIndex; this.input.setValue(this.structured!.serialize()); this.setView('structured-raw'); }),
       action('escape', 'Discard list / map draft', () => this.returnAgentField()),
     ];
     if (this.view === 'entry-type') return (['string', 'number', 'boolean', 'null', 'json'] as const).map((type, index) => action(['s', 'n', 'b', 'z', 'j'][index]!, type, () => this.selectEntryType(type))).concat([action('enter', 'Choose selected type', choose), action('escape', 'Discard entry', () => this.returnStructured())]);
@@ -327,7 +328,7 @@ export class UI {
     }
     const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
     this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
-    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled);
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
@@ -374,7 +375,7 @@ export class UI {
       } catch (error) { this.showNotice(`${this.editField}: ${(error as Error).message}`); }
       return;
     }
-    this.input.setValue(this.editField === 'cwd' && this.session.pathCompletion && value && !value.endsWith('/') ? `${value}/` : value);
+    this.input.setValue((this.editField === 'cwd' || this.editor.spec(this.editField).editor === 'directory') && this.session.pathCompletion && value && !value.endsWith('/') ? `${value}/` : value);
     this.setView('agent-field');
     if (this.isPathInput()) this.refreshPaths();
   }
@@ -382,18 +383,19 @@ export class UI {
     this.setView('agent-edit'); this.menuIndex = this.structuredIndex; this.draw();
   }
   private returnStructured(): void {
-    const index = this.menuIndex;
+    const index = this.view === 'structured-filter' ? this.menuIndex : this.entryIndex;
     this.setView('structured'); this.menuIndex = index; this.draw();
   }
   private stageStructured(): void {
     if (!this.editor || !this.structured || !this.structuredField) return;
-    this.editor.values[this.structuredField] = this.structured.serialize();
+    this.editor.stage(this.structuredField, this.structured.serialize());
     this.returnAgentField();
   }
   private openEntry(add: boolean): void {
     if (!this.structured) return;
     const selected = add ? undefined : this.structured.entries()[this.menuIndex];
     if (!add && !selected) return;
+    this.entryIndex = this.menuIndex;
     this.entry = { id: selected?.id, key: selected?.key ?? '', text: selected ? valueText(selected.value) : '', type: selected ? valueType(selected.value) : 'string' };
     const pathEntry = ['directories', 'paths'].includes(this.structured.spec.editor);
     const text = pathEntry ? this.entry.text || this.pathBase : this.entry.text;
@@ -407,11 +409,11 @@ export class UI {
     this.setView('entry-value');
   }
   private isPathInput(): boolean {
-    return this.session.pathCompletion && ((this.view === 'agent-field' && this.editField === 'cwd') ||
+    return this.session.pathCompletion && ((this.view === 'agent-field' && (this.editField === 'cwd' || ['directory', 'path'].includes(this.editor?.spec(this.editField!).editor ?? ''))) ||
       (this.view === 'entry-value' && ['directories', 'paths'].includes(this.structured?.spec.editor ?? '')));
   }
   private pathKind(): 'directory' | 'any' {
-    return this.view === 'entry-value' && this.structured?.spec.editor === 'paths' ? 'any' : 'directory';
+    return (this.view === 'entry-value' && this.structured?.spec.editor === 'paths') || (this.view === 'agent-field' && this.editField && this.editor?.spec(this.editField).editor === 'path') ? 'any' : 'directory';
   }
   private refreshPaths(): void {
     const request = ++this.pathRequest;
@@ -566,7 +568,10 @@ export class UI {
         const editor = this.editor;
         this.sending = true;
         try {
-          const result = await this.session.completePath(value, this.pathBase, 'directory', true);
+          const kind = this.pathKind();
+          if (!value.trim() && this.editField !== 'cwd') throw new Error('Path cannot be blank');
+          const result = await this.session.completePath(value, this.pathBase, kind, this.editField === 'cwd');
+          if (this.editField !== 'cwd' && kind === 'directory' && !result.isDirectory) throw new Error('Choose an existing server directory');
           if (this.closing || this.editor !== editor || !this.isPathInput()) return;
           value = result.path;
           this.notice.setContent('');
@@ -579,7 +584,10 @@ export class UI {
         } finally { this.sending = false; }
       }
       if (['harness', 'provider', 'model'].includes(this.editField)) this.editor.select(this.editField as 'harness' | 'provider' | 'model', value);
-      else this.editor.values[this.editField] = value;
+      else {
+        try { this.editor.stage(this.editField, value); }
+        catch (error) { this.showNotice(`${this.editor.label(this.editField)}: ${(error as Error).message}`); this.input.focus(); this.input.readInput(); return; }
+      }
       const index = this.editor.fields.indexOf(this.editField);
       this.setView('agent-edit'); this.menuIndex = index; this.draw();
       return;
@@ -623,15 +631,16 @@ export class UI {
     const width = Math.max(1, Number(this.screen.width));
     const store = this.session.store;
     const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
-    const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${this.structuredField} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; agent Save applies` :
-      this.view === 'structured-raw' ? `Edit ${this.structuredField} · advanced JSON` :
-      this.view === 'entry-type' ? `Edit ${this.structuredField} · value type` :
-      this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${this.structuredField} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
+    const structuredLabel = this.structuredField ? this.editor?.label(this.structuredField) : '';
+    const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; agent Save applies` :
+      this.view === 'structured-raw' ? `Edit ${structuredLabel} · advanced JSON` :
+      this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
+      this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${structuredLabel} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
       this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
-      this.view === 'agent-field' ? `Edit ${this.editField} · ${['metadata', 'env', 'options', 'extensions'].includes(this.editField ?? '') ? 'JSON object' : ['readOnlyDirs', 'readWriteDirs'].includes(this.editField ?? '') ? 'JSON array of paths' : this.editField === 'containerImage' ? 'blank inherits image' : 'text'}` :
+      this.view === 'agent-field' ? `Edit ${this.editor?.label(this.editField!)} · ${this.editField === 'containerImage' ? 'blank inherits image' : this.editor?.spec(this.editField!).editor}` :
       this.view === 'harness-options' ? `Select ${this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
       this.view === 'image-scope' ? 'Image change · choose which agents to update' :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
@@ -646,7 +655,7 @@ export class UI {
       this.menuIndex = Math.max(0, Math.min(this.menuIndex, entries.length - 1));
       this.updating = true;
       this.menu.bottom = this.view === 'structured-filter' ? 5 : 2;
-      this.menu.setItems(entries.length ? entries.map(entry => clip(this.structured!.isMap ? `${entry.key}=${this.structured!.spec.sensitive ? '••••' : valueText(entry.value)}` : String(entry.value), width - 1)) : ['No matching entries']);
+      this.menu.setItems(entries.length ? entries.map(entry => clip(this.structured!.isMap ? `${entry.key}=${this.structured!.spec.sensitive ? '••••' : previewValue(entry.value)}` : String(entry.value), width - 1)) : ['No matching entries']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.view === 'structured-filter' ? ' Filter: type freely · ↑↓ select · Enter edit · Ctrl+U clear · Esc actions' : ' ↑↓ select  a add  e edit  d delete  / filter  S stage  J raw  Esc discard');
     } else if (this.view === 'entry-type') {
@@ -694,7 +703,7 @@ export class UI {
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${collection(this.editor!.spec(field).editor) ? (this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : '(structured; Enter to edit)') : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
+        [...AGENT_FIELDS.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
@@ -740,13 +749,15 @@ export class UI {
         this.chat.setContent(content); this.lastChat = content;
         if (this.follow) this.chat.setScrollPerc(100); else this.chat.setScroll(scroll);
       }
-      this.footer.setContent(' Enter interrupt/send   PgUp/PgDn scroll   Ctrl+End follow   Esc tree');
+      this.footer.setContent(' Text: Enter interrupt/send  PgUp/PgDn scroll  Ctrl+Home top  Ctrl+End follow  Ctrl+U clear  Esc tree');
     } else if (this.view === 'agent-field') {
       this.footer.setContent(this.isPathInput() ?
-        ' ↑↓ select   Tab complete / descend   Space / Enter stage cwd   Ctrl+U clear   Esc discard' :
+        ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :
         ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
+    } else if (this.view === 'skill-add') {
+      this.footer.setContent(' Catalog JSON entry · Enter validate / add  Ctrl+U clear  Esc cancel · no automatic retries');
     } else {
-      this.footer.setContent(' > Type a message · Enter sends (cancels active/queued work) · Esc cancels');
+      this.footer.setContent(' Text: Enter interrupt/send (cancels active/queued work)  Ctrl+U clear  Esc cancel');
     }
     if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);
     this.screen.render();

@@ -1,9 +1,9 @@
 import type { Agent } from './protocol.js';
-import type { FieldSpec } from './structured-editor.js';
+import { StructuredEditor, collection, parseTyped, valueText, type PluginField, type FieldSpec } from './structured-editor.js';
 
 export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
 export const PODMAN_FIELDS = ['containerImage', 'readOnlyDirs', 'readWriteDirs'] as const;
-export type AgentField = typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number];
+export type AgentField = typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
 export type ImageScope = 'node' | 'inherited' | 'all';
 const maps = new Set<AgentField>(['metadata', 'env', 'options', 'extensions']);
 
@@ -15,9 +15,15 @@ export class AgentEditor {
   readonly revision?: number;
   readonly fields: readonly AgentField[];
   private readonly podmanEnabled: boolean;
-  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false) {
+  private readonly pluginSpecs = new Map<AgentField, PluginField>();
+  private readonly explicit = new Set<AgentField>();
+  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = []) {
     this.podmanEnabled = podmanEnabled || !!agent?.settings.extensions?.podman;
-    this.fields = this.podmanEnabled ? [...AGENT_FIELDS, ...PODMAN_FIELDS] : AGENT_FIELDS;
+    for (const spec of pluginFields) {
+      if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs'].includes(spec.key)) continue;
+      this.pluginSpecs.set(`plugin:${spec.namespace}:${spec.key}`, { ...spec });
+    }
+    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled ? PODMAN_FIELDS : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
@@ -28,9 +34,29 @@ export class AgentEditor {
     this.values.containerImage = podman?.image ?? '';
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
+    for (const [field, spec] of this.pluginSpecs) {
+      const extensions = agent?.settings.extensions;
+      const namespace = extensions && Object.hasOwn(extensions, spec.namespace) ? extensions[spec.namespace] : undefined;
+      const value = namespace && typeof namespace === 'object' && !Array.isArray(namespace) && Object.hasOwn(namespace, spec.key) ? (namespace as Record<string, unknown>)[spec.key] : undefined;
+      this.values[field] = value === undefined ? this.empty(spec) : collection(spec.editor) ? JSON.stringify(value) : valueText(value);
+    }
     this.original = { ...this.values };
   }
+  private empty(spec: FieldSpec): string {
+    return spec.editor.endsWith('-map') ? '{}' : collection(spec.editor) ? '[]' : spec.editor === 'number' ? '0' : spec.editor === 'boolean' ? 'false' : '';
+  }
+  label(field: AgentField): string {
+    const spec = this.pluginSpecs.get(field);
+    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field;
+  }
+  stage(field: AgentField, text: string): void {
+    const spec = this.pluginSpecs.get(field);
+    if (spec && ['number', 'boolean'].includes(spec.editor)) parseTyped(text, spec.editor as 'number' | 'boolean');
+    this.values[field] = text;
+    if (spec) this.explicit.add(field);
+  }
   spec(field: AgentField): FieldSpec {
+    if (this.pluginSpecs.has(field)) return this.pluginSpecs.get(field)!;
     if (field === 'env') return { editor: 'string-map', sensitive: true };
     if (maps.has(field)) return { editor: 'object-map' };
     if (['readOnlyDirs', 'readWriteDirs'].includes(field)) return { editor: 'directories' };
@@ -79,6 +105,25 @@ export class AgentEditor {
       const extensions = (settings.extensions ?? JSON.parse(this.values.extensions)) as Record<string, unknown>;
       if (this.agentId && this.values.extensions !== this.original.extensions && Object.hasOwn(extensions, 'podman')) throw new Error('Edit Podman fields or extensions.podman, not both');
       settings.extensions = { ...extensions, podman: { image: this.values.containerImage.trim() || null, readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs') } };
+    }
+    const originalExtensions = JSON.parse(this.original.extensions) as Record<string, unknown>;
+    const rawExtensions = JSON.parse(this.values.extensions) as Record<string, unknown>;
+    for (const [field, spec] of this.pluginSpecs) {
+      const prior = Object.hasOwn(originalExtensions, spec.namespace) ? originalExtensions[spec.namespace] : undefined;
+      const present = prior && typeof prior === 'object' && !Array.isArray(prior) && Object.hasOwn(prior, spec.key);
+      if (this.values[field] === this.original[field] && (present || !this.explicit.has(field))) continue;
+      if (this.values.extensions !== this.original.extensions && Object.hasOwn(rawExtensions, spec.namespace)) throw new Error(`Edit ${spec.namespace} fields or extensions.${spec.namespace}, not both`);
+      if (prior !== undefined && (!prior || typeof prior !== 'object' || Array.isArray(prior))) throw new Error(`${spec.namespace} is not an object; use extensions raw editing`);
+      const text = this.values[field];
+      let value: unknown;
+      try {
+        value = collection(spec.editor) ? JSON.parse(text) : parseTyped(text, ['number', 'boolean'].includes(spec.editor) ? spec.editor as 'number' | 'boolean' : 'string');
+        if (collection(spec.editor)) new StructuredEditor(spec, text);
+      } catch (error) { throw new Error(`${this.label(field)}: ${(error as Error).message}`); }
+      const extensions = (settings.extensions ?? {}) as Record<string, unknown>;
+      const namespace = { ...(Object.hasOwn(extensions, spec.namespace) ? extensions[spec.namespace] : prior ?? {}) as Record<string, unknown> };
+      Object.defineProperty(namespace, spec.key, { value, enumerable: true, configurable: true, writable: true });
+      settings.extensions = { ...extensions, [spec.namespace]: namespace };
     }
     if (!this.agentId || Object.keys(settings).length) params.settings = settings;
     if (this.agentId && Object.keys(params).length === 2) throw new Error('No changes to save');

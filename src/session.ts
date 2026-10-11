@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates } from './protocol.js';
 import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
+import { pluginFields, type PluginField } from './structured-editor.js';
 import type { PathCompletion } from './path-input.js';
 
 export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | 'agent.restart' | 'agent.restart_subtree' | 'agent.replace_session' | 'agent.remove';
@@ -19,6 +20,7 @@ export class Session extends EventEmitter {
   serverCwd = '';
   pathCompletion = false;
   podmanEnabled = false;
+  settingsFields: PluginField[] = [];
   private podmanModify = '';
   async completePath(input: string, base: string, kind: 'directory' | 'any' = 'directory', create = false): Promise<PathCompletion> {
     if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
@@ -48,6 +50,7 @@ export class Session extends EventEmitter {
     return (this.store.agents.get(agentId)?.settings.extensions?.[this.skillsNamespace] ?? {}) as SkillStates;
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
+    this.settingsFields = pluginFields(snapshot.capabilities?.settingsEditors);
     this.serverCwd = snapshot.capabilities?.cwd ?? '';
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();

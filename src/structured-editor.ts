@@ -1,7 +1,26 @@
-export type EditorKind = 'text' | 'number' | 'boolean' | 'string-map' | 'object-map' | 'list' | 'directories' | 'paths';
+export type EditorKind = 'text' | 'number' | 'boolean' | 'string-map' | 'object-map' | 'list' | 'directory' | 'path' | 'directories' | 'paths';
 export interface FieldSpec { editor: EditorKind; label?: string; sensitive?: boolean }
+export interface PluginField extends FieldSpec { namespace: string; key: string }
+const kinds: EditorKind[] = ['text', 'number', 'boolean', 'string-map', 'object-map', 'list', 'directory', 'path', 'directories', 'paths'];
+/** Ignore unsupported/malformed hints from newer servers; never run plugin code. */
+export function pluginFields(value: unknown): PluginField[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const result: PluginField[] = [];
+  for (const [namespace, descriptor] of Object.entries(value).slice(0, 128)) {
+    if (!/^[a-z][a-z0-9.-]*$/.test(namespace) || !descriptor || typeof descriptor !== 'object') continue;
+    const fields = (descriptor as { fields?: unknown }).fields;
+    if (!Array.isArray(fields)) continue;
+    const seen = new Set<string>();
+    for (const field of fields.slice(0, 128)) {
+      if (!field || typeof field !== 'object' || typeof field.key !== 'string' || field.key.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(field.key) || seen.has(field.key) || !kinds.includes(field.editor)) continue;
+      seen.add(field.key);
+      result.push({ namespace, key: field.key, editor: field.editor, ...(typeof field.label === 'string' && field.label.length > 0 && field.label.length <= 128 && { label: field.label }), ...(field.sensitive === true && { sensitive: true }) });
+    }
+  }
+  return result;
+}
 export type ValueType = 'string' | 'number' | 'boolean' | 'null' | 'json';
-export const collection = (kind: EditorKind): boolean => !['text', 'number', 'boolean'].includes(kind);
+export const collection = (kind: EditorKind): boolean => !['text', 'number', 'boolean', 'directory', 'path'].includes(kind);
 export function parseTyped(text: string, type: ValueType): unknown {
   if (type === 'string') return text;
   let value: unknown;
@@ -12,6 +31,11 @@ export function parseTyped(text: string, type: ValueType): unknown {
 }
 export function valueType(value: unknown): ValueType {
   return value === null ? 'null' : ['string', 'number', 'boolean'].includes(typeof value) ? typeof value as ValueType : 'json';
+}
+export function previewValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.length} entries; edit to inspect]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).length} fields; edit to inspect}`;
+  return valueText(value);
 }
 export function valueText(value: unknown): string { return typeof value === 'string' ? value : JSON.stringify(value); }
 
