@@ -1,7 +1,6 @@
 # Agent Organization TUI
 
-A standalone **Bun** terminal client for the Unix-socket API in
-[`client_spec.md`](client_spec.md). No imports from or changes to the server repo.
+A standalone **Bun** terminal client for the Agent Organization Unix-socket API. No runtime imports from the server repo.
 
 ## Run
 
@@ -100,8 +99,23 @@ optional on creation (omit it to use the harness default).
 Press `n` with an agent selected to create its child; if selection is momentarily
 missing while agents exist, the root is used as the parent rather than submitting
 a duplicate root. Child drafts copy the parent's harness/model/provider; other
-settings are not inherited. If the server's optional `cwd` plugin is enabled,
-enter an existing strict subdirectory of the parent's cwd for each child.
+settings are not inherited, except cwd's browsing default.
+
+On servers advertising path completion, cwd starts at the parent's cwd for a
+child, or the server startup cwd for a root. Editing cwd raises the input and
+shows up to **five directory suggestions below it**. Typing fuzzy-filters the
+last path component; ↑/↓ selects, **Tab inserts the selected directory with `/`**
+and lists its children. **Space or Enter stages the current path** (not merely
+the highlighted suggestion); Escape discards the field edit. Ctrl+U clears it.
+Relative paths, `../`, absolute paths, `~/`, and directory symlinks work against
+the server filesystem. Dot-directories appear when the last component starts
+with `.`. Directories containing spaces can be inserted with Tab. Submitting a nonexistent
+path creates the requested directories recursively. Older servers retain manual entry.
+
+If the server's optional `cwd` plugin is enabled, the parent's prefilled cwd is
+only a browsing starting point: choose an existing **strict subdirectory** before
+saving a child. The server still enforces containment (including symlinks).
+Composer/chat path completion is not enabled.
 
 Modification sends only changed fields and the revision captured when opened.
 On `CONFLICT`, discard and reopen to refresh; it never overwrites automatically.
@@ -128,7 +142,7 @@ The client discovers the plugin-owned descriptor in `organization.snapshot.capab
 
 Press `+` in the skills editor to add a catalog skill using JSON, e.g. `{"name":"alpha","gitUrl":"https://github.com/org/alpha"}`. The root `SKILL.md` must declare that same name. Catalog additions can take a minute; disconnect/timeouts have unknown outcomes and are never retried automatically. Inspect the catalog before retrying.
 
-Public-client installed/available grants add availability to ancestors without installing there. Removal/downgrade retains earlier grants and preserved working copies. Selected `installed` is not a guarantee of filesystem readiness: inspect operation errors and `skills.error` events. Selections live in `settings.extensions` under the discovered namespace. Legacy `settings.skills` migrates on servers with the plugin enabled; raw records are retained when disabled. See [the plugin-owned API contract](../agentorg-plugin-skills/README.md) and [generic client discovery](client_spec.md#14-optional-plugin-features).
+Public-client installed/available grants add availability to ancestors without installing there. Removal/downgrade retains earlier grants and preserved working copies. Selected `installed` is not a guarantee of filesystem readiness: inspect operation errors and `skills.error` events. Selections live in `settings.extensions` under the discovered namespace. Legacy `settings.skills` migrates on servers with the plugin enabled; raw records are retained when disabled. See [the plugin-owned API contract](../agentorg-plugin-skills/README.md) for plugin-owned skill behavior.
 
 ### Event filters: `v f`
 
