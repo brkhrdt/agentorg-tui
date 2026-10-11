@@ -7,6 +7,7 @@ import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js
 import { StructuredEditor, collection, parseTyped, previewValue, valueText, valueType, type ValueType } from './structured-editor.js';
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
+import { filterVolumes } from './volume-input.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
 type View = 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
@@ -128,10 +129,24 @@ export class UI {
       },
       changed: () => this.refreshPaths(),
     });
+    enablePathKeys(this.input, {
+      active: () => this.isVolumeInput(), acceptSpace: false,
+      move: delta => {
+        if (!this.pathCandidates.length) return;
+        this.pathIndex = (this.pathIndex + delta + this.pathCandidates.length) % this.pathCandidates.length;
+        this.paths.select(this.pathIndex); this.screen.render();
+      },
+      complete: () => {
+        const choice = this.pathCandidates[this.pathIndex];
+        if (choice) this.input.setValue(choice.path);
+      },
+      changed: () => this.refreshVolumes(),
+    });
     this.input.key('C-u', () => {
       if (!this.sending) {
         this.input.setValue('');
         if (this.isPathInput()) this.refreshPaths();
+        if (this.isVolumeInput()) this.refreshVolumes();
         if (this.view === 'structured-filter') { this.structured!.filter = ''; this.menuIndex = 0; this.draw(); }
         this.screen.render();
       }
@@ -253,7 +268,7 @@ export class UI {
       action('d', 'Remove selected entry from draft', () => { const entry = this.structured?.entries()[this.menuIndex]; if (entry) { this.structured!.remove(entry.id); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); } }),
       action('/', 'Filter (all keys become text)', () => { this.input.setValue(this.structured!.filter); this.setView('structured-filter'); }),
       action('S', 'Stage list / map in agent draft', () => this.stageStructured()),
-      action('J', 'Advanced raw JSON', () => { this.entryIndex = this.menuIndex; this.input.setValue(this.structured!.serialize()); this.setView('structured-raw'); }),
+      ...(!this.isVolumeField() ? [action('J', 'Advanced raw JSON', () => { this.entryIndex = this.menuIndex; this.input.setValue(this.structured!.serialize()); this.setView('structured-raw'); })] : []),
       action('escape', 'Discard list / map draft', () => this.returnAgentField()),
     ];
     if (this.view === 'entry-type') return (['string', 'number', 'boolean', 'null', 'json'] as const).map((type, index) => action(['s', 'n', 'b', 'z', 'j'][index]!, type, () => this.selectEntryType(type))).concat([action('enter', 'Choose selected type', choose), action('escape', 'Discard entry', () => this.returnStructured())]);
@@ -329,7 +344,7 @@ export class UI {
     }
     const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
     this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
-    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields);
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
@@ -403,6 +418,7 @@ export class UI {
     this.input.setValue(this.structured.isMap ? this.entry.key : pathEntry && this.structured.spec.editor === 'directories' && text && !text.endsWith('/') ? `${text}/` : text);
     this.setView(this.structured.isMap ? 'entry-key' : 'entry-value');
     if (this.isPathInput()) this.refreshPaths();
+    if (this.isVolumeInput()) this.refreshVolumes();
   }
   private selectEntryType(type: ValueType): void {
     this.entry.type = type;
@@ -412,6 +428,30 @@ export class UI {
   private isPathInput(): boolean {
     return this.session.pathCompletion && ((this.view === 'agent-field' && (this.editField === 'cwd' || ['directory', 'path'].includes(this.editor?.spec(this.editField!).editor ?? ''))) ||
       (this.view === 'entry-value' && ['directories', 'paths'].includes(this.structured?.spec.editor ?? '')));
+  }
+  private isVolumeField(): boolean { return ['readOnlyVolumes', 'readWriteVolumes'].includes(this.structuredField ?? ''); }
+  private isVolumeInput(): boolean { return this.view === 'entry-value' && this.isVolumeField(); }
+  private refreshVolumes(): void {
+    const request = ++this.pathRequest;
+    if (this.pathTimer) clearTimeout(this.pathTimer);
+    this.pathCandidates = []; this.pathIndex = 0;
+    this.paths.setItems(['Loading eligible volumes…']); this.screen.render();
+    const query = this.input.getValue(), editor = this.structured;
+    this.pathTimer = setTimeout(async () => {
+      this.pathTimer = undefined;
+      if (!this.isVolumeInput() || request !== this.pathRequest) return;
+      try {
+        const choices = filterVolumes(await this.session.listVolumes(), query, this.structuredField === 'readWriteVolumes');
+        if (this.closing || !this.isVolumeInput() || request !== this.pathRequest || this.structured !== editor) return;
+        this.pathCandidates = choices.map(choice => ({ name: choice.name, path: choice.name, kind: 'file' }));
+        this.paths.setItems(choices.length ? choices.map(choice => clip(`${choice.name} → ${choice.destination}${choice.description ? ` · ${choice.description}` : ''}`, Number(this.screen.width) - 1)) : ['No matching eligible volumes']);
+        this.paths.select(0); this.screen.render();
+      } catch (error) {
+        if (!this.closing && this.isVolumeInput() && request === this.pathRequest) {
+          this.paths.setItems([clip((error as Error).message, Number(this.screen.width) - 1)]); this.screen.render();
+        }
+      }
+    }, 75);
   }
   private pathKind(): 'directory' | 'any' {
     return (this.view === 'entry-value' && this.structured?.spec.editor === 'paths') || (this.view === 'agent-field' && this.editField && this.editor?.spec(this.editField).editor === 'path') ? 'any' : 'directory';
@@ -517,8 +557,8 @@ export class UI {
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
     this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide();
     this.menu.bottom = 2;
-    this.input.bottom = this.isPathInput() ? 7 : 2;
-    if (this.isPathInput()) this.paths.show();
+    this.input.bottom = this.isPathInput() || this.isVolumeInput() ? 7 : 2;
+    if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
     } else if (['structured', 'entry-type', 'keys', 'view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
@@ -545,6 +585,11 @@ export class UI {
           if (this.structured.spec.editor === 'object-map') this.setView('entry-type');
           else this.selectEntryType('string');
         } else {
+          if (this.isVolumeInput()) {
+            const choice = this.pathCandidates[this.pathIndex];
+            if (!choice) throw new Error('Choose an eligible server volume; discovery must succeed before staging');
+            value = choice.path;
+          }
           if (this.isPathInput()) {
             if (!value.trim()) throw new Error('Path cannot be blank');
             const editor = this.structured;
@@ -662,7 +707,7 @@ export class UI {
       this.menu.bottom = this.view === 'structured-filter' ? 5 : 2;
       this.menu.setItems(entries.length ? entries.map(entry => clip(this.structured!.isMap ? `${entry.key}=${this.structured!.spec.sensitive ? '••••' : previewValue(entry.value)}` : String(entry.value), width - 1)) : ['No matching entries']);
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.view === 'structured-filter' ? ' Filter: type freely · ↑↓ select · Enter edit · Ctrl+U clear · Esc actions' : ' ↑↓ select  a add  e edit  d delete  / filter  S stage  J raw  Esc discard');
+      this.footer.setContent(this.view === 'structured-filter' ? ' Filter: type freely · ↑↓ select · Enter edit · Ctrl+U clear · Esc actions' : ` ↑↓ select  a add  e edit  d delete  / filter  S stage${this.isVolumeField() ? '' : '  J raw'}  Esc discard`);
     } else if (this.view === 'entry-type') {
       this.updating = true;
       this.menu.setItems(['s  String', 'n  Number', 'b  Boolean', 'z  Null', 'j  Advanced JSON value']); this.menu.select(this.menuIndex);
@@ -670,7 +715,7 @@ export class UI {
       this.footer.setContent(' s string  n number  b boolean  z null  j JSON  Enter choose  Esc discard');
     } else if (this.view === 'entry-key' || this.view === 'entry-value') {
       this.form.setContent(`Name: ${this.entry.key || '(new entry)'}\nValue: ${this.entry.text || '(empty)'}\nEditing ${this.view === 'entry-key' ? 'name' : 'value'} below; Escape discards this entry.`);
-      this.footer.setContent(this.isPathInput() ? ' ↑↓ select  Tab insert / descend  Space / Enter stage path  Ctrl+U clear  Esc discard entry' : ' Text entry · Enter next / stage entry  Ctrl+U clear  Esc discard entry');
+      this.footer.setContent(this.isVolumeInput() ? ' Type to fuzzy-filter · ↑↓ select · Tab complete · Enter stage volume · Esc cancel' : this.isPathInput() ? ' ↑↓ select  Tab insert / descend  Space / Enter stage path  Ctrl+U clear  Esc discard entry' : ' Text entry · Enter next / stage entry  Ctrl+U clear  Esc discard entry');
     } else if (this.view === 'structured-raw') {
       this.footer.setContent(' Advanced JSON · Enter validate and stage  Ctrl+U clear  Esc discard raw edit');
     } else if (this.view === 'keys') {

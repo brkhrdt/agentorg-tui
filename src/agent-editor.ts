@@ -2,7 +2,7 @@ import type { Agent } from './protocol.js';
 import { StructuredEditor, collection, parseTyped, valueText, type PluginField, type FieldSpec } from './structured-editor.js';
 
 export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
-export const PODMAN_FIELDS = ['containerImage', 'readOnlyDirs', 'readWriteDirs'] as const;
+export const PODMAN_FIELDS = ['containerImage', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const;
 export type AgentField = typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
 export type ImageScope = 'node' | 'inherited' | 'all';
 const maps = new Set<AgentField>(['metadata', 'env', 'options', 'extensions']);
@@ -15,25 +15,30 @@ export class AgentEditor {
   readonly revision?: number;
   readonly fields: readonly AgentField[];
   private readonly podmanEnabled: boolean;
+  private readonly volumesEnabled: boolean;
   private readonly pluginSpecs = new Map<AgentField, PluginField>();
   private readonly explicit = new Set<AgentField>();
-  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = []) {
+  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false) {
     this.podmanEnabled = podmanEnabled || !!agent?.settings.extensions?.podman;
+    const grants = agent?.settings.extensions?.podman as Record<string, unknown> | undefined;
+    this.volumesEnabled = volumesEnabled || !!grants?.readOnlyVolumes || !!grants?.readWriteVolumes;
     for (const spec of pluginFields) {
-      if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs'].includes(spec.key)) continue;
+      if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'].includes(spec.key)) continue;
       this.pluginSpecs.set(`plugin:${spec.namespace}:${spec.key}`, { ...spec });
     }
-    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled ? PODMAN_FIELDS : []), ...this.pluginSpecs.keys()];
+    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
       const value = field === 'name' ? agent?.name ?? 'agent' : field === 'metadata' ? agent?.metadata : agent?.settings[field];
       return [field, maps.has(field) ? JSON.stringify(value ?? {}) : String(value ?? '')];
     })) as Record<AgentField, string>;
-    const podman = agent?.settings.extensions?.podman as { image?: string | null; readOnlyDirs?: string[]; readWriteDirs?: string[] } | undefined;
+    const podman = agent?.settings.extensions?.podman as { image?: string | null; readOnlyDirs?: string[]; readWriteDirs?: string[]; readOnlyVolumes?: string[]; readWriteVolumes?: string[] } | undefined;
     this.values.containerImage = podman?.image ?? '';
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
+    this.values.readOnlyVolumes = JSON.stringify(podman?.readOnlyVolumes ?? []);
+    this.values.readWriteVolumes = JSON.stringify(podman?.readWriteVolumes ?? []);
     for (const [field, spec] of this.pluginSpecs) {
       const extensions = agent?.settings.extensions;
       const namespace = extensions && Object.hasOwn(extensions, spec.namespace) ? extensions[spec.namespace] : undefined;
@@ -60,6 +65,7 @@ export class AgentEditor {
     if (field === 'env') return { editor: 'string-map', sensitive: true };
     if (maps.has(field)) return { editor: 'object-map' };
     if (['readOnlyDirs', 'readWriteDirs'].includes(field)) return { editor: 'directories' };
+    if (['readOnlyVolumes', 'readWriteVolumes'].includes(field)) return { editor: 'list' };
     return { editor: 'text' };
   }
   select(field: 'harness' | 'provider' | 'model', value: string): void {
@@ -96,15 +102,16 @@ export class AgentEditor {
       else settings[field] = value;
     }
     if (this.podmanEnabled && (!this.agentId || PODMAN_FIELDS.some(field => this.values[field] !== this.original[field]))) {
-      const grants = (field: 'readOnlyDirs' | 'readWriteDirs'): string[] => {
+      const grants = (field: 'readOnlyDirs' | 'readWriteDirs' | 'readOnlyVolumes' | 'readWriteVolumes'): string[] => {
         let value: unknown;
-        try { value = JSON.parse(this.values[field]); } catch { throw new Error(`${field} must be a JSON array of paths`); }
-        if (!Array.isArray(value) || value.some(p => typeof p !== 'string' || !p.trim())) throw new Error(`${field} must be a JSON array of paths`);
+        const message = `${field} must be a JSON array of ${field.endsWith('Volumes') ? 'volume names' : 'paths'}`;
+        try { value = JSON.parse(this.values[field]); } catch { throw new Error(message); }
+        if (!Array.isArray(value) || value.some(p => typeof p !== 'string' || !p.trim())) throw new Error(message);
         return value;
       };
       const extensions = (settings.extensions ?? JSON.parse(this.values.extensions)) as Record<string, unknown>;
       if (this.agentId && this.values.extensions !== this.original.extensions && Object.hasOwn(extensions, 'podman')) throw new Error('Edit Podman fields or extensions.podman, not both');
-      settings.extensions = { ...extensions, podman: { image: this.values.containerImage.trim() || null, readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs') } };
+      settings.extensions = { ...extensions, podman: { image: this.values.containerImage.trim() || null, readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs'), ...(this.volumesEnabled && { readOnlyVolumes: grants('readOnlyVolumes'), readWriteVolumes: grants('readWriteVolumes') }) } };
     }
     const originalExtensions = JSON.parse(this.original.extensions) as Record<string, unknown>;
     const rawExtensions = JSON.parse(this.values.extensions) as Record<string, unknown>;

@@ -4,6 +4,7 @@ import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
 import type { PathCompletion } from './path-input.js';
+import type { VolumeChoice } from './volume-input.js';
 
 export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | 'agent.restart' | 'agent.restart_subtree' | 'agent.replace_session' | 'agent.remove';
 
@@ -22,6 +23,13 @@ export class Session extends EventEmitter {
   podmanEnabled = false;
   settingsFields: PluginField[] = [];
   private podmanModify = '';
+  private podmanVolumes = '';
+  get podmanVolumesEnabled(): boolean { return !!this.podmanVolumes; }
+  async listVolumes(): Promise<VolumeChoice[]> {
+    if (!this.client || !this.status.startsWith('connected') || !this.podmanVolumes) throw new Error('Server volume discovery is not available');
+    const result = await this.client.request<{ volumes: VolumeChoice[] }>(this.podmanVolumes, {});
+    return result.volumes;
+  }
   async completePath(input: string, base: string, kind: 'directory' | 'any' = 'directory', create = false): Promise<PathCompletion> {
     if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
     return this.client.request<PathCompletion>('organization.paths', { input, base, kind, limit: 5, ...(create && { create: true }) });
@@ -55,9 +63,10 @@ export class Session extends EventEmitter {
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
-    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string }; modelDiscovery?: boolean } | undefined;
+    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string }; modelDiscovery?: boolean } | undefined;
     this.podmanEnabled = typeof podman?.endpoints?.modify === 'string';
     this.podmanModify = podman?.endpoints?.modify ?? '';
+    this.podmanVolumes = podman?.endpoints?.volumes ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
