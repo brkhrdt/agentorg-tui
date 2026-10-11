@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates } from './protocol.js';
 import { Store } from './store.js';
+import type { PathCompletion } from './path-input.js';
 
 export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | 'agent.restart' | 'agent.restart_subtree' | 'agent.replace_session' | 'agent.remove';
 
@@ -14,6 +15,12 @@ export class Session extends EventEmitter {
   skills: Skill[] = [];
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
+  serverCwd = '';
+  pathCompletion = false;
+  async completePath(input: string, base: string, kind: 'directory' | 'any' = 'directory', create = false): Promise<PathCompletion> {
+    if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    return this.client.request<PathCompletion>('organization.paths', { input, base, kind, limit: 5, ...(create && { create: true }) });
+  }
   async agentChoices(field: 'provider' | 'model', values: Record<string, string>): Promise<{ value: string; label: string }[]> {
     const client = this.client;
     if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
@@ -38,6 +45,8 @@ export class Session extends EventEmitter {
     return (this.store.agents.get(agentId)?.settings.extensions?.[this.skillsNamespace] ?? {}) as SkillStates;
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
+    this.serverCwd = snapshot.capabilities?.cwd ?? '';
+    this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;

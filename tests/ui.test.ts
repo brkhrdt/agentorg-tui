@@ -143,8 +143,20 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
   const mutations: any[] = [];
   let pending: any;
   let failEdit = false;
+  const pathRequests: any[] = [];
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [], capabilities: { harnesses: ['fixture'], modelDiscovery: ['fixture'] } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [], capabilities: { cwd: '/server/project', pathCompletion: true, harnesses: ['fixture'], modelDiscovery: ['fixture'] } });
+    else if (request.method === 'organization.paths') {
+      pathRequests.push(request.params);
+      const input = request.params.input;
+      const path = input.replace(/\/$/, '') || request.params.base;
+      const names = input.endsWith('/src/') ? ['nested'] : input.endsWith('sr') ? ['src', 'scripts'] : ['alpha', 'beta', 'charlie', 'delta', 'src'];
+      const directory = input.endsWith('sr') ? '/server/project' : path;
+      const entries = names.map(name => ({ name, path: `${directory}/${name}`, kind: 'directory' }));
+      const result = { path, isDirectory: request.params.create === true || (!input.endsWith('missing') && !input.endsWith('sr')), entries };
+      if (input.endsWith('slow')) setTimeout(() => respond(socket, request.id, { ...result, entries: [{ name: 'STALE_RESULT', path: '/stale', kind: 'directory' }] }), 500);
+      else respond(socket, request.id, result);
+    }
     else if (request.method === 'organization.providers') respond(socket, request.id, { providers: ['provider-a', 'provider-b'] });
     else if (request.method === 'organization.models') {
       expect(request.params.provider).toBe('provider-a');
@@ -212,9 +224,30 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     keys('\r'); await visible('Select provider'); keys('\r'); await visible('Create agent · root');
     down(1); keys('\r'); await visible('Select model · provider-a'); await visible('gpt-6-luna · Luna');
     keys('\r'); await visible('Create agent · root');
-    down(AGENT_FIELD_COUNT - 3); keys('\r'); await visible('coordinator'); await visible('LATEST TRACKED EVENT');
+    down(1); keys('\r'); await visible('Edit cwd'); await visible('charlie/');
+    expect(screen()).toContain('/server/project/');
+    expect(terminal.buffer.active.getLine(21)?.translateToString(true)).toContain('/server/project/');
+    for (const [index, name] of ['alpha', 'beta', 'charlie', 'delta', 'src'].entries())
+      expect(terminal.buffer.active.getLine(23 + index)?.translateToString(true)).toContain(`${name}/`);
+    // Explicit acceptance creates a new directory path rather than rejecting it.
+    keys('\x15/server/project/missing\r'); await visible('Create agent · root');
+    expect(pathRequests.at(-1)).toMatchObject({ input: '/server/project/missing', create: true });
+    keys('\r'); await visible('Edit cwd');
+    keys('\x15/server/project/slow');
+    await waitFor(() => pathRequests.some(p => p.input.endsWith('slow')));
+    keys('\x15/server/project/sr'); await visible('scripts/');
+    await new Promise(resolve => setTimeout(resolve, 600));
+    expect(screen()).not.toContain('STALE_RESULT');
+    // Down selects scripts, Up returns to src; Tab descends, preserving input focus.
+    keys('\x1b[B\x1b[A\t'); await visible('/server/project/src/'); await visible('nested/');
+    keys('\t'); await visible('/server/project/src/nested/');
+    keys(' '); await visible('Create agent · root');
+    expect(screen()).toContain('/server/project/src/nested');
+    down(AGENT_FIELD_COUNT - 4); keys('\r'); await visible('coordinator'); await visible('LATEST TRACKED EVENT');
+    expect(mutations[0].params.settings.cwd).toBe('/server/project/src/nested');
     expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture', provider: 'provider-a', model: 'gpt-6-luna' } });
     keys('n'); await visible('Create agent · child');
+    expect(screen()).toContain('/server/project/src/nested/');
     await field('worker'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('  └ worker');
     expect(mutations[1].params.parentId).toBe('root');
     keys('\x1b[A'); // Back to the root after the child was selected on creation.

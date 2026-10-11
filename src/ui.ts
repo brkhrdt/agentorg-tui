@@ -5,6 +5,7 @@ import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, AGENT_FIELDS, type AgentField } from './agent-editor.js';
 import type { TreeRow } from './store.js';
+import { enablePathKeys, type PathCandidate } from './path-input.js';
 
 type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'confirm';
 
@@ -29,6 +30,15 @@ export class UI {
     parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
     border: 'line', label: ' > ', style: { border: { fg: 'cyan' } },
   });
+  private paths = blessed.list({
+    parent: this.screen, bottom: 2, height: 5, hidden: true, tags: false,
+    style: { selected: { bg: 'blue', fg: 'white' } },
+  });
+  private pathCandidates: PathCandidate[] = [];
+  private pathIndex = 0;
+  private pathBase = '';
+  private pathRequest = 0;
+  private pathTimer?: ReturnType<typeof setTimeout>;
   private menu = blessed.list({
     parent: this.screen, top: 3, bottom: 2, hidden: true,
     keys: true, vi: false, mouse: true, tags: false,
@@ -138,7 +148,28 @@ export class UI {
       else if (key.name === 'right') this.changeLevel(1);
       else this.changeLevel(0, Number(ch) as Level);
     });
-    this.input.key('C-u', () => { if (!this.sending) { this.input.setValue(''); this.screen.render(); } });
+    enablePathKeys(this.input, {
+      active: () => this.isPathInput(),
+      move: delta => {
+        if (!this.pathCandidates.length) return;
+        this.pathIndex = (this.pathIndex + delta + this.pathCandidates.length) % this.pathCandidates.length;
+        this.paths.select(this.pathIndex); this.screen.render();
+      },
+      complete: () => {
+        const choice = this.pathCandidates[this.pathIndex];
+        if (!choice) return;
+        this.input.setValue(choice.path.endsWith('/') ? choice.path : `${choice.path}/`);
+        this.refreshPaths();
+      },
+      changed: () => this.refreshPaths(),
+    });
+    this.input.key('C-u', () => {
+      if (!this.sending) {
+        this.input.setValue('');
+        if (this.isPathInput()) this.refreshPaths();
+        this.screen.render();
+      }
+    });
     this.input.on('submit', (value: string) => { void this.submit(value); });
     this.input.on('cancel', () => this.setView(this.view === 'agent-field' ? 'agent-edit' : 'tree'));
     this.input.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
@@ -216,12 +247,14 @@ export class UI {
       this.showNotice('No harnesses are enabled on this server.');
       return;
     }
-    const parent = modify ? undefined : this.createParent(target);
+    const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
+    this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
     this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
       this.editor.values.provider = String(parent?.settings.provider ?? '');
+      this.editor.values.cwd = this.pathBase ? `${this.pathBase.replace(/\/$/, '')}/` : '';
     }
     this.setView('agent-edit');
   }
@@ -251,8 +284,37 @@ export class UI {
     if (this.sending || !this.editor) return;
     this.editField = AGENT_FIELDS[this.menuIndex];
     if (!this.editField) return;
-    this.input.setValue(this.editor.values[this.editField]);
+    const value = this.editor.values[this.editField];
+    this.input.setValue(this.editField === 'cwd' && this.session.pathCompletion && value && !value.endsWith('/') ? `${value}/` : value);
     this.setView('agent-field');
+    if (this.isPathInput()) this.refreshPaths();
+  }
+  private isPathInput(): boolean {
+    return this.view === 'agent-field' && this.editField === 'cwd' && this.session.pathCompletion;
+  }
+  private refreshPaths(): void {
+    const request = ++this.pathRequest;
+    if (this.pathTimer) clearTimeout(this.pathTimer);
+    this.pathCandidates = []; this.pathIndex = 0;
+    this.notice.setContent('');
+    this.paths.setItems(['Loading directories…']);
+    this.screen.render();
+    const input = this.input.getValue(), editor = this.editor;
+    this.pathTimer = setTimeout(async () => {
+      this.pathTimer = undefined;
+      if (!this.isPathInput() || request !== this.pathRequest) return;
+      try {
+        const result = await this.session.completePath(input, this.pathBase);
+        if (this.closing || !this.isPathInput() || request !== this.pathRequest || this.editor !== editor) return;
+        this.pathCandidates = result.entries;
+        this.paths.setItems(result.entries.length ? result.entries.map(entry => clip(`${entry.name}/`, Number(this.screen.width) - 1)) : ['No matching directories']);
+        this.paths.select(0); this.screen.render();
+      } catch (error) {
+        if (!this.closing && this.isPathInput() && request === this.pathRequest) {
+          this.paths.setItems([clip((error as Error).message, Number(this.screen.width) - 1)]); this.screen.render();
+        }
+      }
+    }, 75);
   }
   private async saveAgent(): Promise<void> {
     const editor = this.editor;
@@ -320,7 +382,11 @@ export class UI {
   private setView(view: View): void {
     this.view = view;
     this.menuIndex = 0;
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide();
+    ++this.pathRequest;
+    if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide();
+    this.input.bottom = this.isPathInput() ? 7 : 2;
+    if (this.isPathInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
     } else if (['view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'confirm'].includes(view)) {
@@ -335,6 +401,22 @@ export class UI {
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
     if (this.view === 'agent-field' && this.editor && this.editField) {
+      if (this.isPathInput()) {
+        const editor = this.editor;
+        this.sending = true;
+        try {
+          const result = await this.session.completePath(value, this.pathBase, 'directory', true);
+          if (this.closing || this.editor !== editor || !this.isPathInput()) return;
+          value = result.path;
+          this.notice.setContent('');
+        } catch (error) {
+          if (!this.closing && this.editor === editor && this.isPathInput()) {
+            this.showNotice((error as Error).message);
+            this.input.focus(); this.input.readInput();
+          }
+          return;
+        } finally { this.sending = false; }
+      }
       if (['harness', 'provider', 'model'].includes(this.editField)) this.editor.select(this.editField as 'harness' | 'provider' | 'model', value);
       else this.editor.values[this.editField] = value;
       const index = AGENT_FIELDS.indexOf(this.editField);
@@ -469,7 +551,9 @@ export class UI {
       }
       this.footer.setContent(' Enter interrupt/send   PgUp/PgDn scroll   Ctrl+End follow   Esc tree');
     } else if (this.view === 'agent-field') {
-      this.footer.setContent(' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
+      this.footer.setContent(this.isPathInput() ?
+        ' ↑↓ select   Tab complete / descend   Space / Enter stage cwd   Ctrl+U clear   Esc discard' :
+        ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
     } else {
       this.footer.setContent(' > Type a message · Enter sends (cancels active/queued work) · Esc cancels');
     }
@@ -479,6 +563,8 @@ export class UI {
     if (this.closing) return;
     this.closing = true;
     if (this.drawTimer) clearTimeout(this.drawTimer);
+    if (this.pathTimer) clearTimeout(this.pathTimer);
+    ++this.pathRequest;
     this.session.close(); this.screen.destroy();
     void this.saveChain.finally(() => process.exit(0));
   }
