@@ -3,11 +3,11 @@ import type { Agent, SkillStates, SkillState } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './render.js';
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session, type LifecycleMethod } from './session.js';
-import { AgentEditor, AGENT_FIELDS, type AgentField } from './agent-editor.js';
+import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js';
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
 
-type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'confirm';
+type View = 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -99,7 +99,9 @@ export class UI {
     this.tree.key('q', () => this.close());
     this.tree.key('escape', () => {});
     this.menu.key('escape', () => {
-      if (this.view === 'harness-options') {
+      const AGENT_FIELDS = this.editor?.fields ?? [];
+      if (this.view === 'image-scope') this.setView('agent-edit');
+      else if (this.view === 'harness-options') {
         this.setView('agent-edit');
         this.menuIndex = AGENT_FIELDS.indexOf(this.optionField);
         this.draw();
@@ -109,7 +111,9 @@ export class UI {
       if (this.view === 'view') this.setView(ch === 'f' ? 'filters' : 'levels');
     });
     this.menu.key('enter', () => {
-      if (this.view === 'view') this.setView(this.menuIndex === 0 ? 'filters' : 'levels');
+      const AGENT_FIELDS = this.editor?.fields ?? [];
+      if (this.view === 'image-scope') void this.saveAgent((['node', 'inherited', 'all'] as const)[this.menuIndex]);
+      else if (this.view === 'view') this.setView(this.menuIndex === 0 ? 'filters' : 'levels');
       else if (this.view === 'levels') this.changeLevel(1);
       else if (this.view === 'skills') void this.saveSkills();
       else if (this.view === 'actions') this.chooseAction();
@@ -249,7 +253,7 @@ export class UI {
     }
     const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
     this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
-    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined);
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
@@ -259,6 +263,7 @@ export class UI {
     this.setView('agent-edit');
   }
   private async openAgentOptions(): Promise<void> {
+    const AGENT_FIELDS = this.editor?.fields ?? [];
     const editor = this.editor;
     const field = AGENT_FIELDS[this.menuIndex];
     if (!editor || this.sending || !['harness', 'provider', 'model'].includes(field ?? '')) return;
@@ -281,6 +286,7 @@ export class UI {
     } catch (error) { if (!this.closing && request === this.choicesRequest && this.editor === editor && this.view === 'agent-edit') this.showNotice((error as Error).message); }
   }
   private openField(): void {
+    const AGENT_FIELDS = this.editor?.fields ?? [];
     if (this.sending || !this.editor) return;
     this.editField = AGENT_FIELDS[this.menuIndex];
     if (!this.editField) return;
@@ -316,17 +322,21 @@ export class UI {
       }
     }, 75);
   }
-  private async saveAgent(): Promise<void> {
+  private async saveAgent(imageScope?: ImageScope): Promise<void> {
     const editor = this.editor;
     if (this.sending || !editor) return;
     let params: Record<string, unknown>;
     try { params = editor.params(); } catch (error) { this.showNotice((error as Error).message); return; }
+    if (editor.agentId && editor.imageChanged && this.session.podmanEnabled && !imageScope) { this.setView('image-scope'); return; }
     this.sending = true;
     this.showNotice('Applying agent changes · launch settings may interrupt active work…');
     try {
-      const operation = await this.session.mutate(editor.agentId ? 'agent.modify' : 'agent.create', params);
-      if (!editor.agentId && operation.agentId) this.selectedAgent = operation.agentId;
-      if (this.view === 'agent-edit' && this.editor === editor) this.setView('tree');
+      if (editor.agentId && imageScope) await this.session.modifyPodman(params, imageScope);
+      else {
+        const operation = await this.session.mutate(editor.agentId ? 'agent.modify' : 'agent.create', params);
+        if (!editor.agentId && operation.agentId) this.selectedAgent = operation.agentId;
+      }
+      if (['agent-edit', 'image-scope'].includes(this.view) && this.editor === editor) this.setView('tree');
     } catch (error) { this.showNotice((error as Error).message); }
     finally { this.sending = false; this.draw(); }
   }
@@ -389,7 +399,7 @@ export class UI {
     if (this.isPathInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
-    } else if (['view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'confirm'].includes(view)) {
+    } else if (['view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -419,7 +429,7 @@ export class UI {
       }
       if (['harness', 'provider', 'model'].includes(this.editField)) this.editor.select(this.editField as 'harness' | 'provider' | 'model', value);
       else this.editor.values[this.editField] = value;
-      const index = AGENT_FIELDS.indexOf(this.editField);
+      const index = this.editor.fields.indexOf(this.editField);
       this.setView('agent-edit'); this.menuIndex = index; this.draw();
       return;
     }
@@ -457,6 +467,7 @@ export class UI {
     }
   }
   private draw(): void {
+    const AGENT_FIELDS = this.editor?.fields ?? [];
     if (this.closing) return;
     const width = Math.max(1, Number(this.screen.width));
     const store = this.session.store;
@@ -465,8 +476,9 @@ export class UI {
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
-      this.view === 'agent-field' ? `Edit ${this.editField} · ${['metadata', 'env', 'options', 'extensions'].includes(this.editField ?? '') ? 'JSON object' : 'text'}` :
+      this.view === 'agent-field' ? `Edit ${this.editField} · ${['metadata', 'env', 'options', 'extensions'].includes(this.editField ?? '') ? 'JSON object' : ['readOnlyDirs', 'readWriteDirs'].includes(this.editField ?? '') ? 'JSON array of paths' : this.editField === 'containerImage' ? 'blank inherits image' : 'text'}` :
       this.view === 'harness-options' ? `Select ${this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
+      this.view === 'image-scope' ? 'Image change · choose which agents to update' :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
@@ -498,16 +510,17 @@ export class UI {
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
       this.footer.setContent(` ↑↓ select  Enter prompt  c chat  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
-    } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'confirm') {
+    } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => action.label) :
+        this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${field === 'env' ? '(hidden; Enter to edit)' : this.editor?.values[field] || '(omitted)'}`, width - 1)), 'Save changes']);
+        [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${field === 'env' ? '(hidden; Enter to edit)' : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
-        this.view === 'harness-options' ? ' ↑↓ select   Enter choose   Esc back' :
+        ['harness-options', 'image-scope'].includes(this.view) ? ' ↑↓ select   Enter choose   Esc back' :
         this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : ' ↑↓ action   Enter open   Esc tree');
     } else if (this.view === 'skills') {
       this.updating = true;

@@ -87,6 +87,8 @@ it. Metadata, environment, options, and extensions are JSON objects; environment
 values must be strings. Environment values are hidden in the field list but
 visible while editing. Treat other settings and raw events as sensitive too.
 
+When the server advertises the Podman plugin, the editor also includes `containerImage`, `readOnlyDirs`, and `readWriteDirs`. Directory grants are JSON arrays of existing paths; empty means no grants, not inheritance. Explicitly grant a directory covering cwd. A blank image inherits the parent's image. Saving an image change asks whether to update this node only, descendants inheriting its image, or all descendants (including explicit overrides). The client-only `podman.modify` endpoint reports partial failures; refresh rather than blindly retrying. See the [Podman plugin](../agentorg-plugin-podman/README.md).
+
 Creation starts the agent immediately. Harness choices come from the server's
 loaded plugins. For discovery-capable harnesses, Enter on provider opens its
 available providers; select a provider before opening the model picker. The

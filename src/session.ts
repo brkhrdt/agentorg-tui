@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates } from './protocol.js';
 import { Store } from './store.js';
+import type { ImageScope } from './agent-editor.js';
 import type { PathCompletion } from './path-input.js';
 
 export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | 'agent.restart' | 'agent.restart_subtree' | 'agent.replace_session' | 'agent.remove';
@@ -17,6 +18,8 @@ export class Session extends EventEmitter {
   modelDiscovery: string[] = [];
   serverCwd = '';
   pathCompletion = false;
+  podmanEnabled = false;
+  private podmanModify = '';
   async completePath(input: string, base: string, kind: 'directory' | 'any' = 'directory', create = false): Promise<PathCompletion> {
     if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
     return this.client.request<PathCompletion>('organization.paths', { input, base, kind, limit: 5, ...(create && { create: true }) });
@@ -49,6 +52,10 @@ export class Session extends EventEmitter {
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
+    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string }; modelDiscovery?: boolean } | undefined;
+    this.podmanEnabled = typeof podman?.endpoints?.modify === 'string';
+    this.podmanModify = podman?.endpoints?.modify ?? '';
+    if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
     if (!this.skillsEnabled) { this.skills = []; return; }
@@ -190,6 +197,16 @@ export class Session extends EventEmitter {
     this.scheduleRefresh();
     if (!done(operation)) throw new Error('Connection lost; skill mutation outcome unknown. Not retried.');
     if (operation.status !== 'completed') throw new Error(operation.error?.message ?? `Skill mutation ${operation.status}`);
+  }
+  async modifyPodman(params: Record<string, unknown>, imageScope: ImageScope): Promise<void> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected') || !this.podmanEnabled) throw new Error('Podman plugin is not connected');
+    try {
+      const result = await client.request<{ operations: Operation[]; errors: { agentId: string; message: string }[] }>(this.podmanModify, { ...params, imageScope }, 120_000);
+      for (const operation of result.operations) this.store.putOperation(operation);
+      if (result.errors.length) throw new Error(`Image change partially applied: ${result.errors.map(e => `${e.agentId}: ${e.message}`).join('; ')}`);
+      await this.refresh();
+    } finally { this.scheduleRefresh(); }
   }
   /** Mutations are submitted once; acceptance is not completion. */
   async mutate(method: LifecycleMethod, params: Record<string, unknown>): Promise<Operation> {
