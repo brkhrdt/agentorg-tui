@@ -122,7 +122,7 @@ export class UI {
       complete: () => {
         const choice = this.pathCandidates[this.pathIndex];
         if (!choice) return;
-        this.input.setValue(choice.path.endsWith('/') ? choice.path : `${choice.path}/`);
+        this.input.setValue(choice.kind === 'directory' && !choice.path.endsWith('/') ? `${choice.path}/` : choice.path);
         this.refreshPaths();
       },
       changed: () => this.refreshPaths(),
@@ -395,7 +395,9 @@ export class UI {
     const selected = add ? undefined : this.structured.entries()[this.menuIndex];
     if (!add && !selected) return;
     this.entry = { id: selected?.id, key: selected?.key ?? '', text: selected ? valueText(selected.value) : '', type: selected ? valueType(selected.value) : 'string' };
-    this.input.setValue(this.structured.isMap ? this.entry.key : this.entry.text);
+    const pathEntry = ['directories', 'paths'].includes(this.structured.spec.editor);
+    const text = pathEntry ? this.entry.text || this.pathBase : this.entry.text;
+    this.input.setValue(this.structured.isMap ? this.entry.key : pathEntry && this.structured.spec.editor === 'directories' && text && !text.endsWith('/') ? `${text}/` : text);
     this.setView(this.structured.isMap ? 'entry-key' : 'entry-value');
     if (this.isPathInput()) this.refreshPaths();
   }
@@ -405,7 +407,11 @@ export class UI {
     this.setView('entry-value');
   }
   private isPathInput(): boolean {
-    return this.view === 'agent-field' && this.editField === 'cwd' && this.session.pathCompletion;
+    return this.session.pathCompletion && ((this.view === 'agent-field' && this.editField === 'cwd') ||
+      (this.view === 'entry-value' && ['directories', 'paths'].includes(this.structured?.spec.editor ?? '')));
+  }
+  private pathKind(): 'directory' | 'any' {
+    return this.view === 'entry-value' && this.structured?.spec.editor === 'paths' ? 'any' : 'directory';
   }
   private refreshPaths(): void {
     const request = ++this.pathRequest;
@@ -419,10 +425,10 @@ export class UI {
       this.pathTimer = undefined;
       if (!this.isPathInput() || request !== this.pathRequest) return;
       try {
-        const result = await this.session.completePath(input, this.pathBase);
+        const result = await this.session.completePath(input, this.pathBase, this.pathKind());
         if (this.closing || !this.isPathInput() || request !== this.pathRequest || this.editor !== editor) return;
         this.pathCandidates = result.entries;
-        this.paths.setItems(result.entries.length ? result.entries.map(entry => clip(`${entry.name}/`, Number(this.screen.width) - 1)) : ['No matching directories']);
+        this.paths.setItems(result.entries.length ? result.entries.map(entry => clip(`${entry.name}${entry.kind === 'directory' ? '/' : ''}`, Number(this.screen.width) - 1)) : ['No matching directories']);
         this.paths.select(0); this.screen.render();
       } catch (error) {
         if (!this.closing && this.isPathInput() && request === this.pathRequest) {
@@ -533,6 +539,18 @@ export class UI {
           if (this.structured.spec.editor === 'object-map') this.setView('entry-type');
           else this.selectEntryType('string');
         } else {
+          if (this.isPathInput()) {
+            if (!value.trim()) throw new Error('Path cannot be blank');
+            const editor = this.structured;
+            this.sending = true;
+            try {
+              const kind = this.pathKind();
+              const result = await this.session.completePath(value, this.pathBase, kind);
+              if (this.closing || this.structured !== editor || !this.isPathInput()) return;
+              if (kind === 'directory' && !result.isDirectory) throw new Error('Choose an existing server directory (Tab inserts the suggestion)');
+              value = result.path;
+            } finally { this.sending = false; }
+          }
           this.structured.put(this.entry.id, this.entry.key, parseTyped(value, this.entry.type));
           this.returnStructured();
         }
@@ -638,7 +656,7 @@ export class UI {
       this.footer.setContent(' s string  n number  b boolean  z null  j JSON  Enter choose  Esc discard');
     } else if (this.view === 'entry-key' || this.view === 'entry-value') {
       this.form.setContent(`Name: ${this.entry.key || '(new entry)'}\nValue: ${this.entry.text || '(empty)'}\nEditing ${this.view === 'entry-key' ? 'name' : 'value'} below; Escape discards this entry.`);
-      this.footer.setContent(' Text entry · Enter next / stage entry  Ctrl+U clear  Esc discard entry');
+      this.footer.setContent(this.isPathInput() ? ' ↑↓ select  Tab insert / descend  Space / Enter stage path  Ctrl+U clear  Esc discard entry' : ' Text entry · Enter next / stage entry  Ctrl+U clear  Esc discard entry');
     } else if (this.view === 'structured-raw') {
       this.footer.setContent(' Advanced JSON · Enter validate and stage  Ctrl+U clear  Esc discard raw edit');
     } else if (this.view === 'keys') {

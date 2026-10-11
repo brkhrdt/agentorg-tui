@@ -1,0 +1,44 @@
+import { expect, test } from 'bun:test';
+import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
+import { terminalClient } from './terminal.js';
+
+test('Podman grants reuse server cwd completion for add/edit/remove without creating directories', async () => {
+  const root = agent('root', null, { name: 'directory-root', settings: { harness: 'fixture', cwd: '/project', extensions: { podman: { image: null, readOnlyDirs: ['/existing'], readWriteDirs: ['/project'] }, other: { preserved: true } } } });
+  const paths: any[] = [], changes: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { cwd: '/server/start', pathCompletion: true, harnesses: ['fixture'], plugins: { podman: { endpoints: { modify: 'podman.modify' } } } } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], latestSeq: 0 });
+    else if (request.method === 'organization.paths') {
+      paths.push(request.params);
+      const input = request.params.input;
+      const result = { path: input.replace(/\/$/, ''), isDirectory: !input.endsWith('missing'), entries: [{ name: 'src', path: '/server/start/src', kind: 'directory' }, { name: 'space dir', path: '/server/start/space dir', kind: 'directory' }] };
+      if (input.endsWith('slow')) setTimeout(() => respond(socket, request.id, { ...result, entries: [{ name: 'STALE', path: '/stale', kind: 'directory' }] }), 400);
+      else respond(socket, request.id, result);
+    } else if (request.method === 'agent.modify') { changes.push(request.params); respond(socket, request.id, operation('completed')); }
+  });
+  const ui = terminalClient(mock.path, mock.directory);
+  const { keys, visible, screen } = ui;
+  try {
+    await visible('directory-root'); keys('e'); await visible('Modify agent');
+    keys('\x1b[B'.repeat(10) + '\r'); await visible('Edit readOnlyDirs · list / map');
+    await visible('/existing'); keys('a'); await visible('Edit readOnlyDirs · value');
+    await visible('space dir/'); expect(screen()).toContain('/server/start/');
+    keys('\x15/server/start/missing\r'); await visible('Choose an existing server directory');
+    expect(screen()).toContain('/server/start/missing'); expect(paths.at(-1).create).toBeUndefined();
+    keys('\x15/server/start/slow'); await waitFor(() => paths.some(p => p.input.endsWith('slow')));
+    keys('\x15/server/start/sr'); await visible('src/');
+    keys('\t'); await visible('/server/start/src/');
+    await new Promise(resolve => setTimeout(resolve, 500)); expect(screen()).not.toContain('STALE');
+    keys(' '); await visible('Edit readOnlyDirs · list / map'); await visible('/server/start/src');
+    keys('/'); await visible('Filter: type freely'); keys('src\x1b'); await visible('filter: src');
+    keys('e'); await visible('Edit readOnlyDirs · value'); await visible('space dir/');
+    keys('\x15/server/start/s'); await waitFor(() => paths.some(p => p.input === '/server/start/s')); await visible('space dir/');
+    keys('\x1b[B\t'); await visible('/server/start/space dir/');
+    keys('\r'); await visible('No matching entries'); // Existing filter no longer matches edited path.
+    keys('/'); await visible('Filter: type freely'); keys('\x15existing\x1b'); await visible('filter: existing');
+    keys('d'); await visible('No matching entries'); keys('S'); await visible('Modify agent');
+    expect(changes).toHaveLength(0); keys('S'); await waitFor(() => changes.length === 1);
+    expect(changes[0]).toEqual({ agentId: 'root', expectedRevision: 1, settings: { extensions: { other: { preserved: true }, podman: { image: null, readOnlyDirs: ['/server/start/space dir'], readWriteDirs: ['/project'] } } } });
+    expect(paths.every(p => p.base === '/server/start' && p.kind === 'directory' && p.limit === 5 && !p.create)).toBe(true);
+  } finally { await ui.close(); await mock.close(); }
+}, 30_000);
