@@ -4,11 +4,12 @@ import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './r
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js';
+import { StructuredEditor, collection, parseTyped, valueText, valueType, type ValueType } from './structured-editor.js';
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
-type View = 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
+type View = 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -46,6 +47,11 @@ export class UI {
     style: { selected: { bg: 'blue', fg: 'white', bold: true } },
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
+  private form = blessed.box({ parent: this.screen, top: 3, height: 5, hidden: true, tags: false, border: 'line', label: ' Entry draft ', style: { border: { fg: 'cyan' } } });
+  private structured?: StructuredEditor;
+  private structuredField?: AgentField;
+  private structuredIndex = 0;
+  private entry: { id?: string; key: string; text: string; type: ValueType } = { key: '', text: '', type: 'string' };
   private notice = blessed.box({ parent: this.screen, bottom: 1, height: 1, tags: false, style: { fg: 'yellow' } });
   private footer = blessed.box({ parent: this.screen, bottom: 0, height: 1, tags: false, style: { fg: 'black', bg: 'white' } });
   private view: View = 'tree';
@@ -83,7 +89,7 @@ export class UI {
     });
     this.menu.on('select item', (_item, index) => { if (!this.updating) this.menuIndex = index; });
     for (const widget of [this.tree, this.menu]) {
-      widget.key(['?', 'r', 'x', 'R', 'p', 'd', 'c', 's', 'f', 'l', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', 'S', 'm', 'space', 'left', 'right', 'enter', 'escape'], (ch, key) => {
+      widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape'], (ch, key) => {
         const binding = ['space', 'left', 'right', 'enter', 'escape'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
         else if (this.view === 'keys') {
@@ -92,6 +98,20 @@ export class UI {
         } else this.contextActions().find(action => action.key === binding)?.run();
       });
     }
+    this.menu.on('keypress', (ch, key) => {
+      if (this.view !== 'structured' || !ch || key.ctrl || key.meta || !/^[^\x00-\x1f\x7f]$/u.test(ch) || 'aedS/?J'.includes(ch)) return;
+      this.input.setValue(ch); this.structured!.filter = ch;
+      this.setView('structured-filter');
+    });
+    enablePathKeys(this.input, {
+      active: () => this.view === 'structured-filter', acceptSpace: false,
+      move: delta => {
+        const count = this.structured?.entries().length ?? 0;
+        this.menuIndex = Math.max(0, Math.min(count - 1, this.menuIndex + delta)); this.draw();
+      },
+      complete: () => {},
+      changed: () => { this.structured!.filter = this.input.getValue(); this.menuIndex = 0; this.draw(); },
+    });
     enablePathKeys(this.input, {
       active: () => this.isPathInput(),
       move: delta => {
@@ -111,11 +131,21 @@ export class UI {
       if (!this.sending) {
         this.input.setValue('');
         if (this.isPathInput()) this.refreshPaths();
+        if (this.view === 'structured-filter') { this.structured!.filter = ''; this.menuIndex = 0; this.draw(); }
         this.screen.render();
       }
     });
+    // readInput installs its listener next tick. Preserve a fast typed/pasted
+    // filter tail during the navigation -> input transition.
+    this.input.on('keypress', (ch, key) => {
+      const input = this.input as typeof this.input & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
+      if (this.view === 'structured-filter' && !input.__listener) input._listener(ch, key);
+    });
     this.input.on('submit', (value: string) => { void this.submit(value); });
-    this.input.on('cancel', () => this.setView(this.view === 'agent-field' ? 'agent-edit' : 'tree'));
+    this.input.on('cancel', () => {
+      if (['entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
+      else this.setView(this.view === 'agent-field' ? 'agent-edit' : 'tree');
+    });
     this.input.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
       if (key.full === 'C-end') { this.follow = true; this.chat.setScrollPerc(100); }
@@ -164,7 +194,9 @@ export class UI {
   }
   private chooseMenu(): void {
     const fields = this.editor?.fields ?? [];
-    if (this.view === 'actions') this.chooseAction();
+    if (this.view === 'structured') this.openEntry(false);
+    else if (this.view === 'entry-type') this.selectEntryType((['string', 'number', 'boolean', 'null', 'json'] as const)[this.menuIndex]!);
+    else if (this.view === 'actions') this.chooseAction();
     else if (this.view === 'view') this.setView(this.menuIndex === 0 ? 'filters' : 'levels');
     else if (this.view === 'confirm') { if (this.menuIndex === 1) void this.runAction(); else this.setView('tree'); }
     else if (this.view === 'harness-options') {
@@ -214,6 +246,15 @@ export class UI {
     });
     const choose = () => this.chooseMenu();
     const cycle = () => this.cycleMenu();
+    if (this.view === 'structured') return [
+      action('a', 'Add entry', () => this.openEntry(true)), action('e', 'Edit selected entry', () => this.openEntry(false)), action('enter', 'Edit selected entry', choose),
+      action('d', 'Remove selected entry from draft', () => { const entry = this.structured?.entries()[this.menuIndex]; if (entry) { this.structured!.remove(entry.id); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); } }),
+      action('/', 'Filter (all keys become text)', () => { this.input.setValue(this.structured!.filter); this.setView('structured-filter'); }),
+      action('S', 'Stage list / map in agent draft', () => this.stageStructured()),
+      action('J', 'Advanced raw JSON', () => { this.input.setValue(this.structured!.serialize()); this.setView('structured-raw'); }),
+      action('escape', 'Discard list / map draft', () => this.returnAgentField()),
+    ];
+    if (this.view === 'entry-type') return (['string', 'number', 'boolean', 'null', 'json'] as const).map((type, index) => action(['s', 'n', 'b', 'z', 'j'][index]!, type, () => this.selectEntryType(type))).concat([action('enter', 'Choose selected type', choose), action('escape', 'Discard entry', () => this.returnStructured())]);
     if (this.view === 'tree' || this.view === 'actions') return [
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
@@ -324,9 +365,44 @@ export class UI {
     this.editField = AGENT_FIELDS[this.menuIndex];
     if (!this.editField) return;
     const value = this.editor.values[this.editField];
+    if (collection(this.editor.spec(this.editField).editor)) {
+      try {
+        this.structured = new StructuredEditor(this.editor.spec(this.editField), value);
+        this.structuredField = this.editField;
+        this.structuredIndex = this.menuIndex;
+        this.setView('structured');
+      } catch (error) { this.showNotice(`${this.editField}: ${(error as Error).message}`); }
+      return;
+    }
     this.input.setValue(this.editField === 'cwd' && this.session.pathCompletion && value && !value.endsWith('/') ? `${value}/` : value);
     this.setView('agent-field');
     if (this.isPathInput()) this.refreshPaths();
+  }
+  private returnAgentField(): void {
+    this.setView('agent-edit'); this.menuIndex = this.structuredIndex; this.draw();
+  }
+  private returnStructured(): void {
+    const index = this.menuIndex;
+    this.setView('structured'); this.menuIndex = index; this.draw();
+  }
+  private stageStructured(): void {
+    if (!this.editor || !this.structured || !this.structuredField) return;
+    this.editor.values[this.structuredField] = this.structured.serialize();
+    this.returnAgentField();
+  }
+  private openEntry(add: boolean): void {
+    if (!this.structured) return;
+    const selected = add ? undefined : this.structured.entries()[this.menuIndex];
+    if (!add && !selected) return;
+    this.entry = { id: selected?.id, key: selected?.key ?? '', text: selected ? valueText(selected.value) : '', type: selected ? valueType(selected.value) : 'string' };
+    this.input.setValue(this.structured.isMap ? this.entry.key : this.entry.text);
+    this.setView(this.structured.isMap ? 'entry-key' : 'entry-value');
+    if (this.isPathInput()) this.refreshPaths();
+  }
+  private selectEntryType(type: ValueType): void {
+    this.entry.type = type;
+    this.input.setValue(this.entry.text || (type === 'boolean' ? 'false' : type === 'null' ? 'null' : ''));
+    this.setView('entry-value');
   }
   private isPathInput(): boolean {
     return this.view === 'agent-field' && this.editField === 'cwd' && this.session.pathCompletion;
@@ -427,15 +503,18 @@ export class UI {
     this.menuIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide();
+    this.menu.bottom = 2;
     this.input.bottom = this.isPathInput() ? 7 : 2;
     if (this.isPathInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
-    } else if (['keys', 'view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['structured', 'entry-type', 'keys', 'view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
+      if (view === 'structured-filter') this.menu.show();
+      if (['entry-key', 'entry-value'].includes(view)) this.form.show();
       this.input.show(); this.input.focus();
       if (!this.sending) this.input.readInput();
     }
@@ -443,6 +522,27 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (['structured-filter', 'structured-raw', 'entry-key', 'entry-value'].includes(this.view) && this.structured) {
+      const view = this.view;
+      try {
+        if (view === 'structured-filter') { const index = this.menuIndex; this.returnStructured(); this.menuIndex = index; this.openEntry(false); }
+        else if (view === 'structured-raw') { this.structured.raw(value); this.returnStructured(); }
+        else if (view === 'entry-key') {
+          if (!value.trim()) throw new Error('Name cannot be blank');
+          this.entry.key = value;
+          if (this.structured.spec.editor === 'object-map') this.setView('entry-type');
+          else this.selectEntryType('string');
+        } else {
+          this.structured.put(this.entry.id, this.entry.key, parseTyped(value, this.entry.type));
+          this.returnStructured();
+        }
+        this.notice.setContent('');
+      } catch (error) {
+        this.showNotice(`${this.structuredField}: ${(error as Error).message}`);
+        this.input.focus(); this.input.readInput();
+      }
+      this.draw(); return;
+    }
     if (this.view === 'agent-field' && this.editor && this.editField) {
       if (this.isPathInput()) {
         const editor = this.editor;
@@ -505,7 +605,11 @@ export class UI {
     const width = Math.max(1, Number(this.screen.width));
     const store = this.session.store;
     const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
-    const heading = this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
+    const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${this.structuredField} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; agent Save applies` :
+      this.view === 'structured-raw' ? `Edit ${this.structuredField} · advanced JSON` :
+      this.view === 'entry-type' ? `Edit ${this.structuredField} · value type` :
+      this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${this.structuredField} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
+      this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
@@ -519,7 +623,25 @@ export class UI {
       this.view === 'skill-add' ? 'Add catalog skill · enter JSON {"name":"…","gitUrl":"https://…"}' :
       this.view === 'view' ? 'View settings' : 'Agent Organization';
     this.title.setContent(`${clip(heading, width)}\n${clip(`${this.session.status} · ${this.session.socketPath}`, width)}`);
-    if (this.view === 'keys') {
+    if (['structured', 'structured-filter'].includes(this.view)) {
+      const entries = this.structured?.entries() ?? [];
+      this.menuIndex = Math.max(0, Math.min(this.menuIndex, entries.length - 1));
+      this.updating = true;
+      this.menu.bottom = this.view === 'structured-filter' ? 5 : 2;
+      this.menu.setItems(entries.length ? entries.map(entry => clip(this.structured!.isMap ? `${entry.key}=${this.structured!.spec.sensitive ? '••••' : valueText(entry.value)}` : String(entry.value), width - 1)) : ['No matching entries']);
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(this.view === 'structured-filter' ? ' Filter: type freely · ↑↓ select · Enter edit · Ctrl+U clear · Esc actions' : ' ↑↓ select  a add  e edit  d delete  / filter  S stage  J raw  Esc discard');
+    } else if (this.view === 'entry-type') {
+      this.updating = true;
+      this.menu.setItems(['s  String', 'n  Number', 'b  Boolean', 'z  Null', 'j  Advanced JSON value']); this.menu.select(this.menuIndex);
+      this.updating = false;
+      this.footer.setContent(' s string  n number  b boolean  z null  j JSON  Enter choose  Esc discard');
+    } else if (this.view === 'entry-key' || this.view === 'entry-value') {
+      this.form.setContent(`Name: ${this.entry.key || '(new entry)'}\nValue: ${this.entry.text || '(empty)'}\nEditing ${this.view === 'entry-key' ? 'name' : 'value'} below; Escape discards this entry.`);
+      this.footer.setContent(' Text entry · Enter next / stage entry  Ctrl+U clear  Esc discard entry');
+    } else if (this.view === 'structured-raw') {
+      this.footer.setContent(' Advanced JSON · Enter validate and stage  Ctrl+U clear  Esc discard raw edit');
+    } else if (this.view === 'keys') {
       this.updating = true;
       this.menu.setItems(this.keyActions.map(action => `${cell(action.key === 'escape' ? 'Esc' : action.key, 8)} ${action.label}`));
       this.menu.select(this.menuIndex); this.updating = false;
@@ -554,7 +676,7 @@ export class UI {
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${field === 'env' ? '(hidden; Enter to edit)' : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
+        [...AGENT_FIELDS.map(field => clip(`${cell(field, 12)} ${collection(this.editor!.spec(field).editor) ? (this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : '(structured; Enter to edit)') : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :

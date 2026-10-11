@@ -91,11 +91,22 @@ metadata, environment, harness options, and plugin extensions. Use ↑/↓ and
 Enter to edit a field; Enter stages its value, Ctrl+U clears it, and Escape
 discards that field edit.
 Press **S**, or choose **Save changes**, to apply the draft, or Escape from the editor to discard
-it. Metadata, environment, options, and extensions are JSON objects; environment
-values must be strings. Environment values are hidden in the field list but
-visible while editing. Treat other settings and raw events as sensitive too.
+it. Metadata, environment, options, and extensions open reusable key/value
+editors, not JSON prompts. Use `a` to add, `e`/Enter to edit, `d` to remove,
+`S` to stage the collection, and Escape to discard it. The agent's own **Save**
+is still required to apply changes. Names and values have separate entry steps;
+metadata/options/extensions offer string, number, boolean, null, and explicit
+advanced JSON value types. Invalid entries remain editable.
 
-When the server advertises the Podman plugin, the editor also includes `containerImage`, `readOnlyDirs`, and `readWriteDirs`. Directory grants are JSON arrays of existing paths; empty means no grants, not inheritance. Explicitly grant a directory covering cwd. A blank image inherits the parent's image. Saving an image change asks whether to update this node only, descendants inheriting its image, or all descendants (including explicit overrides). The client-only `podman.modify` endpoint reports partial failures; refresh rather than blindly retrying. See the [Podman plugin](../agentorg-plugin-podman/README.md).
+Typing starts filtering (action keys are reserved in navigation); `/` explicitly
+enters filter mode so **every** key is text. ↑/↓ selects matching entries, Enter
+edits, Escape returns to actions, and Ctrl+U clears the filter. Environment
+filters match names only. Environment values are masked in lists and hidden in
+the agent field list, but visible in their entry form. `J` explicitly opens
+validated raw JSON as an advanced fallback; errors preserve the input. Treat
+other settings and raw events as sensitive too.
+
+When the server advertises the Podman plugin, the editor also includes `containerImage`, `readOnlyDirs`, and `readWriteDirs`. Directory grants use the same reusable list editor; empty means no grants, not inheritance. Explicitly grant a directory covering cwd. A blank image inherits the parent's image. Saving an image change asks whether to update this node only, descendants inheriting its image, or all descendants (including explicit overrides). The client-only `podman.modify` endpoint reports partial failures; refresh rather than blindly retrying. See the [Podman plugin](../agentorg-plugin-podman/README.md).
 
 Creation starts the agent immediately. Harness choices come from the server's
 loaded plugins. For discovery-capable harnesses, Enter on provider opens its

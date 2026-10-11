@@ -7,6 +7,7 @@ export interface PathCompletion { path: string; isDirectory: boolean; entries: P
  * before readInput binds it, keeping normal editing unchanged outside the picker. */
 export function enablePathKeys(input: blessed.Widgets.TextboxElement, handlers: {
   active(): boolean;
+  acceptSpace?: boolean;
   move(delta: number): void;
   complete(): void;
   changed(): void;
@@ -18,7 +19,7 @@ export function enablePathKeys(input: blessed.Widgets.TextboxElement, handlers: 
     if (!handlers.active()) return original.call(this, ch, key);
     if (key.name === 'up' || key.name === 'down') return handlers.move(key.name === 'up' ? -1 : 1);
     if (key.name === 'tab') return handlers.complete();
-    if (ch === ' ' && !key.ctrl && !key.meta) return original.call(this, '\r', { ...key, name: 'enter' });
+    if (handlers.acceptSpace !== false && ch === ' ' && !key.ctrl && !key.meta) return original.call(this, '\r', { ...key, name: 'enter' });
     const value = this.getValue();
     original.call(this, ch, key);
     if (this.getValue() !== value) handlers.changed();

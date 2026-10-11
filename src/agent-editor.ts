@@ -1,4 +1,5 @@
 import type { Agent } from './protocol.js';
+import type { FieldSpec } from './structured-editor.js';
 
 export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
 export const PODMAN_FIELDS = ['containerImage', 'readOnlyDirs', 'readWriteDirs'] as const;
@@ -28,6 +29,12 @@ export class AgentEditor {
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
     this.original = { ...this.values };
+  }
+  spec(field: AgentField): FieldSpec {
+    if (field === 'env') return { editor: 'string-map', sensitive: true };
+    if (maps.has(field)) return { editor: 'object-map' };
+    if (['readOnlyDirs', 'readWriteDirs'].includes(field)) return { editor: 'directories' };
+    return { editor: 'text' };
   }
   select(field: 'harness' | 'provider' | 'model', value: string): void {
     if (this.values[field] === value) return;
