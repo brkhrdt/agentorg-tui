@@ -232,6 +232,7 @@ export class UI {
   }
   private contextActions(): KeyAction[] {
     const action = (key: string, label: string, run: () => void): KeyAction => ({ key, label, run });
+    if (this.sending) return [action('escape', 'Return to tree (work still running)', () => this.setView('tree')), action('q', 'Quit client', () => this.close())];
     const lifecycle = [
       action('r', 'Start / restart agent', () => this.lifecycle('agent.restart', 'Start / restart agent')),
       action('x', 'Stop agent', () => this.lifecycle('agent.stop', 'Stop agent')),
@@ -446,6 +447,7 @@ export class UI {
     try { params = editor.params(); } catch (error) { this.showNotice((error as Error).message); return; }
     if (editor.agentId && editor.imageChanged && this.session.podmanEnabled && !imageScope) { this.setView('image-scope'); return; }
     this.sending = true;
+    this.draw();
     this.showNotice('Applying agent changes · launch settings may interrupt active work…');
     try {
       if (editor.agentId && imageScope) await this.session.modifyPodman(params, imageScope);
@@ -461,6 +463,7 @@ export class UI {
     const action = this.pendingAction;
     if (this.sending || !action) return;
     this.sending = true;
+    this.draw();
     this.showNotice(`${action.method} in progress…`);
     try {
       await this.session.mutate(action.method, { agentId: action.agentId });
@@ -486,6 +489,7 @@ export class UI {
   private async saveSkills(): Promise<void> {
     if (this.sending || !this.selectedAgent) return;
     this.sending = true;
+    this.draw();
     this.showNotice('Applying skills · active agents restart…');
     try {
       await this.session.setSkills(this.selectedAgent, this.skillRevision, this.skillDraft);
@@ -611,6 +615,7 @@ export class UI {
     const agentId = view === 'chat' ? this.chatAgent : this.selectedAgent;
     if (!agentId || !value.trim()) { this.input.focus(); this.input.readInput(); return; }
     this.sending = true;
+    this.draw();
     this.showNotice('Sending interrupting prompt…');
     try {
       await this.session.prompt(agentId, value);
@@ -759,7 +764,8 @@ export class UI {
     } else {
       this.footer.setContent(' Text: Enter interrupt/send (cancels active/queued work)  Ctrl+U clear  Esc cancel');
     }
-    if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);
+    if (this.sending) this.footer.setContent(this.input.visible ? ' Working · Ctrl+C quits · do not retry unknown outcomes' : ' Working · Esc tree  q quit  Ctrl+C quit · do not retry unknown outcomes');
+    else if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);
     this.screen.render();
   }
   close(): void {

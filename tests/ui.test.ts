@@ -219,7 +219,10 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     const count = mutations.length;
     keys('\r'); await visible('LATEST TRACKED EVENT'); // Default selection is Cancel.
     expect(mutations).toHaveLength(count);
-    keys('a'); await visible('Agent actions'); down(index); keys('\r'); await visible('Confirm ·');
+    const binding = ['', '', 'r', 'x', 'R', 'p', 'd'][index]!;
+    if (index % 2) { keys('a'); await visible('Agent actions'); }
+    keys(binding); await visible('Confirm ·'); // Tree or contextual menu: one key, including Shift+R.
+    keys('?'); await visible('Keys · confirm');
     keys('y'); await waitFor(() => mutations.length === count + 1); await visible('LATEST TRACKED EVENT');
     expect(mutations.at(-1).method).toBe(method);
     expect(mutations.at(-1).params).toEqual({ agentId: 'root' });
