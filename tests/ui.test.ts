@@ -71,6 +71,13 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     expect(selectedBg(3)).not.toBe(selectedBg(4));
     keys('\x1b[B');
     await waitFor(() => selectedBg(4) === 4); // Selected agent is highlighted in blue.
+    keys('?'); await visible('Keys · tree');
+    await visible('Restart subtree');
+    keys('c'); await visible('Chat · worker');
+    keys('q?e'); // Navigation shortcuts must be ordinary text in chat.
+    await visible('q?e');
+    expect(exited).toBe(false);
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('\r');
     await visible('Interrupting prompt · worker');
     keys('tree interruption\r');
@@ -88,7 +95,10 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     expect(screen()).not.toContain('**Bold streamed**');
 
     keys('v'); await visible('View settings');
+    keys('?'); await visible('Keys · view');
     keys('f'); await visible('Event filters');
+    keys('?'); await visible('Keys · filters');
+    keys('\x1b'); await visible('Event filters');
     keys('\x1b[B\x1b[B '); // agent.message, alphabetically third.
     await visible('[ ] agent.message');
     await waitFor(() => screen().includes('Saved '));
@@ -216,6 +226,9 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
   };
   try {
     await visible('No active agents. Press n');
+    keys('?'); await visible('Keys · tree');
+    expect(screen()).not.toContain('Start / restart agent');
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('n'); await visible('Create agent · root');
     await field('coordinator'); down(1); keys('\r'); await visible('Select harness'); keys('\r'); await visible('Create agent · root');
     down(2); keys('\r'); await visible('Select a provider before choosing a model.');

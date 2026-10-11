@@ -51,6 +51,11 @@ runs the interactive UI test against it. Like the source UI test, it requires
 
 ## Keys
 
+Press **`?`** in any navigation screen for its contextual key menu. Press a
+shown key to act immediately; Escape returns to the same selection. The bottom
+footer shows the current mode's keys. Menus are disabled while entering text;
+`?`, `q`, and lifecycle keys are ordinary input there.
+
 ### Agent tree (default)
 
 | Key | Action |
@@ -58,7 +63,10 @@ runs the interactive UI test against it. Like the source UI test, it requires
 | ↑ / ↓ | Select an agent (highlighted blue) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
-| a | Agent lifecycle actions (create, modify, start/restart, stop, restart subtree, replace session, remove) |
+| a | Key-labelled lifecycle actions (arrow navigation remains optional) |
+| r / x | Start/restart / stop selected agent (confirmation required) |
+| R / p / d | Restart subtree / replace session / remove subtree (confirmation required) |
+| f / l | Event filters / rendering levels directly |
 | n | Create a root in an empty organization, otherwise a child of the selected agent |
 | e | Modify the selected agent |
 | s | Edit skills when the server advertises the skills plugin |
@@ -82,7 +90,7 @@ The editor has fields for name, harness, provider, model, working directory,
 metadata, environment, harness options, and plugin extensions. Use ↑/↓ and
 Enter to edit a field; Enter stages its value, Ctrl+U clears it, and Escape
 discards that field edit.
-Choose **Save changes** to apply the draft, or Escape from the editor to discard
+Press **S**, or choose **Save changes**, to apply the draft, or Escape from the editor to discard
 it. Metadata, environment, options, and extensions are JSON objects; environment
 values must be strings. Environment values are hidden in the field list but
 visible while editing. Treat other settings and raw events as sensitive too.
@@ -96,7 +104,8 @@ model picker lists only that provider's models and saves their exact IDs.
 Changing harness clears provider/model; changing provider clears model.
 Catalog queries use the draft cwd, environment, and harness options. Pickers
 support manual entry, and older servers/unsupported harnesses use text fields.
-Escape returns without selecting; discovery errors retain the draft. Model is
+Escape returns without selecting; discovery errors retain the draft. Press `m` in a harness/provider/model picker for manual entry. Image-scope
+choices also support `1`, `2`, and `3`. Model is
 optional on creation (omit it to use the harness default).
 Press `n` with an agent selected to create its child; if selection is momentarily
 missing while agents exist, the root is used as the parent rather than submitting
