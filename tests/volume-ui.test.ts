@@ -72,3 +72,32 @@ test('terminal volumes support fuzzy choices, arrow selection, Tab/Enter staging
     expect(discovers).toBeGreaterThan(3);
   } finally { await ui.close(); await mock.close(); }
 }, 30_000);
+
+test('terminal users can select a newly created host volume and register its container destination', async () => {
+  const root = agent('root', null, { name: 'host-volume-root', settings: { harness: 'fixture', cwd: '/project', extensions: { podman: { readWriteDirs: ['/project'], readOnlyVolumes: [], readWriteVolumes: [] } } } });
+  const registrations: any[] = [], changes: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { harnesses: ['fixture'], plugins: { podman: { endpoints: { modify: 'podman.modify', volumes: 'podman.volumes', configureVolume: 'podman.volume.configure' } } } } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], latestSeq: 0 });
+    else if (request.method === 'podman.volumes') respond(socket, request.id, { volumes: [{ name: 'pi-host', readOnly: false }] });
+    else if (request.method === 'podman.volume.configure') {
+      registrations.push(request.params);
+      if (request.params.destination === '/usr') send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'FORBIDDEN', message: 'Protected container runtime path' } });
+      else respond(socket, request.id, { ...request.params, readOnly: false });
+    } else if (request.method === 'agent.modify') { changes.push(request.params); respond(socket, request.id, operation('completed')); }
+  });
+  const ui = terminalClient(mock.path, mock.directory); const { keys, visible, screen } = ui;
+  try {
+    await visible('host-volume-root'); keys('e'); await visible('Modify agent');
+    keys('\x1b[B'.repeat(12) + '\r'); await visible('Edit readOnlyVolumes · list / map');
+    keys('a'); await visible('pi-host → (choose container destination)');
+    keys('\r'); await visible('Container destination · pi-host');
+    keys('/usr\r'); await visible('Protected container runtime path'); expect(screen()).toContain('/usr');
+    keys('\x15/home/pi/.pi\r'); await visible('Edit readOnlyVolumes · list / map');
+    expect(registrations).toEqual([{ name: 'pi-host', destination: '/usr' }, { name: 'pi-host', destination: '/home/pi/.pi' }]);
+    expect(changes).toHaveLength(0); // Destination registration is not an agent grant.
+    keys('S'); await visible('Modify agent'); keys('S'); await waitFor(() => changes.length === 1);
+    expect(changes[0].settings.extensions.podman.readOnlyVolumes).toEqual(['pi-host']);
+    expect(changes[0].settings.extensions.podman.readWriteDirs).toEqual(['/project']);
+  } finally { await ui.close(); await mock.close(); }
+}, 30_000);

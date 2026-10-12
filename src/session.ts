@@ -24,6 +24,11 @@ export class Session extends EventEmitter {
   settingsFields: PluginField[] = [];
   private podmanModify = '';
   private podmanVolumes = '';
+  private podmanConfigureVolume = '';
+  async configureVolume(name: string, destination: string): Promise<VolumeChoice> {
+    if (!this.client || !this.status.startsWith('connected') || !this.podmanConfigureVolume) throw new Error('Server volume destination configuration is not available');
+    return this.client.request<VolumeChoice>(this.podmanConfigureVolume, { name, destination });
+  }
   get podmanVolumesEnabled(): boolean { return !!this.podmanVolumes; }
   async listVolumes(): Promise<VolumeChoice[]> {
     if (!this.client || !this.status.startsWith('connected') || !this.podmanVolumes) throw new Error('Server volume discovery is not available');
@@ -63,10 +68,11 @@ export class Session extends EventEmitter {
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
-    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string }; modelDiscovery?: boolean } | undefined;
+    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string; configureVolume?: string }; modelDiscovery?: boolean } | undefined;
     this.podmanEnabled = typeof podman?.endpoints?.modify === 'string';
     this.podmanModify = podman?.endpoints?.modify ?? '';
     this.podmanVolumes = podman?.endpoints?.volumes ?? '';
+    this.podmanConfigureVolume = podman?.endpoints?.configureVolume ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';

@@ -1,4 +1,4 @@
-export interface VolumeChoice { name: string; destination: string; description?: string; readOnly: boolean }
+export interface VolumeChoice { name: string; destination?: string; description?: string; readOnly: boolean }
 /** Reusable server-choice filtering; no local filesystem/Podman lookup. */
 export function filterVolumes(choices: VolumeChoice[], query: string, writable: boolean): VolumeChoice[] {
   const needle = query.toLowerCase();

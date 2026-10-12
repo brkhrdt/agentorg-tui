@@ -7,10 +7,10 @@ import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js
 import { StructuredEditor, collection, parseTyped, previewValue, valueText, valueType, type ValueType } from './structured-editor.js';
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
-import { filterVolumes } from './volume-input.js';
+import { filterVolumes, type VolumeChoice } from './volume-input.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
-type View = 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
+type View = 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -38,6 +38,8 @@ export class UI {
     style: { selected: { bg: 'blue', fg: 'white' } },
   });
   private pathCandidates: PathCandidate[] = [];
+  private volumeChoices: VolumeChoice[] = [];
+  private pendingVolume?: VolumeChoice;
   private pathIndex = 0;
   private pathBase = '';
   private pathRequest = 0;
@@ -159,7 +161,7 @@ export class UI {
     });
     this.input.on('submit', (value: string) => { void this.submit(value); });
     this.input.on('cancel', () => {
-      if (['entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
+      if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
       else this.setView(this.view === 'agent-field' ? 'agent-edit' : 'tree');
     });
     this.input.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
@@ -435,7 +437,8 @@ export class UI {
     const request = ++this.pathRequest;
     if (this.pathTimer) clearTimeout(this.pathTimer);
     this.pathCandidates = []; this.pathIndex = 0;
-    this.paths.setItems(['Loading eligible volumes…']); this.screen.render();
+    this.volumeChoices = [];
+    this.paths.setItems(['Loading host volumes…']); this.screen.render();
     const query = this.input.getValue(), editor = this.structured;
     this.pathTimer = setTimeout(async () => {
       this.pathTimer = undefined;
@@ -443,8 +446,9 @@ export class UI {
       try {
         const choices = filterVolumes(await this.session.listVolumes(), query, this.structuredField === 'readWriteVolumes');
         if (this.closing || !this.isVolumeInput() || request !== this.pathRequest || this.structured !== editor) return;
+        this.volumeChoices = choices;
         this.pathCandidates = choices.map(choice => ({ name: choice.name, path: choice.name, kind: 'file' }));
-        this.paths.setItems(choices.length ? choices.map(choice => clip(`${choice.name} → ${choice.destination}${choice.description ? ` · ${choice.description}` : ''}`, Number(this.screen.width) - 1)) : ['No matching eligible volumes']);
+        this.paths.setItems(choices.length ? choices.map(choice => clip(`${choice.name} → ${choice.destination ?? '(choose container destination)'}${choice.description ? ` · ${choice.description}` : ''}`, Number(this.screen.width) - 1)) : ['No matching host volumes']);
         this.paths.select(0); this.screen.render();
       } catch (error) {
         if (!this.closing && this.isVolumeInput() && request === this.pathRequest) {
@@ -574,6 +578,24 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'volume-destination' && this.pendingVolume && this.structured) {
+      const editor = this.structured, choice = this.pendingVolume;
+      this.sending = true;
+      try {
+        await this.session.configureVolume(choice.name, value.trim());
+        if (this.closing || this.structured !== editor || this.view !== 'volume-destination') return;
+        editor.put(this.entry.id, this.entry.key, choice.name);
+        this.returnStructured();
+        this.notice.setContent('Destination registered; stage and save the list to grant access.');
+      } catch (error) {
+        if (!this.closing && this.view === 'volume-destination') this.showNotice((error as Error).message);
+      } finally {
+        this.sending = false;
+        if (!this.closing && this.view === 'volume-destination') { this.input.focus(); this.input.readInput(); }
+        this.draw();
+      }
+      return;
+    }
     if (['structured-filter', 'structured-raw', 'entry-key', 'entry-value'].includes(this.view) && this.structured) {
       const view = this.view;
       try {
@@ -586,9 +608,15 @@ export class UI {
           else this.selectEntryType('string');
         } else {
           if (this.isVolumeInput()) {
-            const choice = this.pathCandidates[this.pathIndex];
+            const choice = this.volumeChoices[this.pathIndex];
             if (!choice) throw new Error('Choose an eligible server volume; discovery must succeed before staging');
-            value = choice.path;
+            if (!choice.destination) {
+              this.pendingVolume = choice;
+              this.input.setValue('');
+              this.setView('volume-destination');
+              return;
+            }
+            value = choice.name;
           }
           if (this.isPathInput()) {
             if (!value.trim()) throw new Error('Path cannot be blank');
@@ -683,6 +711,7 @@ export class UI {
     const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
     const structuredLabel = this.structuredField ? this.editor?.label(this.structuredField) : '';
     const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; agent Save applies` :
+      this.view === 'volume-destination' ? `Container destination · ${this.pendingVolume?.name} · e.g. /home/pi/.pi` :
       this.view === 'structured-raw' ? `Edit ${structuredLabel} · advanced JSON` :
       this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
       this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${structuredLabel} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
@@ -716,6 +745,8 @@ export class UI {
     } else if (this.view === 'entry-key' || this.view === 'entry-value') {
       this.form.setContent(`Name: ${this.entry.key || '(new entry)'}\nValue: ${this.entry.text || '(empty)'}\nEditing ${this.view === 'entry-key' ? 'name' : 'value'} below; Escape discards this entry.`);
       this.footer.setContent(this.isVolumeInput() ? ' Type to fuzzy-filter · ↑↓ select · Tab complete · Enter stage volume · Esc cancel' : this.isPathInput() ? ' ↑↓ select  Tab insert / descend  Space / Enter stage path  Ctrl+U clear  Esc discard entry' : ' Text entry · Enter next / stage entry  Ctrl+U clear  Esc discard entry');
+    } else if (this.view === 'volume-destination') {
+      this.footer.setContent(' Absolute container path (not a host path) · Enter register and stage volume · Esc discard entry');
     } else if (this.view === 'structured-raw') {
       this.footer.setContent(' Advanced JSON · Enter validate and stage  Ctrl+U clear  Esc discard raw edit');
     } else if (this.view === 'keys') {
