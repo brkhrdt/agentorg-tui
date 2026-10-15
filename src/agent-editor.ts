@@ -1,9 +1,9 @@
-import type { Agent } from './protocol.js';
+import type { Agent, ContainerProfile } from './protocol.js';
 import { StructuredEditor, collection, parseTyped, valueText, type PluginField, type FieldSpec } from './structured-editor.js';
 
 export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
 export const PODMAN_FIELDS = ['containerImage', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const;
-export type AgentField = typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
+export type AgentField = 'containerProfile' | typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
 export type ImageScope = 'node' | 'inherited' | 'all';
 const maps = new Set<AgentField>(['metadata', 'env', 'options', 'extensions']);
 
@@ -14,11 +14,12 @@ export class AgentEditor {
   readonly agentId?: string;
   readonly revision?: number;
   readonly fields: readonly AgentField[];
+  private selectedProfile?: { profile: ContainerProfile; revision: number };
   private readonly podmanEnabled: boolean;
   private readonly volumesEnabled: boolean;
   private readonly pluginSpecs = new Map<AgentField, PluginField>();
   private readonly explicit = new Set<AgentField>();
-  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false) {
+  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false) {
     this.podmanEnabled = podmanEnabled || !!agent?.settings.extensions?.podman;
     const grants = agent?.settings.extensions?.podman as Record<string, unknown> | undefined;
     this.volumesEnabled = volumesEnabled || !!grants?.readOnlyVolumes || !!grants?.readWriteVolumes;
@@ -26,7 +27,7 @@ export class AgentEditor {
       if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'].includes(spec.key)) continue;
       this.pluginSpecs.set(`plugin:${spec.namespace}:${spec.key}`, { ...spec });
     }
-    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
+    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled && profilesEnabled && !agent ? ['containerProfile' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
@@ -34,6 +35,7 @@ export class AgentEditor {
       return [field, maps.has(field) ? JSON.stringify(value ?? {}) : String(value ?? '')];
     })) as Record<AgentField, string>;
     const podman = agent?.settings.extensions?.podman as { image?: string | null; readOnlyDirs?: string[]; readWriteDirs?: string[]; readOnlyVolumes?: string[]; readWriteVolumes?: string[] } | undefined;
+    this.values.containerProfile = '';
     this.values.containerImage = podman?.image ?? '';
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
@@ -47,12 +49,23 @@ export class AgentEditor {
     }
     this.original = { ...this.values };
   }
+  selectProfile(profile: ContainerProfile | undefined, revision = 0): void {
+    this.selectedProfile = profile ? { profile: structuredClone(profile), revision } : undefined;
+    this.values.containerProfile = profile?.name ?? '';
+    if (!profile) return;
+    this.values.containerImage = profile.image;
+    if (profile.harness) this.values.harness = profile.harness;
+    this.values.provider = profile.provider; this.values.model = profile.model;
+    this.values.options = '{}';
+    if (profile.cwd) this.values.cwd = profile.cwd;
+    for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const) this.values[key] = JSON.stringify(profile[key]);
+  }
   private empty(spec: FieldSpec): string {
     return spec.editor.endsWith('-map') ? '{}' : collection(spec.editor) ? '[]' : spec.editor === 'number' ? '0' : spec.editor === 'boolean' ? 'false' : '';
   }
   label(field: AgentField): string {
     const spec = this.pluginSpecs.get(field);
-    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field;
+    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'containerProfile' ? 'Container configuration' : field;
   }
   stage(field: AgentField, text: string): void {
     const spec = this.pluginSpecs.get(field);
@@ -111,7 +124,12 @@ export class AgentEditor {
       };
       const extensions = (settings.extensions ?? JSON.parse(this.values.extensions)) as Record<string, unknown>;
       if (this.agentId && this.values.extensions !== this.original.extensions && Object.hasOwn(extensions, 'podman')) throw new Error('Edit Podman fields or extensions.podman, not both');
-      settings.extensions = { ...extensions, podman: { image: this.values.containerImage.trim() || null, readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs'), ...(this.volumesEnabled && { readOnlyVolumes: grants('readOnlyVolumes'), readWriteVolumes: grants('readWriteVolumes') }) } };
+      const prior = !this.agentId ? {} : (JSON.parse(this.original.extensions).podman ?? {}) as Record<string, unknown>;
+      const selected = this.selectedProfile;
+      settings.extensions = { ...extensions, podman: { ...prior,
+        ...(selected && { profile: { id: selected.profile.id, name: selected.profile.name, revision: selected.revision },
+          runtime: { network: selected.profile.network, containerUid: selected.profile.containerUid, containerGid: selected.profile.containerGid, harnessEnv: [...selected.profile.harnessEnv] } }),
+        image: this.values.containerImage.trim() || null, readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs'), ...(this.volumesEnabled && { readOnlyVolumes: grants('readOnlyVolumes'), readWriteVolumes: grants('readWriteVolumes') }) } };
     }
     const originalExtensions = JSON.parse(this.original.extensions) as Record<string, unknown>;
     const rawExtensions = JSON.parse(this.values.extensions) as Record<string, unknown>;

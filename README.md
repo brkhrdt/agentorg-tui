@@ -70,7 +70,8 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | n | Create a root in an empty organization, otherwise a child of the selected agent |
 | e | Modify the selected agent |
 | s | Edit skills when the server advertises the skills plugin |
-| v, then f | Configure tracked events |
+| v, then s | Organization / plugin server settings (when supported) |
+| v, then f | Configure tracked events (client only) |
 | v, then l | Configure rendering levels |
 | q / Ctrl+C | Quit the client, leaving server work running |
 
@@ -83,6 +84,49 @@ role label and use all available cells in the event column, truncating with `…
 Event previews render Markdown styles and fold blocks into a single line;
 clipping preserves styles and terminal-cell boundaries.
 Both live and retained history events update the tree.
+
+### Settings: `v`
+
+The settings menu separates **server-wide organization/plugin configuration**
+from **client-only event filters and rendering levels**. Press `s` for server
+settings on compatible servers. Organization facts (paths, harnesses, loaded
+plugins) are read-only; plugins without declarations are listed as read-only.
+Older servers retain client preferences without calling unavailable APIs.
+
+Open a declared group to edit its public fields. Enter stages a scalar (booleans
+toggle); collections reuse add/edit/remove and typed JSON entry editors. `d`
+inside a list removes its selected entry; an empty list is distinct from reset.
+`z` resets the selected field to its startup/operator default **in the draft**.
+`S`, or the save row, opens an explicit **server-wide** confirmation. Changes
+apply to everyone connected to that server, persist there (not in `--config`),
+and never automatically restart agents. Secrets are not part of these forms.
+
+Rows show saved/default/draft state and the field effect. Restart-only settings
+show the desired value and `RESTART REQUIRED`, with the current effective value;
+they take effect only after the server restarts. Core exposes runtime limits.
+The Podman plugin declares **Container configurations** as a reusable record-list
+form, alongside global defaults. Add/edit/delete entries, choose server-discovered
+local images/volumes, and choose network from `pasta`, `slirp4netns`, or `none`.
+Unregistered volumes prompt for a container destination. The top-level defaults
+now use the same four **RO/RW directory** and **RO/RW volume** lists as configurations,
+with volume pickers on **a**. They seed new configurations and new client-created
+agent drafts for review, without a server restart or changes to existing agents.
+Legacy destination policies remain preserved but are omitted from the normal
+form. **S** stages the entry,
+then the list; the normal server-wide Save confirmation still commits the draft.
+Use **n → Container configuration** to select one when creating an agent. Image,
+runtime, cwd, and grant defaults are copied into the draft for review and then
+snapshotted on the agent; later catalog edits/removal don't alter existing agents.
+Stale selections return a conflict rather than silently using updated defaults.
+Provider/model fields are still manual until in-container capability discovery is
+implemented. Removing volume defaults does not delete host volumes or identity
+pins. Other plugins remain read-only until they opt in. See the
+[server contract](../agentorg/SERVER_SETTINGS.md).
+
+Saves are revision-fenced. Other clients' changes refresh the catalog but do not
+overwrite your draft. Conflicts keep the draft and are never automatically
+retried; `r` explicitly discards it and reloads current values. Escape discards a
+field/collection edit or the whole group draft, depending on the current view.
 
 ### Agent lifecycle: `a`, `n`, `e`
 

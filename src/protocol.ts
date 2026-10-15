@@ -34,7 +34,32 @@ export interface ServerEvent {
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
 export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
-export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown> } }
+export interface ServerSettingsField {
+  key: string; label: string; description?: string; deprecated?: boolean;
+  editor: 'text' | 'number' | 'boolean' | 'select' | 'list' | 'string-map' | 'object-map';
+  effect: 'immediate' | 'future-launch' | 'restart'; choices?: string[]; min?: number; max?: number;
+  choicesEndpoint?: string; itemFields?: ServerSettingsField[]; itemDefaults?: Record<string, unknown>; itemDefaultsFrom?: Record<string, string>; itemIdKey?: string; itemLabelKey?: string;
+}
+export interface SettingsChoice {
+  value: string; label: string;
+  /** Public form defaults for a newly selected record-map key. */
+  defaults?: Record<string, unknown>;
+  /** Explicit client-only setup needed before this resource can be selected. */
+  setup?: { endpoint: string; params: Record<string, unknown>; inputKey: string; label: string };
+}
+export interface ContainerGrantDefaults { readOnlyDirs: string[]; readWriteDirs: string[]; readOnlyVolumes: string[]; readWriteVolumes: string[] }
+export interface ContainerProfile {
+  id: string; name: string; image: string; network: 'pasta' | 'slirp4netns' | 'none'; containerUid: number; containerGid: number; harnessEnv: string[];
+  harness: string; provider: string; model: string; cwd: string;
+  readOnlyDirs: string[]; readWriteDirs: string[]; readOnlyVolumes: string[]; readWriteVolumes: string[];
+}
+export interface ServerSettingsDescriptor { namespace: string; title: string; plugin?: string; description?: string; version: number; fields: ServerSettingsField[] }
+export interface ServerSettingsGroup extends ServerSettingsDescriptor {
+  revision: number; defaults: Record<string, unknown>; values: Record<string, unknown>; effective: Record<string, unknown>; overridden: string[]; restartRequired: string[];
+}
+export interface ServerSettingsCatalog { groups: ServerSettingsGroup[]; facts: { cwd: string; dataDir: string; socketPath: string; harnesses: string[]; plugins: string[] } }
+export interface ServerSettingsCapability { version: number; groups: ServerSettingsDescriptor[]; endpoints: { list: string; get: string; update: string } }
+export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
 export interface HistoryPage {
   events: ServerEvent[];
   oldestSeq: number;

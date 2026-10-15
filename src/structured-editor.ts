@@ -1,5 +1,5 @@
 export type EditorKind = 'text' | 'number' | 'boolean' | 'string-map' | 'object-map' | 'list' | 'directory' | 'path' | 'directories' | 'paths';
-export interface FieldSpec { editor: EditorKind; label?: string; sensitive?: boolean }
+export interface FieldSpec { editor: EditorKind; label?: string; sensitive?: boolean; genericList?: boolean }
 export interface PluginField extends FieldSpec { namespace: string; key: string }
 const kinds: EditorKind[] = ['text', 'number', 'boolean', 'string-map', 'object-map', 'list', 'directory', 'path', 'directories', 'paths'];
 /** Ignore unsupported/malformed hints from newer servers; never run plugin code. */
@@ -41,24 +41,24 @@ export function valueText(value: unknown): string { return typeof value === 'str
 
 /** Independent, reusable map/list transaction; no network or widget dependencies. */
 export class StructuredEditor {
-  private draft: Record<string, unknown> | string[];
+  private draft: Record<string, unknown> | unknown[];
   filter = '';
   constructor(readonly spec: FieldSpec, text: string) {
     this.draft = this.parse(text);
   }
   get isMap(): boolean { return ['string-map', 'object-map'].includes(this.spec.editor); }
-  private parse(text: string): Record<string, unknown> | string[] {
+  private parse(text: string): Record<string, unknown> | unknown[] {
     let value: unknown;
     try { value = JSON.parse(text); } catch { throw new Error('Invalid JSON; draft retained'); }
     if (this.isMap) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected an object');
       if (this.spec.editor === 'string-map' && Object.values(value).some(v => typeof v !== 'string')) throw new Error('Values must be strings');
-    } else if (!Array.isArray(value) || value.some(v => typeof v !== 'string' || !v.trim())) throw new Error('Expected a list of nonempty strings');
-    return structuredClone(value) as Record<string, unknown> | string[];
+    } else if (!Array.isArray(value) || (!this.spec.genericList && value.some(v => typeof v !== 'string' || !v.trim()))) throw new Error('Expected a list of nonempty strings');
+    return structuredClone(value) as Record<string, unknown> | unknown[];
   }
   entries(): { id: string; key: string; value: unknown }[] {
     const entries = this.isMap ? Object.entries(this.draft).map(([key, value]) => ({ id: key, key, value })) :
-      (this.draft as string[]).map((value, index) => ({ id: String(index), key: '', value }));
+      (this.draft as unknown[]).map((value, index) => ({ id: String(index), key: '', value }));
     // Never filter secrets by value: hidden values must not leak through matches.
     return entries.filter(entry => (this.isMap ? entry.key : String(entry.value)).toLowerCase().includes(this.filter.toLowerCase()));
   }
@@ -73,15 +73,15 @@ export class StructuredEditor {
       Object.defineProperty(next, key, { value, enumerable: true, configurable: true, writable: true });
       this.draft = next;
     } else {
-      if (typeof value !== 'string' || !value.trim()) throw new Error('Entry cannot be blank');
-      const next = [...this.draft as string[]];
+      if (!this.spec.genericList && (typeof value !== 'string' || !value.trim())) throw new Error('Entry cannot be blank');
+      const next = [...this.draft as unknown[]];
       if (id === undefined) next.push(value); else next[Number(id)] = value;
       this.draft = next;
     }
   }
   remove(id: string): void {
     if (this.isMap) delete (this.draft as Record<string, unknown>)[id];
-    else (this.draft as string[]).splice(Number(id), 1);
+    else (this.draft as unknown[]).splice(Number(id), 1);
   }
   raw(text: string): void { this.draft = this.parse(text); }
   serialize(): string { return JSON.stringify(this.draft); }

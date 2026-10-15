@@ -1,16 +1,17 @@
 import blessed from 'blessed';
-import type { Agent, SkillStates, SkillState } from './protocol.js';
+import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './render.js';
 import { LEVEL_NAMES, type Level, Settings } from './settings.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js';
+import { ServerSettingsEditor } from './server-settings-editor.js';
 import { StructuredEditor, collection, parseTyped, previewValue, valueText, valueType, type ValueType } from './structured-editor.js';
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
 import { filterVolumes, type VolumeChoice } from './volume-input.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
-type View = 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
+type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -63,6 +64,17 @@ export class UI {
   private keyActions: KeyAction[] = [];
   private selectedAgent?: string;
   private editor?: AgentEditor;
+  private editorRequest = 0;
+  private serverEditor?: ServerSettingsEditor;
+  private serverField?: ServerSettingsField;
+  private structuredServer = false;
+  private settingsRequest = 0;
+  private records?: { parent: ServerSettingsEditor; field: ServerSettingsField; values: Record<string, unknown>[]; keys?: string[]; newKey?: string; index: number; parentIndex: number };
+  private recordEditing = false;
+  private genericChoices: SettingsChoice[] = [];
+  private pendingChoiceSetup?: SettingsChoice;
+  private choiceLabel = '';
+  private choiceActions?: { choose(value: string): void; back(): void; manual?: () => void };
   private editField?: AgentField;
   private optionField: 'harness' | 'provider' | 'model' = 'harness';
   private agentOptions: { value: string; label: string }[] = [];
@@ -162,7 +174,7 @@ export class UI {
     this.input.on('submit', (value: string) => { void this.submit(value); });
     this.input.on('cancel', () => {
       if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
-      else this.setView(this.view === 'agent-field' ? 'agent-edit' : 'tree');
+      else this.setView(this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
     });
     this.input.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
@@ -215,7 +227,23 @@ export class UI {
     if (this.view === 'structured') this.openEntry(false);
     else if (this.view === 'entry-type') this.selectEntryType((['string', 'number', 'boolean', 'null', 'json'] as const)[this.menuIndex]!);
     else if (this.view === 'actions') this.chooseAction();
-    else if (this.view === 'view') this.setView(this.menuIndex === 0 ? 'filters' : 'levels');
+    else if (this.view === 'view') {
+      if (this.session.serverSettingsCapability && this.menuIndex === 0) void this.openServerSettings();
+      else this.setView(this.menuIndex === (this.session.serverSettingsCapability ? 1 : 0) ? 'filters' : 'levels');
+    } else if (this.view === 'settings-options') {
+      const choice = this.genericChoices[this.menuIndex];
+      try {
+        if (choice?.setup) { this.pendingChoiceSetup = choice; this.input.setValue(''); this.setView('settings-choice-setup'); }
+        else if (choice) this.choiceActions?.choose(choice.value);
+      } catch (error) { this.showNotice((error as Error).message); }
+    } else if (this.view === 'settings-records') this.openRecord(false);
+    else if (this.view === 'server-settings') this.chooseServerGroup();
+    else if (this.view === 'server-group') {
+      if (this.menuIndex === this.serverEditor?.fields.length) { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }
+      else this.openServerField();
+    } else if (this.view === 'server-confirm') {
+      if (this.menuIndex === 1) void this.saveServerSettings(); else this.setView('server-group');
+    }
     else if (this.view === 'confirm') { if (this.menuIndex === 1) void this.runAction(); else this.setView('tree'); }
     else if (this.view === 'harness-options') {
       const choice = this.agentOptions[this.menuIndex];
@@ -227,6 +255,8 @@ export class UI {
       }
     } else if (this.view === 'agent-edit') {
       if (this.menuIndex === fields.length) void this.saveAgent();
+      else if (fields[this.menuIndex] === 'containerProfile') void this.openProfileChoices();
+      else if (fields[this.menuIndex] === 'containerImage' && this.session.podmanImagesEnabled) this.openImageChoices();
       else if (['harness', 'provider', 'model'].includes(fields[this.menuIndex] ?? '')) void this.openAgentOptions();
       else this.openField();
     } else if (this.view === 'image-scope') void this.saveAgent((['node', 'inherited', 'all'] as const)[this.menuIndex]);
@@ -269,7 +299,7 @@ export class UI {
       action('a', 'Add entry', () => this.openEntry(true)), action('e', 'Edit selected entry', () => this.openEntry(false)), action('enter', 'Edit selected entry', choose),
       action('d', 'Remove selected entry from draft', () => { const entry = this.structured?.entries()[this.menuIndex]; if (entry) { this.structured!.remove(entry.id); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); } }),
       action('/', 'Filter (all keys become text)', () => { this.input.setValue(this.structured!.filter); this.setView('structured-filter'); }),
-      action('S', 'Stage list / map in agent draft', () => this.stageStructured()),
+      action('S', 'Stage list / map in settings draft', () => this.stageStructured()),
       ...(!this.isVolumeField() ? [action('J', 'Advanced raw JSON', () => { this.entryIndex = this.menuIndex; this.input.setValue(this.structured!.serialize()); this.setView('structured-raw'); })] : []),
       action('escape', 'Discard list / map draft', () => this.returnAgentField()),
     ];
@@ -279,11 +309,22 @@ export class UI {
       ...(this.selected() ? [action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
         action('enter', this.view === 'actions' ? 'Choose selected action' : 'Interrupting prompt', () => this.view === 'actions' ? this.chooseMenu() : this.openPrompt()), action('c', 'Chat', () => this.openChat()),
         ...(this.session.skillsEnabled ? [action('s', 'Skills', () => this.openSkills())] : [])] : []),
-      action('a', 'Agent actions', () => this.openActions()), action('v', 'View settings', () => this.setView('view')),
+      action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), back];
+    if (this.view === 'settings-options') return [action('enter', 'Choose option', choose), ...(this.choiceActions?.manual ? [action('m', 'Manual entry', () => this.choiceActions?.manual?.())] : []), action('escape', 'Back without selecting', () => this.choiceActions?.back())];
+    if (this.view === 'settings-records') return [action('a', this.records?.keys ? 'Choose server resource' : 'Add configuration', () => this.openRecord(true)), action('enter', 'Edit entry', choose), action('e', 'Edit entry', choose),
+      action('d', 'Remove entry from draft', () => { this.records!.values.splice(this.menuIndex, 1); this.records!.keys?.splice(this.menuIndex, 1); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); }),
+      action('S', 'Stage entries in server draft', () => this.finishRecords(true)), action('escape', 'Discard collection edits', () => this.finishRecords(false))];
+    if (this.view === 'server-settings') return [action('enter', 'Open settings / facts', choose), action('r', 'Refresh server settings', () => { void this.openServerSettings(); }), action('escape', 'Back to settings', () => this.setView('view'))];
+    if (this.view === 'server-facts') return [action('escape', 'Back to server settings', () => this.setView('server-settings'))];
+    if (this.view === 'server-group') return [action('enter', 'Edit field / review save', choose), action('S', this.recordEditing ? 'Stage entry in collection' : 'Review server-wide save', () => { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }), action('z', 'Reset selected field to startup default (draft)', () => {
+      const field = this.serverEditor?.fields[this.menuIndex];
+      if (field) { this.serverEditor!.reset(field); this.draw(); }
+    }), ...(!this.recordEditing ? [action('r', 'Discard draft and reload current settings', () => { void this.reloadServerGroup(); })] : []), action('escape', 'Discard draft / back', () => { if (this.recordEditing) { this.serverEditor = this.records!.parent; this.recordEditing = false; this.setView('settings-records'); } else this.setView('server-settings'); })];
+    if (this.view === 'server-confirm') return [action('enter', 'Choose confirmation row', choose), action('y', 'Save server-wide changes', () => { void this.saveServerSettings(); }), action('n', 'Back to draft', () => this.setView('server-group')), action('escape', 'Back to draft', () => this.setView('server-group'))];
     if (this.view === 'confirm') return [action('enter', 'Choose selected confirmation row', choose), action('y', 'Confirm', () => { void this.runAction(); }), action('n', 'Cancel', () => this.setView('tree')), back];
     if (this.view === 'agent-edit') return [action('enter', 'Edit selected field / save row', choose), action('S', 'Save changes', () => { void this.saveAgent(); }), back];
     if (this.view === 'image-scope') return (['node', 'inherited', 'all'] as const).map((scope, index) => action(String(index + 1), ['This node only', 'Inheriting descendants', 'All descendants'][index]!, () => { void this.saveAgent(scope); })).concat([action('enter', 'Choose selected scope', choose), back]);
@@ -297,6 +338,151 @@ export class UI {
       action('left', 'Previous level', () => this.changeLevel(-1)), action('right', 'Next level', () => this.changeLevel(1)), action('space', 'Cycle level', () => this.changeLevel(1)), action('enter', 'Cycle level', () => this.changeLevel(1)), back,
     ]);
     return [];
+  }
+  private async openChoices(label: string, load: () => Promise<SettingsChoice[]>, actions: NonNullable<UI['choiceActions']>): Promise<void> {
+    const request = ++this.choicesRequest;
+    this.genericChoices = []; this.choiceLabel = label; this.choiceActions = actions;
+    this.setView('settings-options'); this.showNotice('Loading available options from the server…');
+    try {
+      const choices = await load();
+      if (this.closing || request !== this.choicesRequest || this.view !== 'settings-options') return;
+      this.genericChoices = choices; this.notice.setContent(choices.length ? '' : 'No available options. Configure server resources first or go back.'); this.draw();
+    } catch (error) { if (!this.closing && request === this.choicesRequest && this.view === 'settings-options') this.showNotice((error as Error).message); }
+  }
+  private async openProfileChoices(): Promise<void> {
+    const editor = this.editor!; const index = this.menuIndex;
+    let catalog: { revision: number; profiles: ContainerProfile[] };
+    const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
+    await this.openChoices('Container configurations', async () => {
+      catalog = await this.session.listProfiles();
+      return [{ value: '', label: 'Manual configuration / no profile' }, ...catalog.profiles.map(p => ({ value: p.id, label: `${p.name} · ${p.image} · ${p.network}` }))];
+    }, { back, choose: value => {
+      editor.selectProfile(catalog.profiles.find(p => p.id === value), catalog.revision); back();
+      this.showNotice('Configuration copied into draft; review cwd, image and grants before saving.');
+    } });
+  }
+  private openImageChoices(): void {
+    const editor = this.editor!, index = this.menuIndex;
+    const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
+    void this.openChoices('Local container images', () => this.session.listImages(), { back,
+      choose: value => { editor.stage('containerImage', value); back(); }, manual: () => { back(); this.openField(); } });
+  }
+  private openRecord(add: boolean, choice?: SettingsChoice): void {
+    const records = this.records; if (!records) return;
+    if (add && records.keys && !choice) {
+      const back = () => this.setView('settings-records');
+      void this.openChoices(records.field.label, async () => (await this.session.settingsChoices(records.field.choicesEndpoint!))
+        .filter(option => !records.keys!.includes(option.value)), {
+        back, choose: key => { const selected = this.genericChoices.find(option => option.value === key); if (selected && this.records === records) this.openRecord(true, selected); },
+      }); return;
+    }
+    if (!add && !records.values[this.menuIndex]) return;
+    const value = { ...structuredClone(records.field.itemDefaults!), ...structuredClone(add ? choice?.defaults ?? {} : records.values[this.menuIndex]) };
+    if (add) {
+      const parentValues = records.parent.valuesObject();
+      for (const [target, source] of Object.entries(records.field.itemDefaultsFrom ?? {})) value[target] = structuredClone(parentValues[source]);
+      if (records.field.itemIdKey) value[records.field.itemIdKey] = crypto.randomUUID();
+    }
+    records.index = add ? -1 : this.menuIndex;
+    records.newKey = add ? choice?.value : undefined;
+    const label = records.keys ? (add ? records.newKey : records.keys[this.menuIndex]) : value[records.field.itemLabelKey ?? 'name'];
+    const group = { ...records.parent.group, title: `${records.field.label}: ${label ?? 'New entry'}`,
+      fields: records.field.itemFields!, defaults: records.field.itemDefaults!, values: value, effective: value, overridden: [], restartRequired: [] };
+    this.serverEditor = new ServerSettingsEditor(group); this.recordEditing = true; this.setView('server-group');
+  }
+  private stageRecord(): void {
+    if (!this.records || !this.serverEditor) return;
+    try {
+      const value = this.serverEditor.valuesObject();
+      if (this.records.index < 0) {
+        if (this.records.keys) {
+          if (!this.records.newKey || this.records.keys.includes(this.records.newKey)) throw new Error('Choose a new resource from the server');
+          this.records.keys.push(this.records.newKey);
+        }
+        this.records.values.push(value);
+      } else this.records.values[this.records.index] = value;
+      this.serverEditor = this.records.parent; this.recordEditing = false; this.setView('settings-records');
+    } catch (error) { this.showNotice((error as Error).message); }
+  }
+  private finishRecords(stage: boolean): void {
+    if (!this.records) return;
+    const { parent, field, values, keys, parentIndex } = this.records;
+    try {
+      if (stage) parent.stage(field, JSON.stringify(keys ? Object.fromEntries(keys.map((key, i) => [key, values[i]])) : values));
+      this.serverEditor = parent; this.records = undefined; this.recordEditing = false;
+      this.setView('server-group'); this.menuIndex = parentIndex; this.draw();
+    } catch (error) { this.showNotice((error as Error).message); }
+  }
+  private async openServerSettings(): Promise<void> {
+    const request = ++this.settingsRequest;
+    this.setView('server-settings');
+    this.showNotice('Loading shared server settings…');
+    try {
+      await this.session.loadServerSettings();
+      if (!this.closing && request === this.settingsRequest && this.view === 'server-settings') { this.notice.setContent(''); this.draw(); }
+    } catch (error) { if (!this.closing && request === this.settingsRequest) this.showNotice((error as Error).message); }
+  }
+  private async reloadServerGroup(): Promise<void> {
+    const editor = this.serverEditor;
+    try {
+      const catalog = await this.session.loadServerSettings();
+      if (this.closing || this.view !== 'server-group' || this.serverEditor !== editor) return;
+      const group = catalog.groups.find(g => g.namespace === editor?.group.namespace);
+      if (!group) throw new Error('Settings group is no longer available');
+      this.serverEditor = new ServerSettingsEditor(group);
+      this.notice.setContent(''); this.draw();
+    } catch (error) { if (!this.closing) this.showNotice((error as Error).message); }
+  }
+  private chooseServerGroup(): void {
+    if (this.menuIndex === 0) { this.setView('server-facts'); return; }
+    const group = this.session.serverSettingsCatalog?.groups[this.menuIndex - 1];
+    if (!group) { this.showNotice('This plugin has not declared server settings.'); return; }
+    this.serverEditor = new ServerSettingsEditor(group);
+    this.records = undefined; this.recordEditing = false;
+    this.setView('server-group');
+  }
+  private openServerField(): void {
+    const editor = this.serverEditor, field = editor?.fields[this.menuIndex];
+    if (!editor || !field) return;
+    this.serverField = field;
+    if (field.itemFields) {
+      const value = JSON.parse(editor.values[field.key]!);
+      this.records = { parent: editor, field, values: field.editor === 'object-map' ? Object.values(value) : value,
+        ...(field.editor === 'object-map' && { keys: Object.keys(value) }), index: -1, parentIndex: this.menuIndex };
+      this.setView('settings-records'); this.showNotice(field.description ?? ''); return;
+    }
+    if (field.editor === 'select' || (field.editor === 'text' && field.choicesEndpoint)) {
+      const index = this.menuIndex, back = () => { this.setView('server-group'); this.menuIndex = index; this.draw(); };
+      void this.openChoices(field.label, () => field.choicesEndpoint ? this.session.settingsChoices(field.choicesEndpoint) : Promise.resolve(field.choices!.map(value => ({ value, label: value }))), {
+        back, choose: value => { editor.stage(field, value); back(); },
+        ...(field.editor === 'text' ? { manual: () => { this.input.setValue(editor.values[field.key]!); this.setView('server-field'); } } : {}),
+      }); return;
+    }
+    if (field.editor === 'boolean') { editor.stage(field, editor.values[field.key] === 'true' ? 'false' : 'true'); this.draw(); return; }
+    if (['list', 'string-map', 'object-map'].includes(field.editor)) {
+      this.structured = new StructuredEditor({ editor: field.editor as 'list' | 'string-map' | 'object-map', label: field.label, genericList: field.editor === 'list' && !field.choicesEndpoint }, editor.values[field.key]!);
+      this.structuredServer = true; this.structuredField = undefined;
+      this.structuredIndex = this.menuIndex; this.setView('structured');
+    } else { this.input.setValue(editor.values[field.key]!); this.setView('server-field'); }
+  }
+  private async saveServerSettings(): Promise<void> {
+    const editor = this.serverEditor;
+    if (!editor || this.sending) return;
+    this.sending = true; this.draw();
+    try {
+      const group = await this.session.updateServerSettings(editor.params());
+      if (!this.closing && this.serverEditor === editor) {
+        this.serverEditor = new ServerSettingsEditor(group);
+        if (this.view === 'server-confirm') this.setView('server-group');
+        this.showNotice(group.restartRequired.length ? `Saved on server · restart required: ${group.restartRequired.join(', ')}` : 'Saved on server · no agents restarted');
+      }
+    } catch (error) {
+      if (!this.closing && this.serverEditor === editor) {
+        if (this.view === 'server-confirm') this.setView('server-group');
+        this.showNotice(`${(error as Error).message} · draft retained; no automatic retry`);
+        try { await this.session.loadServerSettings(); } catch { /* Keep the original save error. */ }
+      }
+    } finally { this.sending = false; this.draw(); }
   }
   private openKeys(): void {
     if (this.view === 'keys' || this.sending) return;
@@ -338,20 +524,28 @@ export class UI {
     this.pendingAction = { method: action.method, agentId: this.actionAgent.id, label: `${action.label} · ${this.actionAgent.name}` };
     this.setView('confirm');
   }
-  private openEditor(modify: boolean, target = this.selected()): void {
+  private async openEditor(modify: boolean, target = this.selected()): Promise<void> {
     if (this.sending || (modify && !target)) return;
     if (!modify && !this.session.harnesses.length) {
       this.showNotice('No harnesses are enabled on this server.');
       return;
     }
     const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
+    const request = ++this.editorRequest, view = this.view, previous = this.editor;
+    let defaults;
+    if (!modify && this.session.podmanDefaultsEnabled) {
+      try { defaults = await this.session.containerGrantDefaults(); }
+      catch (error) { if (!this.closing && request === this.editorRequest && this.view === view) this.showNotice((error as Error).message); return; }
+      if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
+    }
     this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
-    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled);
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled, this.session.podmanProfilesEnabled);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
       this.editor.values.provider = String(parent?.settings.provider ?? '');
       this.editor.values.cwd = this.pathBase ? `${this.pathBase.replace(/\/$/, '')}/` : '';
+      if (defaults) for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const) this.editor.values[key] = JSON.stringify(defaults[key]);
     }
     this.setView('agent-edit');
   }
@@ -386,6 +580,7 @@ export class UI {
     const value = this.editor.values[this.editField];
     if (collection(this.editor.spec(this.editField).editor)) {
       try {
+        this.structuredServer = false;
         this.structured = new StructuredEditor(this.editor.spec(this.editField), value);
         this.structuredField = this.editField;
         this.structuredIndex = this.menuIndex;
@@ -398,27 +593,37 @@ export class UI {
     if (this.isPathInput()) this.refreshPaths();
   }
   private returnAgentField(): void {
-    this.setView('agent-edit'); this.menuIndex = this.structuredIndex; this.draw();
+    this.setView(this.structuredServer ? 'server-group' : 'agent-edit'); this.menuIndex = this.structuredIndex; this.draw();
   }
   private returnStructured(): void {
     const index = this.view === 'structured-filter' ? this.menuIndex : this.entryIndex;
     this.setView('structured'); this.menuIndex = index; this.draw();
   }
   private stageStructured(): void {
-    if (!this.editor || !this.structured || !this.structuredField) return;
-    this.editor.stage(this.structuredField, this.structured.serialize());
-    this.returnAgentField();
+    if (!this.structured) return;
+    try {
+      if (this.structuredServer && this.serverEditor && this.serverField) this.serverEditor.stage(this.serverField, this.structured.serialize());
+      else if (this.editor && this.structuredField) this.editor.stage(this.structuredField, this.structured.serialize());
+      else return;
+      this.returnAgentField();
+    } catch (error) { this.showNotice((error as Error).message); }
   }
   private openEntry(add: boolean): void {
     if (!this.structured) return;
     const selected = add ? undefined : this.structured.entries()[this.menuIndex];
     if (!add && !selected) return;
     this.entryIndex = this.menuIndex;
+    if (this.structuredServer && this.serverField?.choicesEndpoint) {
+      const structured = this.structured, field = this.serverField;
+      const back = () => { this.setView('structured'); this.menuIndex = this.entryIndex; this.draw(); };
+      void this.openChoices(field.label, () => this.session.settingsChoices(field.choicesEndpoint!), { back,
+        choose: value => { structured.put(selected?.id, selected?.key ?? '', value); back(); } }); return;
+    }
     this.entry = { id: selected?.id, key: selected?.key ?? '', text: selected ? valueText(selected.value) : '', type: selected ? valueType(selected.value) : 'string' };
     const pathEntry = ['directories', 'paths'].includes(this.structured.spec.editor);
     const text = pathEntry ? this.entry.text || this.pathBase : this.entry.text;
     this.input.setValue(this.structured.isMap ? this.entry.key : pathEntry && this.structured.spec.editor === 'directories' && text && !text.endsWith('/') ? `${text}/` : text);
-    this.setView(this.structured.isMap ? 'entry-key' : 'entry-value');
+    this.setView(this.structured.isMap ? 'entry-key' : this.structured.spec.genericList ? 'entry-type' : 'entry-value');
     if (this.isPathInput()) this.refreshPaths();
     if (this.isVolumeInput()) this.refreshVolumes();
   }
@@ -431,7 +636,7 @@ export class UI {
     return this.session.pathCompletion && ((this.view === 'agent-field' && (this.editField === 'cwd' || ['directory', 'path'].includes(this.editor?.spec(this.editField!).editor ?? ''))) ||
       (this.view === 'entry-value' && ['directories', 'paths'].includes(this.structured?.spec.editor ?? '')));
   }
-  private isVolumeField(): boolean { return ['readOnlyVolumes', 'readWriteVolumes'].includes(this.structuredField ?? ''); }
+  private isVolumeField(): boolean { return !this.structuredServer && ['readOnlyVolumes', 'readWriteVolumes'].includes(this.structuredField ?? ''); }
   private isVolumeInput(): boolean { return this.view === 'entry-value' && this.isVolumeField(); }
   private refreshVolumes(): void {
     const request = ++this.pathRequest;
@@ -555,6 +760,7 @@ export class UI {
     this.setView('prompt');
   }
   private setView(view: View): void {
+    ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     this.view = view;
     this.menuIndex = 0;
     ++this.pathRequest;
@@ -565,7 +771,7 @@ export class UI {
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
-    } else if (['structured', 'entry-type', 'keys', 'view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -578,6 +784,26 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'settings-choice-setup' && this.pendingChoiceSetup?.setup) {
+      const choice = this.pendingChoiceSetup, actions = this.choiceActions;
+      this.sending = true;
+      try {
+        await this.session.setupChoice(choice.setup!, value.trim());
+        if (!this.closing && this.view === 'settings-choice-setup' && this.choiceActions === actions) {
+          actions?.choose(choice.value); this.showNotice('Resource registered; stage and save the configuration to grant access.');
+        }
+      } catch (error) { if (!this.closing && this.view === 'settings-choice-setup') this.showNotice((error as Error).message); }
+      finally { this.sending = false; if (!this.closing && this.view === 'settings-choice-setup') { this.input.focus(); this.input.readInput(); } this.draw(); }
+      return;
+    }
+    if (this.view === 'server-field' && this.serverEditor && this.serverField) {
+      try {
+        this.serverEditor.stage(this.serverField, value);
+        const index = this.serverEditor.fields.indexOf(this.serverField);
+        this.setView('server-group'); this.menuIndex = index; this.draw();
+      } catch (error) { this.showNotice((error as Error).message); this.input.focus(); this.input.readInput(); }
+      return;
+    }
     if (this.view === 'volume-destination' && this.pendingVolume && this.structured) {
       const editor = this.structured, choice = this.pendingVolume;
       this.sending = true;
@@ -709,8 +935,8 @@ export class UI {
     const width = Math.max(1, Number(this.screen.width));
     const store = this.session.store;
     const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
-    const structuredLabel = this.structuredField ? this.editor?.label(this.structuredField) : '';
-    const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; agent Save applies` :
+    const structuredLabel = this.structuredServer ? this.serverField?.label : this.structuredField ? this.editor?.label(this.structuredField) : '';
+    const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; ${this.structuredServer ? 'server' : 'agent'} Save applies` :
       this.view === 'volume-destination' ? `Container destination · ${this.pendingVolume?.name} · e.g. /home/pi/.pi` :
       this.view === 'structured-raw' ? `Edit ${structuredLabel} · advanced JSON` :
       this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
@@ -727,14 +953,22 @@ export class UI {
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
       this.view === 'skills' ? `Skills · ${agent?.name} · changes staged until Enter` :
       this.view === 'skill-add' ? 'Add catalog skill · enter JSON {"name":"…","gitUrl":"https://…"}' :
-      this.view === 'view' ? 'View settings' : 'Agent Organization';
+      this.view === 'settings-choice-setup' ? `${this.pendingChoiceSetup?.setup?.label}` :
+      this.view === 'settings-options' ? `${this.choiceLabel} · select an available option` :
+      this.view === 'settings-records' ? `${this.records?.field.label} · ${this.records?.keys ? 'volume / resource entries' : 'named configurations'} · S stages; server Save applies` :
+      this.view === 'server-settings' ? 'Server settings · shared by all clients' :
+      this.view === 'server-facts' ? 'Organization facts · read-only' :
+      this.view === 'server-group' ? `${this.serverEditor?.group.title} · ${this.recordEditing ? 'configuration draft' : 'server-wide'} · revision ${this.serverEditor?.group.revision}` :
+      this.view === 'server-field' ? `${this.serverField?.label}${this.serverField?.choices ? ` · choices: ${this.serverField.choices.join(', ')}` : ''} · ${this.serverField?.description ?? this.serverField?.editor}` :
+      this.view === 'server-confirm' ? 'Confirm server-wide settings · affects all clients and agents' :
+      this.view === 'view' ? 'View settings · server configuration / client preferences' : 'Agent Organization';
     this.title.setContent(`${clip(heading, width)}\n${clip(`${this.session.status} · ${this.session.socketPath}`, width)}`);
     if (['structured', 'structured-filter'].includes(this.view)) {
       const entries = this.structured?.entries() ?? [];
       this.menuIndex = Math.max(0, Math.min(this.menuIndex, entries.length - 1));
       this.updating = true;
       this.menu.bottom = this.view === 'structured-filter' ? 5 : 2;
-      this.menu.setItems(entries.length ? entries.map(entry => clip(this.structured!.isMap ? `${entry.key}=${this.structured!.spec.sensitive ? '••••' : previewValue(entry.value)}` : String(entry.value), width - 1)) : ['No matching entries']);
+      this.menu.setItems(entries.length ? entries.map(entry => clip(this.structured!.isMap ? `${entry.key}=${this.structured!.spec.sensitive ? '••••' : previewValue(entry.value)}` : this.structured!.spec.genericList ? previewValue(entry.value) : String(entry.value), width - 1)) : ['No matching entries']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.view === 'structured-filter' ? ' Filter: type freely · ↑↓ select · Enter edit · Ctrl+U clear · Esc actions' : ` ↑↓ select  a add  e edit  d delete  / filter  S stage${this.isVolumeField() ? '' : '  J raw'}  Esc discard`);
     } else if (this.view === 'entry-type') {
@@ -784,7 +1018,7 @@ export class UI {
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...AGENT_FIELDS.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
+        [...AGENT_FIELDS.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') || field === 'containerProfile' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
@@ -798,12 +1032,38 @@ export class UI {
       }));
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' ↑↓ select   Space cycle   i installed   a available   u unavailable   Enter save   + add   Esc discard');
+    } else if (this.view === 'settings-options') {
+      this.updating = true; this.menu.setItems(this.genericChoices.length ? this.genericChoices.map(c => clip(c.label, width - 1)) : ['No available options']);
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(` ↑↓ select  Enter choose${this.choiceActions?.manual ? '  m manual entry' : ''}  Esc back`);
+    } else if (this.view === 'settings-records') {
+      this.updating = true; this.menu.setItems(this.records?.values.length ? this.records.values.map((v, i) => clip(this.records!.keys ? `${this.records!.keys[i]}${v[this.records!.field.itemLabelKey ?? 'name'] ? ` → ${v[this.records!.field.itemLabelKey ?? 'name']}` : ''}` : String(v[this.records!.field.itemLabelKey ?? 'name'] ?? `Entry ${i + 1}`) + (v.image ? ` · ${v.image}` : ''), width - 1)) : [this.records?.keys ? 'No entries. Press a to choose a server resource.' : 'No configurations. Press a to add.']);
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(` a ${this.records?.keys ? 'choose server resource' : 'add'}  Enter / e edit  d delete  S stage ${this.records?.keys ? 'map' : 'list'}  Esc discard · no host resources are deleted`);
+    } else if (['server-settings', 'server-group', 'server-confirm', 'server-facts'].includes(this.view)) {
+      const catalog = this.session.serverSettingsCatalog, editor = this.serverEditor;
+      this.updating = true;
+      if (this.view === 'server-settings') {
+        const declared = new Set(catalog?.groups.map(g => g.plugin ?? g.namespace));
+        this.menu.setItems(['Organization facts (read-only)', ...(catalog?.groups.map(g => `${g.title} · shared server settings${g.restartRequired.length ? ' · RESTART REQUIRED' : ''}`) ?? []), ...(catalog?.facts.plugins.filter(p => !declared.has(p)).map(p => `${p} · no server settings declared (read-only)`) ?? [])]);
+      } else if (this.view === 'server-facts') {
+        this.menu.setItems(catalog ? Object.entries(catalog.facts).map(([key, value]) => clip(`${key}: ${Array.isArray(value) ? value.join(', ') || '(none)' : value}`, width - 1)) : ['Server facts unavailable']);
+      } else if (this.view === 'server-confirm') {
+        const params = editor?.params();
+        this.menu.setItems(['Cancel — keep draft', 'Save — changes configuration for every connected client', ...(editor?.group.fields.filter(f => Object.hasOwn(params!.patch, f.key) || params!.reset.includes(f.key)).map(f => `${f.label}: ${previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${f.effect}`) ?? [])]);
+      } else if (editor) {
+        const current = catalog?.groups.find(g => g.namespace === editor.group.namespace);
+        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${editor.group.restartRequired.includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
+        if (!this.recordEditing && current && current.revision !== editor.group.revision && !this.notice.getContent().includes('draft retained')) this.notice.setContent('Server settings changed in another client · draft is stale; r discards and reloads');
+      }
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ' ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload  Esc discard') : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems(['f  Event filters', 'l  Event rendering levels']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
-      this.footer.setContent(' f filters   l levels   ↑↓ select   Enter open   Esc tree');
+      this.footer.setContent(' s server settings   f client filters   l client levels   ↑↓ select   Enter open   Esc tree');
     } else if (this.view === 'filters' || this.view === 'levels') {
       const currentType = this.menuTypes[this.menuIndex];
       this.menuTypes = this.settings.types(store.discovered);
@@ -831,6 +1091,10 @@ export class UI {
         if (this.follow) this.chat.setScrollPerc(100); else this.chat.setScroll(scroll);
       }
       this.footer.setContent(' Text: Enter interrupt/send  PgUp/PgDn scroll  Ctrl+Home top  Ctrl+End follow  Ctrl+U clear  Esc tree');
+    } else if (this.view === 'settings-choice-setup') {
+      this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
+    } else if (this.view === 'server-field') {
+      this.footer.setContent(' Enter stage field  Ctrl+U clear  Esc discard field · review Save to apply server-wide');
     } else if (this.view === 'agent-field') {
       this.footer.setContent(this.isPathInput() ?
         ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :

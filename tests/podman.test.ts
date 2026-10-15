@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import xterm from '@xterm/headless';
+import type { ContainerProfile } from '../src/protocol.js';
 import { AgentEditor } from '../src/agent-editor.js';
 import { Session } from '../src/session.js';
 import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
@@ -26,6 +27,24 @@ test('Podman editor has explicit empty grants, inheritance and isolated namespac
   expect(raw.imageChanged).toBe(true);
   raw.values.containerImage = 'other:v2'; expect(() => raw.params()).toThrow('not both');
   expect(new AgentEditor(null).fields).not.toContain('containerImage');
+});
+
+test('selecting a container configuration snapshots its runtime and grants, clears stale model choices, and preserves snapshots when modifying grants', () => {
+  const profile: ContainerProfile = { id: 'coding', name: 'Coding', image: 'pi:v2', network: 'none', containerUid: 2000, containerGid: 2001,
+    harnessEnv: ['PUBLIC_CONFIG'], harness: 'pi', provider: '', model: '', cwd: '/project', readOnlyDirs: ['/configuration'], readWriteDirs: ['/project'], readOnlyVolumes: ['config'], readWriteVolumes: [] };
+  const editor = new AgentEditor(null, undefined, true, [], true, true);
+  editor.values.harness = 'old'; editor.values.provider = 'old-provider'; editor.values.model = 'old-model';
+  editor.selectProfile(profile, 4); profile.containerUid = 9999; profile.readWriteDirs.push('/not-copied');
+  expect(editor.fields).toContain('containerProfile'); expect(editor.values.provider).toBe(''); expect(editor.values.model).toBe('');
+  const settings = editor.params().settings as any;
+  expect(settings.extensions.podman).toMatchObject({ image: 'pi:v2', profile: { id: 'coding', name: 'Coding', revision: 4 },
+    runtime: { network: 'none', containerUid: 2000, containerGid: 2001 }, readWriteDirs: ['/project'], readOnlyVolumes: ['config'] });
+  const persisted = agent('worker', null, { settings });
+  const modify = new AgentEditor(null, persisted, true, [], true, true); modify.values.readOnlyVolumes = '[]';
+  expect(modify.fields).not.toContain('containerProfile');
+  expect((modify.params().settings as any).extensions.podman.runtime).toEqual(settings.extensions.podman.runtime);
+  expect((modify.params().settings as any).extensions.podman.profile).toEqual(settings.extensions.podman.profile);
+  editor.selectProfile(undefined); expect((editor.params().settings as any).extensions.podman.runtime).toBeUndefined();
 });
 
 test('Podman scopes use discovered client-only endpoint once and surface partial failures', async () => {

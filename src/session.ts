@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults } from './protocol.js';
 import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
@@ -22,6 +22,70 @@ export class Session extends EventEmitter {
   pathCompletion = false;
   podmanEnabled = false;
   settingsFields: PluginField[] = [];
+  serverSettingsCapability?: ServerSettingsCapability;
+  serverSettingsCatalog?: ServerSettingsCatalog;
+  private installServerSettings(catalog: ServerSettingsCatalog): void {
+    const previous = this.serverSettingsCatalog;
+    this.serverSettingsCatalog = { ...catalog, groups: catalog.groups.map(group => {
+      const current = previous?.groups.find(g => g.namespace === group.namespace);
+      return current && current.revision > group.revision ? current : group;
+    }) };
+  }
+  async loadServerSettings(): Promise<ServerSettingsCatalog> {
+    const client = this.client, capability = this.serverSettingsCapability;
+    if (!client || !this.status.startsWith('connected') || !capability) throw new Error('Server settings are not available');
+    const catalog = await client.request<ServerSettingsCatalog>(capability.endpoints.list, {});
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected');
+    this.installServerSettings(catalog);
+    this.store.emit('change');
+    return this.serverSettingsCatalog!;
+  }
+  async updateServerSettings(params: { namespace: string; expectedRevision: number; patch: Record<string, unknown>; reset: string[] }): Promise<ServerSettingsGroup> {
+    const client = this.client, capability = this.serverSettingsCapability;
+    if (!client || !this.status.startsWith('connected') || !capability) throw new Error('Server settings are not available');
+    const group = await client.request<ServerSettingsGroup>(capability.endpoints.update, params, 60_000);
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected after saving; refresh before retrying');
+    if (this.serverSettingsCatalog) this.serverSettingsCatalog.groups = this.serverSettingsCatalog.groups.map(g => g.namespace === group.namespace && g.revision <= group.revision ? group : g);
+    this.store.emit('change');
+    return group;
+  }
+  private podmanProfiles = '';
+  private podmanImages = '';
+  private podmanDefaults = '';
+  get podmanDefaultsEnabled(): boolean { return !!this.podmanDefaults; }
+  async containerGrantDefaults(): Promise<ContainerGrantDefaults> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected') || !this.podmanDefaults) throw new Error('Container defaults are not available');
+    const result = await client.request<ContainerGrantDefaults>(this.podmanDefaults, {});
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected; reopen the agent draft');
+    for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const)
+      if (!Array.isArray(result[key]) || result[key].some(value => typeof value !== 'string')) throw new Error('Invalid container grant defaults');
+    return result;
+  }
+  get podmanProfilesEnabled(): boolean { return !!this.podmanProfiles; }
+  get podmanImagesEnabled(): boolean { return !!this.podmanImages; }
+  async listProfiles(): Promise<{ revision: number; profiles: ContainerProfile[] }> {
+    if (!this.client || !this.status.startsWith('connected') || !this.podmanProfiles) throw new Error('Container configurations are not available');
+    const client = this.client;
+    const result = await client.request<{ revision: number; profiles: ContainerProfile[] }>(this.podmanProfiles, {});
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected; reload configurations');
+    return result;
+  }
+  async settingsChoices(endpoint: string): Promise<SettingsChoice[]> {
+    if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    const client = this.client;
+    const result = await client.request<{ choices: SettingsChoice[] }>(endpoint, {}, 30_000);
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected; reload options');
+    if (!Array.isArray(result.choices) || result.choices.some(c => typeof c.value !== 'string' || typeof c.label !== 'string' ||
+      (c.defaults !== undefined && (!c.defaults || typeof c.defaults !== 'object' || Array.isArray(c.defaults))) ||
+      (c.setup && (!/^[a-z][a-z0-9.-]*$/.test(c.setup.endpoint) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(c.setup.inputKey) || ['__proto__', 'constructor', 'prototype'].includes(c.setup.inputKey) || typeof c.setup.label !== 'string' || !c.setup.params || typeof c.setup.params !== 'object' || Array.isArray(c.setup.params))))) throw new Error('Invalid option catalog');
+    return result.choices;
+  }
+  async setupChoice(setup: NonNullable<SettingsChoice['setup']>, value: string): Promise<void> {
+    if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    await this.client.request(setup.endpoint, { ...setup.params, [setup.inputKey]: value }, 30_000);
+  }
+  async listImages() { return this.settingsChoices(this.podmanImages); }
   private podmanModify = '';
   private podmanVolumes = '';
   private podmanConfigureVolume = '';
@@ -64,15 +128,25 @@ export class Session extends EventEmitter {
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
     this.settingsFields = pluginFields(snapshot.capabilities?.settingsEditors);
+    const serverSettings = snapshot.capabilities?.serverSettings;
+    this.serverSettingsCapability = serverSettings?.version === 1 && ['list', 'get', 'update'].every(key => typeof serverSettings.endpoints?.[key as keyof typeof serverSettings.endpoints] === 'string') ? serverSettings : undefined;
+    if (!this.serverSettingsCapability) this.serverSettingsCatalog = undefined;
+    else if (this.serverSettingsCatalog) {
+      const catalog = await client.request<ServerSettingsCatalog>(this.serverSettingsCapability.endpoints.list, {});
+      if (client === this.client && !this.stopped) this.installServerSettings(catalog);
+    }
     this.serverCwd = snapshot.capabilities?.cwd ?? '';
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
-    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string; configureVolume?: string }; modelDiscovery?: boolean } | undefined;
+    const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string; configureVolume?: string; profiles?: string; images?: string; defaults?: string }; modelDiscovery?: boolean } | undefined;
     this.podmanEnabled = typeof podman?.endpoints?.modify === 'string';
     this.podmanModify = podman?.endpoints?.modify ?? '';
     this.podmanVolumes = podman?.endpoints?.volumes ?? '';
     this.podmanConfigureVolume = podman?.endpoints?.configureVolume ?? '';
+    this.podmanProfiles = podman?.endpoints?.profiles ?? '';
+    this.podmanImages = podman?.endpoints?.images ?? '';
+    this.podmanDefaults = podman?.endpoints?.defaults ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
     const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
@@ -103,7 +177,7 @@ export class Session extends EventEmitter {
         if (buffering) buffered.push(event);
         else {
           this.store.ingest(event);
-          if (event.type === 'skills.catalog_added') this.scheduleRefresh();
+          if (event.type === 'skills.catalog_added' || event.type === 'organization.settings.changed') this.scheduleRefresh();
         }
       });
       client.on('diagnostic', (message: string) => this.emit('notice', message));
@@ -124,6 +198,7 @@ export class Session extends EventEmitter {
         if (!snapshot || this.stopped) { client.close(); continue; }
         if (snapshot.seq < this.store.watermark) {
           this.store.reset();
+          this.serverSettingsCatalog = undefined;
           this.emit('notice', 'Server history changed; loaded a new organization.');
         }
         await this.loadSkills(client, snapshot);
