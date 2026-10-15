@@ -49,8 +49,8 @@ export interface SettingsChoice {
 }
 export interface ContainerGrantDefaults { readOnlyDirs: string[]; readWriteDirs: string[]; readOnlyVolumes: string[]; readWriteVolumes: string[] }
 export interface ContainerProfile {
-  id: string; name: string; image: string; network: 'pasta' | 'slirp4netns' | 'none'; containerUid: number; containerGid: number; harnessEnv: string[];
-  harness: string; provider: string; model: string; cwd: string;
+  id: string; name: string; image: string; network: 'pasta' | 'slirp4netns' | 'none'; containerUid: number; containerGid: number; env: string[];
+  cwd: string;
   readOnlyDirs: string[]; readWriteDirs: string[]; readOnlyVolumes: string[]; readWriteVolumes: string[];
 }
 export interface ServerSettingsDescriptor { namespace: string; title: string; plugin?: string; description?: string; version: number; fields: ServerSettingsField[] }

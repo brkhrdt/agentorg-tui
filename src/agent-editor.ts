@@ -54,9 +54,6 @@ export class AgentEditor {
     this.values.containerProfile = profile?.name ?? '';
     if (!profile) return;
     this.values.containerImage = profile.image;
-    if (profile.harness) this.values.harness = profile.harness;
-    this.values.provider = profile.provider; this.values.model = profile.model;
-    this.values.options = '{}';
     if (profile.cwd) this.values.cwd = profile.cwd;
     for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const) this.values[key] = JSON.stringify(profile[key]);
   }
@@ -128,7 +125,7 @@ export class AgentEditor {
       const selected = this.selectedProfile;
       settings.extensions = { ...extensions, podman: { ...prior,
         ...(selected && { profile: { id: selected.profile.id, name: selected.profile.name, revision: selected.revision },
-          runtime: { network: selected.profile.network, containerUid: selected.profile.containerUid, containerGid: selected.profile.containerGid, harnessEnv: [...selected.profile.harnessEnv] } }),
+          runtime: { network: selected.profile.network, containerUid: selected.profile.containerUid, containerGid: selected.profile.containerGid, env: [...selected.profile.env] } }),
         image: this.values.containerImage.trim() || null, readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs'), ...(this.volumesEnabled && { readOnlyVolumes: grants('readOnlyVolumes'), readWriteVolumes: grants('readWriteVolumes') }) } };
     }
     const originalExtensions = JSON.parse(this.original.extensions) as Record<string, unknown>;

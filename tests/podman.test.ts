@@ -29,16 +29,17 @@ test('Podman editor has explicit empty grants, inheritance and isolated namespac
   expect(new AgentEditor(null).fields).not.toContain('containerImage');
 });
 
-test('selecting a container configuration snapshots its runtime and grants, clears stale model choices, and preserves snapshots when modifying grants', () => {
+test('selecting a container configuration snapshots its runtime and grants without changing harness settings', () => {
   const profile: ContainerProfile = { id: 'coding', name: 'Coding', image: 'pi:v2', network: 'none', containerUid: 2000, containerGid: 2001,
-    harnessEnv: ['PUBLIC_CONFIG'], harness: 'pi', provider: '', model: '', cwd: '/project', readOnlyDirs: ['/configuration'], readWriteDirs: ['/project'], readOnlyVolumes: ['config'], readWriteVolumes: [] };
+    env: ['PUBLIC_CONFIG'], cwd: '/project', readOnlyDirs: ['/configuration'], readWriteDirs: ['/project'], readOnlyVolumes: ['config'], readWriteVolumes: [] };
   const editor = new AgentEditor(null, undefined, true, [], true, true);
-  editor.values.harness = 'old'; editor.values.provider = 'old-provider'; editor.values.model = 'old-model';
+  editor.values.harness = 'fixture'; editor.values.provider = 'provider-a'; editor.values.model = 'model-a'; editor.values.options = '{"thinking":"low"}';
   editor.selectProfile(profile, 4); profile.containerUid = 9999; profile.readWriteDirs.push('/not-copied');
-  expect(editor.fields).toContain('containerProfile'); expect(editor.values.provider).toBe(''); expect(editor.values.model).toBe('');
+  expect(editor.fields).toContain('containerProfile');
+  expect(editor.values).toMatchObject({ harness: 'fixture', provider: 'provider-a', model: 'model-a', options: '{"thinking":"low"}' });
   const settings = editor.params().settings as any;
   expect(settings.extensions.podman).toMatchObject({ image: 'pi:v2', profile: { id: 'coding', name: 'Coding', revision: 4 },
-    runtime: { network: 'none', containerUid: 2000, containerGid: 2001 }, readWriteDirs: ['/project'], readOnlyVolumes: ['config'] });
+    runtime: { network: 'none', containerUid: 2000, containerGid: 2001, env: ['PUBLIC_CONFIG'] }, readWriteDirs: ['/project'], readOnlyVolumes: ['config'] });
   const persisted = agent('worker', null, { settings });
   const modify = new AgentEditor(null, persisted, true, [], true, true); modify.values.readOnlyVolumes = '[]';
   expect(modify.fields).not.toContain('containerProfile');
