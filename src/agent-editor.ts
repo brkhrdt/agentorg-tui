@@ -27,15 +27,15 @@ export class AgentEditor {
       if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'].includes(spec.key)) continue;
       this.pluginSpecs.set(`plugin:${spec.namespace}:${spec.key}`, { ...spec });
     }
-    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled && profilesEnabled && !agent ? ['containerProfile' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
+    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled && profilesEnabled ? ['containerProfile' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
       const value = field === 'name' ? agent?.name ?? 'agent' : field === 'metadata' ? agent?.metadata : agent?.settings[field];
       return [field, maps.has(field) ? JSON.stringify(value ?? {}) : String(value ?? '')];
     })) as Record<AgentField, string>;
-    const podman = agent?.settings.extensions?.podman as { image?: string | null; readOnlyDirs?: string[]; readWriteDirs?: string[]; readOnlyVolumes?: string[]; readWriteVolumes?: string[] } | undefined;
-    this.values.containerProfile = '';
+    const podman = agent?.settings.extensions?.podman as { image?: string | null; profile?: { name?: string }; readOnlyDirs?: string[]; readWriteDirs?: string[]; readOnlyVolumes?: string[]; readWriteVolumes?: string[] } | undefined;
+    this.values.containerProfile = podman?.profile?.name ?? '';
     this.values.containerImage = podman?.image ?? '';
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
@@ -111,7 +111,7 @@ export class AgentEditor {
       if (field === 'name' || field === 'metadata') params[field] = value;
       else settings[field] = value;
     }
-    if (this.podmanEnabled && (!this.agentId || PODMAN_FIELDS.some(field => this.values[field] !== this.original[field]))) {
+    if (this.podmanEnabled && (!this.agentId || this.selectedProfile !== undefined || PODMAN_FIELDS.some(field => this.values[field] !== this.original[field]))) {
       const grants = (field: 'readOnlyDirs' | 'readWriteDirs' | 'readOnlyVolumes' | 'readWriteVolumes'): string[] => {
         let value: unknown;
         const message = `${field} must be a JSON array of ${field.endsWith('Volumes') ? 'volume names' : 'paths'}`;

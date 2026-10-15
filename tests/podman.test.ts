@@ -42,9 +42,12 @@ test('selecting a container configuration snapshots its runtime and grants witho
     runtime: { network: 'none', containerUid: 2000, containerGid: 2001, env: ['PUBLIC_CONFIG'] }, readWriteDirs: ['/project'], readOnlyVolumes: ['config'] });
   const persisted = agent('worker', null, { settings });
   const modify = new AgentEditor(null, persisted, true, [], true, true); modify.values.readOnlyVolumes = '[]';
-  expect(modify.fields).not.toContain('containerProfile');
+  expect(modify.fields).toContain('containerProfile');
+  expect(modify.values.containerProfile).toBe('Coding');
   expect((modify.params().settings as any).extensions.podman.runtime).toEqual(settings.extensions.podman.runtime);
   expect((modify.params().settings as any).extensions.podman.profile).toEqual(settings.extensions.podman.profile);
+  modify.selectProfile(profile, 5);
+  expect((modify.params().settings as any).extensions.podman.profile.revision).toBe(5);
   editor.selectProfile(undefined); expect((editor.params().settings as any).extensions.podman.runtime).toBeUndefined();
 });
 
