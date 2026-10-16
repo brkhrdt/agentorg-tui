@@ -85,8 +85,8 @@ launch settings, error, session number, and revision. Metadata columns fit their
 contents up to sensible caps; **Event gets the remaining width** and priority
 when space is tight. Short values such as harness `pi` only need a compact column
 wide enough for the header. Columns recalculate on resize and live updates.
-Children are indented by two additional cells per hierarchy level. Archived
-agents are hidden.
+Child connectors sit directly beneath their parent's name; names are indented
+by two cells per hierarchy level. Archived agents are hidden.
 Latest events always use the summary strategy, regardless of chat levels.
 Compatible message chunks are combined per agent, so the preview shows the
 message rather than only its last streamed chunk. Assistant previews omit the

@@ -14,7 +14,7 @@ const LIMITS: Record<TableField, { min: number; max: number }> = {
   event: { min: 12, max: Infinity }, error: { min: 8, max: 32 }, harness: { min: 7, max: 16 },
   provider: { min: 8, max: 20 }, cwd: { min: 8, max: 32 }, session: { min: 7, max: 10 }, revision: { min: 8, max: 10 },
 };
-const indent = (depth: number) => `${'  '.repeat(depth)}${depth ? '└ ' : ''}`;
+const indent = (depth: number) => depth > 0 ? `${'  '.repeat(depth - 1)}└ ` : '';
 function value({ agent }: TreeRow, field: TableField): string {
   switch (field) {
     case 'name': return agent.name;

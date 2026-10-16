@@ -68,7 +68,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     expect(terminal.buffer.active.getLine(4)?.getCell(eventColumn + 22)?.isBold()).toBeFalsy();
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
-    expect(screen()).toContain('  └ worker');
+    expect(screen().split('\n')[4]).toStartWith('└ worker');
     const selectedBg = (row: number) => terminal.buffer.active.getLine(row)?.getCell(0)?.getBgColor();
     expect(selectedBg(3)).not.toBe(selectedBg(4));
     keys('\x1b[B');
@@ -266,7 +266,7 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture', provider: 'provider-a', model: 'gpt-6-luna' } });
     keys('n'); await visible('Create agent · child');
     expect(screen()).toContain('/server/project/src/nested/');
-    await field('worker'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('  └ worker');
+    await field('worker'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('└ worker');
     expect(mutations[1].params.parentId).toBe('root');
     keys('\x1b[A'); // Back to the root after the child was selected on creation.
     keys('e'); await visible('Modify agent · revision 1');
