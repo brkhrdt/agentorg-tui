@@ -20,7 +20,7 @@ test('Podman grants reuse server cwd completion for add/edit/remove without crea
   const { keys, visible, screen } = ui;
   try {
     await visible('directory-root'); keys('e'); await visible('Modify agent');
-    keys('\x1b[B'.repeat(10) + '\r'); await visible('Edit readOnlyDirs · list / map');
+    keys('\x1b[B'.repeat(9) + '\r'); await visible('Edit readOnlyDirs · list / map');
     await visible('/existing'); keys('a'); await visible('Edit readOnlyDirs · value');
     await visible('space dir/'); expect(screen()).toContain('/server/start/');
     keys('\x15/server/start/missing\r'); await visible('Choose an existing server directory');

@@ -59,11 +59,13 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     catch { throw new Error(`Missing ${JSON.stringify(text)}; exited=${exited}; stderr=${stderr}\n${screen()}`); }
   };
   try {
-    await visible(clip(initialText.replace(/\*\*/g, '') + '.', 35));
+    await visible('Initial worker answer');
+    const eventColumn = terminal.buffer.active.getLine(2)!.translateToString(true).indexOf('LATEST TRACKED EVENT');
+    await visible(clip(initialText.replace(/\*\*/g, '') + '.', 99 - eventColumn));
     expect(screen()).not.toContain('assistant:');
     expect(screen()).not.toContain('**Initial worker answer**');
-    expect(terminal.buffer.active.getLine(4)?.getCell(64)?.isBold()).toBeTruthy();
-    expect(terminal.buffer.active.getLine(4)?.getCell(86)?.isBold()).toBeFalsy();
+    expect(terminal.buffer.active.getLine(4)?.getCell(eventColumn)?.isBold()).toBeTruthy();
+    expect(terminal.buffer.active.getLine(4)?.getCell(eventColumn + 22)?.isBold()).toBeFalsy();
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
     expect(screen()).toContain('  └ worker');

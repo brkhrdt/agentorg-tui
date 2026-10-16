@@ -148,6 +148,7 @@ describe('Markdown tree previews', () => {
     expect(stripAnsi(rendered)).toBe('safe');
     expect(rendered).not.toContain('\x1b[2J');
     expect(rendered).not.toContain('\x07');
+    expect(renderTreeEvent(event(1, 'plugin.\ncustom\x1b[2J', 'payload'), 80)).not.toContain('\n');
     expect(stripAnsi(renderTreeEvent(message('[docs](https://example.com)'), 80))).toContain('docs');
     expect(stripAnsi(renderTreeEvent(event(1, 'agent.message', { truncated: true, originalBytes: 1000, preview: '**partial**' }), 80))).toContain('TRUNCATED');
   });

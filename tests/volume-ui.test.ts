@@ -54,7 +54,7 @@ test('terminal volumes support fuzzy choices, arrow selection, Tab/Enter staging
   const ui = terminalClient(mock.path, mock.directory); const { keys, visible, screen } = ui;
   try {
     await visible('volume-root'); keys('e'); await visible('Modify agent');
-    keys('\x1b[B'.repeat(12) + '\r'); await visible('Edit readOnlyVolumes · list / map');
+    keys('\x1b[B'.repeat(11) + '\r'); await visible('Edit readOnlyVolumes · list / map');
     keys('a'); await visible('Shared credentials');
     keys('pm'); await visible('pi-main →');
     await new Promise(resolve => setTimeout(resolve, 150)); expect(screen()).not.toContain('pi-secondary →');
@@ -89,7 +89,7 @@ test('terminal users can select a newly created host volume and register its con
   const ui = terminalClient(mock.path, mock.directory); const { keys, visible, screen } = ui;
   try {
     await visible('host-volume-root'); keys('e'); await visible('Modify agent');
-    keys('\x1b[B'.repeat(12) + '\r'); await visible('Edit readOnlyVolumes · list / map');
+    keys('\x1b[B'.repeat(11) + '\r'); await visible('Edit readOnlyVolumes · list / map');
     keys('a'); await visible('pi-host → (choose container destination)');
     keys('\r'); await visible('Container destination · pi-host');
     keys('/usr\r'); await visible('Protected container runtime path'); expect(screen()).toContain('/usr');

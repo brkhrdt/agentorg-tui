@@ -5,6 +5,7 @@ import xterm from '@xterm/headless';
 import type { ContainerProfile } from '../src/protocol.js';
 import { AgentEditor } from '../src/agent-editor.js';
 import { Session } from '../src/session.js';
+import { UI } from '../src/ui.js';
 import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
 
 test('Podman agent editor selects containers instead of exposing a separate image field', () => {
@@ -44,6 +45,46 @@ test('selecting a container configuration snapshots its runtime and grants witho
   modify.selectProfile(profile, 5);
   expect((modify.params().settings as any).extensions.podman.profile.revision).toBe(5);
   expect((editor.params().settings as any).extensions.podman.runtime.containerUid).toBe(2000);
+});
+
+test('raw extension image edits still request propagation scopes and conflict with container selection', () => {
+  const record = agent('worker', null, { settings: { harness: 'pi', extensions: { podman: { image: 'pi:v1' } } } });
+  const editor = new AgentEditor(null, record, true, [], false, true);
+  expect(editor.imageChanged).toBe(false);
+  editor.values.extensions = JSON.stringify({ podman: { image: 'pi:v2' } });
+  expect(editor.imageChanged).toBe(true);
+  expect(editor.params().settings).toMatchObject({ extensions: { podman: { image: 'pi:v2' } } });
+  editor.selectProfile({ id: 'default', name: 'Default', image: 'pi:v3', network: 'none', containerUid: 1000, containerGid: 1000,
+    env: [], cwd: '', readOnlyDirs: [], readWriteDirs: [], readOnlyVolumes: [], readWriteVolumes: [] }, 2);
+  expect(() => editor.params()).toThrow('not both');
+});
+
+test('new root drafts select Default, while child drafts inherit without fetching server defaults', async () => {
+  const profile: ContainerProfile = { id: 'default', name: 'Default', image: 'default:v1', network: 'pasta', containerUid: 1000, containerGid: 1000,
+    env: [], cwd: '', readOnlyDirs: [], readWriteDirs: ['/default'], readOnlyVolumes: [], readWriteVolumes: [] };
+  const parent = agent('root', null, { settings: { harness: 'pi', cwd: '/parent', extensions: { podman: { image: 'parent:v1' } } } });
+  let requests = 0;
+  // Exercise draft initialization without allocating terminal widgets.
+  const open = async (target?: typeof parent) => {
+    const ui = Object.create(UI.prototype) as any;
+    Object.assign(ui, { editorRequest: 0, view: 'tree', createParent: () => target, setView: () => {}, session: {
+      harnesses: ['pi'], serverCwd: '/server', podmanEnabled: true, settingsFields: [], podmanVolumesEnabled: true,
+      podmanProfilesEnabled: true, podmanDefaultsEnabled: false,
+      listProfiles: async () => { requests++; return { revision: 3, profiles: [profile] }; },
+    } });
+    await ui.openEditor(false, target);
+    return ui.editor as AgentEditor;
+  };
+  const root = await open();
+  expect(root.values.container).toBe('Default');
+  expect(root.params().settings).toMatchObject({ extensions: { podman: { image: 'default:v1', profile: { id: 'default', revision: 3 } } } });
+  expect(requests).toBe(1);
+  const child = await open(parent);
+  expect(requests).toBe(1);
+  expect(child.values.container).toBe('Inherited');
+  expect(child.params()).toMatchObject({ parentId: 'root', settings: { cwd: '/parent/', extensions: { podman: { readOnlyDirs: [], readWriteDirs: [] } } } });
+  const podman = (child.params().settings as any).extensions.podman;
+  for (const key of ['image', 'runtime', 'profile', 'configGrants']) expect(podman).not.toHaveProperty(key);
 });
 
 test('Podman scopes use discovered client-only endpoint once and surface partial failures', async () => {
@@ -100,8 +141,9 @@ test('terminal container choices, not image fields, trigger the existing propaga
       selectedImage = `pi:v${index + 2}`;
       keys('e'); await visible('Modify agent');
       keys('\x1b[B'.repeat(9) + '\r'); await visible('Container');
-      keys('\x1b[B\r'); await visible('Coding');
-      keys('\r'); await visible('Modify agent');
+      await visible('select an available option');
+      keys('\x1b[B\r'); await visible('Modify agent');
+      expect(screen()).toContain('Coding');
       keys('S'); await visible('Image change · choose');
       expect(changes).toHaveLength(index);
       keys('\x1b[B'.repeat(index) + '\r');

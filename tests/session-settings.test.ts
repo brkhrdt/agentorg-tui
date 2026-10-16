@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Session } from '../src/session.js';
-import { Settings } from '../src/settings.js';
+import { DEFAULT_TABLE_FIELDS, Settings } from '../src/settings.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
 test('settings round-trip defaults, exclusions, plugin levels and invalid config', async () => {
@@ -15,12 +15,20 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     expect(['agent.message', 'prompt.queued', 'tool.call', 'tool.result'].filter(type => settings.tracked(type))).toEqual(['agent.message', 'prompt.queued', 'tool.call', 'tool.result']);
     expect(['agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed', 'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed', 'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling', 'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped', 'tool.update'].filter(type => settings.tracked(type))).toEqual([]);
     settings.toggle('agent.message');
+    settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;
     await settings.save(path);
     const loaded = await Settings.load(path);
     expect(loaded.tracked('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
+    expect(loaded.tableFields).toEqual(['error', 'name', 'status']);
     expect(JSON.parse(await readFile(path, 'utf8')).levels['plugin.custom']).toBe(4);
+    for (const tableFields of [undefined, null, [], ['unknown', 3], ['harness', 'harness', null, 'event', 'unknown']]) {
+      await writeFile(path, JSON.stringify({ excluded: [], levels: {}, tableFields }));
+      const compatible = await Settings.load(path);
+      expect(compatible.tableFields).toEqual(Array.isArray(tableFields) && tableFields.includes('harness')
+        ? ['harness', 'event'] : [...DEFAULT_TABLE_FIELDS]);
+    }
     await writeFile(path, '{"excluded":[],"levels":{"agent.message":5}}');
     await expect(Settings.load(path)).rejects.toThrow('Invalid rendering level');
   } finally { await mock.close(); }

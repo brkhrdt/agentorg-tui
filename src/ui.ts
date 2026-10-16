@@ -1,9 +1,10 @@
 import blessed from 'blessed';
 import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
-import { chatGroups, cell, clean, clip, renderEvent, renderTreeEvent } from './render.js';
-import { LEVEL_NAMES, type Level, Settings } from './settings.js';
+import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
+import { DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type Level, Settings } from './settings.js';
+import { renderTable } from './table.js';
 import { Session, type LifecycleMethod } from './session.js';
-import { AgentEditor, type AgentField, type ImageScope } from './agent-editor.js';
+import { AgentEditor, PODMAN_FIELDS, type AgentField, type ImageScope } from './agent-editor.js';
 import { ServerSettingsEditor } from './server-settings-editor.js';
 import { StructuredEditor, collection, parseTyped, previewValue, valueText, valueType, type ValueType } from './structured-editor.js';
 import type { TreeRow } from './store.js';
@@ -11,7 +12,7 @@ import { enablePathKeys, type PathCandidate } from './path-input.js';
 import { filterVolumes, type VolumeChoice } from './volume-input.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
-type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
+type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -100,12 +101,15 @@ export class UI {
   private renderedEvents = new Map<number, { signature: string; text: string }>();
 
   constructor(private session: Session, private settings: Settings, private configPath: string) {
+    // Rows are already cell-clipped. Blessed otherwise word-wraps an exactly
+    // full styled row just because trailing ANSI resets increase string.length.
+    this.tree.on('adopt', (item: blessed.Widgets.BoxElement & { wrap: boolean }) => { item.wrap = false; });
     this.tree.on('select item', (_item, index) => {
       if (!this.updating) this.selectedAgent = this.rows[index]?.agent.id;
     });
     this.menu.on('select item', (_item, index) => { if (!this.updating) this.menuIndex = index; });
     for (const widget of [this.tree, this.menu]) {
-      widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape'], (ch, key) => {
+      widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape'], (ch, key) => {
         const binding = ['space', 'left', 'right', 'enter', 'escape'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
         else if (this.view === 'keys') {
@@ -208,6 +212,22 @@ export class UI {
       .then(() => this.showNotice(`Saved ${this.configPath}`))
       .catch(error => this.showNotice(`Cannot save settings: ${error.message}`));
   }
+  private setTableFieldPosition(position: number): void {
+    const field = TABLE_FIELDS[this.menuIndex];
+    const index = field ? this.settings.tableFields.indexOf(field) : -1;
+    if (index < 0) { this.showNotice('Enable this field with Space before setting its order.'); return; }
+    const [item] = this.settings.tableFields.splice(index, 1);
+    this.settings.tableFields.splice(Math.min(position - 1, this.settings.tableFields.length), 0, item!);
+    this.saveSettings(); this.draw();
+  }
+  private moveTableField(delta: number): void {
+    const field = TABLE_FIELDS[this.menuIndex];
+    const index = field ? this.settings.tableFields.indexOf(field) : -1;
+    if (index < 0) { this.showNotice('Enable this field with Space before setting its order.'); return; }
+    const target = index + delta;
+    if (target < 0 || target >= this.settings.tableFields.length) return;
+    this.setTableFieldPosition(target + 1);
+  }
   private changeLevel(delta: number, absolute?: Level): void {
     const type = this.menuTypes[this.menuIndex];
     if (!type) return;
@@ -228,8 +248,10 @@ export class UI {
     else if (this.view === 'entry-type') this.selectEntryType((['string', 'number', 'boolean', 'null', 'json'] as const)[this.menuIndex]!);
     else if (this.view === 'actions') this.chooseAction();
     else if (this.view === 'view') {
-      if (this.session.serverSettingsCapability && this.menuIndex === 0) void this.openServerSettings();
-      else this.setView(this.menuIndex === (this.session.serverSettingsCapability ? 1 : 0) ? 'filters' : 'levels');
+      const offset = this.session.serverSettingsCapability ? 1 : 0;
+      if (offset && this.menuIndex === 0) void this.openServerSettings();
+      else if (this.menuIndex === offset) this.setView('table-fields');
+      else this.setView(this.menuIndex === offset + 1 ? 'filters' : 'levels');
     } else if (this.view === 'settings-options') {
       const choice = this.genericChoices[this.menuIndex];
       try {
@@ -261,7 +283,18 @@ export class UI {
     } else if (this.view === 'image-scope') void this.saveAgent((['node', 'inherited', 'all'] as const)[this.menuIndex]);
   }
   private cycleMenu(): void {
-    if (this.view === 'filters') {
+    if (this.view === 'table-fields') {
+      const field = TABLE_FIELDS[this.menuIndex];
+      if (field) {
+        const index = this.settings.tableFields.indexOf(field);
+        if (index >= 0 && this.settings.tableFields.length === 1) {
+          this.showNotice('Keep at least one table field visible.'); return;
+        }
+        if (index >= 0) this.settings.tableFields.splice(index, 1);
+        else this.settings.tableFields.push(field);
+        this.saveSettings(); this.draw();
+      }
+    } else if (this.view === 'filters') {
       const type = this.menuTypes[this.menuIndex];
       if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
     } else if (this.view === 'skills') {
@@ -312,7 +345,16 @@ export class UI {
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), back];
+    if (this.view === 'table-fields') return [
+      action('space', 'Toggle field visibility', cycle),
+      ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((key, index) =>
+        action(key, `Set selected field to position ${index + 1}`, () => this.setTableFieldPosition(index + 1))),
+      action('left', 'Move field earlier', () => this.moveTableField(-1)),
+      action('right', 'Move field later', () => this.moveTableField(1)),
+      action('z', 'Reset table fields to defaults', () => { this.settings.tableFields = [...DEFAULT_TABLE_FIELDS]; this.saveSettings(); this.draw(); }),
+      back,
+    ];
     if (this.view === 'settings-options') return [action('enter', 'Choose option', choose), ...(this.choiceActions?.manual ? [action('m', 'Manual entry', () => this.choiceActions?.manual?.())] : []), action('escape', 'Back without selecting', () => this.choiceActions?.back())];
     if (this.view === 'settings-records') return [action('a', this.records?.keys ? 'Choose server resource' : 'Add configuration', () => this.openRecord(true)), action('enter', 'Edit entry', choose), action('e', 'Edit entry', choose),
       action('d', 'Remove entry from draft', () => { this.records!.values.splice(this.menuIndex, 1); this.records!.keys?.splice(this.menuIndex, 1); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); }),
@@ -529,10 +571,12 @@ export class UI {
     const request = ++this.editorRequest, view = this.view, previous = this.editor;
     let defaults;
     let containerCatalog: { revision: number; profiles: ContainerProfile[] } | undefined;
-    if (!modify && this.session.podmanDefaultsEnabled) {
+    // Modern child drafts inherit from their parent; selecting Default would pin
+    // the server defaults instead. Legacy servers retain their grant-only drafts.
+    if (!modify && (!parent || !this.session.podmanProfilesEnabled)) {
       try {
-        defaults = await this.session.containerGrantDefaults();
         if (this.session.podmanProfilesEnabled) containerCatalog = await this.session.listProfiles();
+        else if (this.session.podmanDefaultsEnabled) defaults = await this.session.containerGrantDefaults();
       } catch (error) { if (!this.closing && request === this.editorRequest && this.view === view) this.showNotice((error as Error).message); return; }
       if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
     }
@@ -543,7 +587,7 @@ export class UI {
       this.editor.values.model = parent?.settings.model ?? '';
       this.editor.values.provider = String(parent?.settings.provider ?? '');
       this.editor.values.cwd = this.pathBase ? `${this.pathBase.replace(/\/$/, '')}/` : '';
-      if (defaults) for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const) this.editor.values[key] = JSON.stringify(defaults[key]);
+      if (defaults) for (const key of PODMAN_FIELDS) this.editor.values[key] = JSON.stringify(defaults[key]);
       const defaultProfile = containerCatalog?.profiles.find(profile => profile.id === 'default');
       if (defaultProfile && containerCatalog) this.editor.selectProfile(defaultProfile, containerCatalog.revision);
     }
@@ -771,7 +815,7 @@ export class UI {
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
-    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -949,6 +993,7 @@ export class UI {
       this.view === 'harness-options' ? `Select ${this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
       this.view === 'image-scope' ? 'Image change · choose which agents to update' :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
+      this.view === 'table-fields' ? 'Table fields / order · client preferences · changes saved automatically' :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
       this.view === 'skills' ? `Skills · ${agent?.name} · changes staged until Enter` :
@@ -992,18 +1037,11 @@ export class UI {
       this.rows = store.tree();
       const selectedIndex = Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent));
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
-      const nameWidth = Math.min(28, Math.max(8, Math.floor(width * 0.24)));
-      const stateWidth = Math.min(11, Math.max(5, Math.floor(width * 0.13)));
-      const modelWidth = Math.min(30, Math.max(8, Math.floor(width * 0.23)));
-      // List items reserve one cell for the scrollbar, even when it is hidden.
-      const eventWidth = Math.max(0, width - nameWidth - stateWidth - modelWidth - 7);
-      this.columns.setContent(clip(`${cell('AGENT', nameWidth)}  ${cell('STATUS', stateWidth)}  ${cell('MODEL', modelWidth)}  LATEST TRACKED EVENT`, width));
-      const latest = store.latest(this.settings);
+      const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
+      // Blessed lists reserve a scrollbar cell even when it is hidden.
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1);
+      this.columns.setContent(header);
       this.updating = true;
-      const tableItems = this.rows.map(({ agent: rowAgent, depth }) => {
-        const event = latest.get(rowAgent.id);
-        return `${cell(`${'  '.repeat(depth)}${depth ? '└ ' : ''}${rowAgent.name}`, nameWidth)}  ${cell(rowAgent.state, stateWidth)}  ${cell(rowAgent.settings.model ?? '—', modelWidth)}  ${event ? renderTreeEvent(event, eventWidth) : '—'}`;
-      });
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
         this.tree.setItems(tableItems); this.lastTreeItems = tableItems;
       }
@@ -1060,10 +1098,18 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ' ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload  Esc discard') : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
-      this.footer.setContent(' s server settings   f client filters   l client levels   ↑↓ select   Enter open   Esc tree');
+      this.footer.setContent(' s server settings   t table fields   f client filters   l client levels   ↑↓ select   Enter open   Esc tree');
+    } else if (this.view === 'table-fields') {
+      this.updating = true;
+      this.menu.setItems(TABLE_FIELDS.map(field => {
+        const order = this.settings.tableFields.indexOf(field);
+        return `[${order >= 0 ? 'x' : ' '}] ${order >= 0 ? String(order + 1).padStart(2, ' ') : '  '}  ${field}${order === 0 ? ' · tree indent' : ''}`;
+      }));
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(' ↑↓ field  Space toggle  ←→ reorder  1–9/0 position  z defaults  ? keys  Esc tree');
     } else if (this.view === 'filters' || this.view === 'levels') {
       const currentType = this.menuTypes[this.menuIndex];
       this.menuTypes = this.settings.types(store.discovered);

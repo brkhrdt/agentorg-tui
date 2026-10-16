@@ -13,7 +13,8 @@ test('terminal structured settings: filter, separate name/value entry, draft sta
   const ui = terminalClient(mock.path, mock.directory);
   const { keys, visible, screen } = ui;
   try {
-    await visible('root                          idle'); keys('e'); await visible('Modify agent');
+    await waitFor(() => /root +idle/.test(screen()));
+    keys('e'); await visible('Modify agent');
     expect(screen()).not.toContain('secret-value');
     keys('\x1b[B'.repeat(6) + '\r'); await visible('Edit env · list / map');
     expect(screen()).toContain('TOKEN=••••'); expect(screen()).not.toContain('secret-value');

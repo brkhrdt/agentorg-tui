@@ -106,6 +106,11 @@ function clipStyled(value: string, width: number): string {
   }
   return result + '\x1b[0m…';
 }
+/** Pad locally generated styles without stripping them or leaking into the next cell. */
+export function styledCell(value: string, width: number): string {
+  const text = clipStyled(value, width);
+  return text + ' '.repeat(Math.max(0, width - stringWidth(text)));
+}
 function label(event: ServerEvent): string {
   const data = object(event.data);
   if (event.type === 'agent.message') {
@@ -120,7 +125,7 @@ function label(event: ServerEvent): string {
 export function renderTreeEvent(event: ServerEvent, width: number): string {
   if (width <= 0) return '';
   const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
-  const prefix = assistant ? '' : `${clean(label(event).split(' · ').at(-1)!)}: `;
+  const prefix = assistant ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
   return clipStyled(prefix + markdown(eventText(event), Math.max(1, width), true), width);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number): string {

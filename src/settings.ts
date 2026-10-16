@@ -4,6 +4,15 @@ import { homedir } from 'node:os';
 
 export type Level = 1 | 2 | 3 | 4;
 export const LEVEL_NAMES = ['summary', 'extended', 'full', 'raw'] as const;
+export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
+export type TableField = typeof TABLE_FIELDS[number];
+export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'model', 'event'];
+export function normalizeTableFields(value: unknown): TableField[] {
+  const fields = Array.isArray(value)
+    ? [...new Set(value.filter((field): field is TableField => TABLE_FIELDS.includes(field)))]
+    : [];
+  return fields.length ? fields : [...DEFAULT_TABLE_FIELDS];
+}
 export const EVENT_TYPES = [
   'server.ready', 'server.stopped', 'agent.created', 'agent.state', 'agent.modified',
   'agent.removed', 'agent.session_replaced', 'agent.error', 'prompt.queued',
@@ -21,6 +30,7 @@ export class Settings {
     'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped', 'tool.update',
   ]);
   levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.result': 2, 'agent.plan': 3 };
+  tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   tracked(type: string): boolean { return !this.excluded.has(type); }
   level(type: string): Level { return this.levels[type] ?? 1; }
   toggle(type: string): void {
@@ -36,6 +46,7 @@ export class Settings {
       if (!Array.isArray(data.excluded) || !data.excluded.every((v: unknown) => typeof v === 'string') ||
           !data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels)) throw new Error('Invalid settings format');
       settings.excluded = new Set(data.excluded);
+      settings.tableFields = normalizeTableFields(data.tableFields);
       settings.levels = {};
       for (const [type, level] of Object.entries(data.levels)) {
         if (![1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
@@ -49,7 +60,7 @@ export class Settings {
   async save(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels }, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields }, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   }
 }

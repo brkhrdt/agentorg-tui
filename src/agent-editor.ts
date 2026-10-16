@@ -48,12 +48,11 @@ export class AgentEditor {
     }
     this.original = { ...this.values };
   }
-  selectProfile(profile: ContainerProfile | undefined, revision = 0): void {
-    this.selectedProfile = profile ? { profile: structuredClone(profile), revision } : undefined;
-    this.values.container = profile?.name ?? '';
-    if (!profile) return;
+  selectProfile(profile: ContainerProfile, revision: number): void {
+    this.selectedProfile = { profile: structuredClone(profile), revision };
+    this.values.container = profile.name;
     if (profile.cwd) this.values.cwd = profile.cwd;
-    for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const) this.values[key] = JSON.stringify(profile[key]);
+    for (const key of PODMAN_FIELDS) this.values[key] = JSON.stringify(profile[key]);
   }
   private empty(spec: FieldSpec): string {
     return spec.editor.endsWith('-map') ? '{}' : collection(spec.editor) ? '[]' : spec.editor === 'number' ? '0' : spec.editor === 'boolean' ? 'false' : '';
@@ -83,10 +82,10 @@ export class AgentEditor {
     if (field !== 'model') this.values.model = '';
   }
   get imageChanged(): boolean {
-    if (!this.selectedProfile) return false;
     try {
-      const old = (JSON.parse(this.original.extensions).podman?.image ?? null) as string | null;
-      return this.selectedProfile.profile.image !== old;
+      const old = JSON.parse(this.original.extensions).podman?.image ?? null;
+      const next = this.selectedProfile?.profile.image ?? JSON.parse(this.values.extensions).podman?.image ?? null;
+      return next !== old;
     } catch { return false; }
   }
   params(): Record<string, unknown> {
@@ -109,7 +108,7 @@ export class AgentEditor {
       else settings[field] = value;
     }
     if (this.podmanEnabled && (!this.agentId || this.selectedProfile !== undefined || PODMAN_FIELDS.some(field => this.values[field] !== this.original[field]))) {
-      const grants = (field: 'readOnlyDirs' | 'readWriteDirs' | 'readOnlyVolumes' | 'readWriteVolumes'): string[] => {
+      const grants = (field: typeof PODMAN_FIELDS[number]): string[] => {
         let value: unknown;
         const message = `${field} must be a JSON array of ${field.endsWith('Volumes') ? 'volume names' : 'paths'}`;
         try { value = JSON.parse(this.values[field]); } catch { throw new Error(message); }

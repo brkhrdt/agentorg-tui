@@ -71,12 +71,22 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | e | Modify the selected agent |
 | s | Edit skills when the server advertises the skills plugin |
 | v, then s | Organization / plugin server settings (when supported) |
+| v, then t | Choose and reorder table fields (client only) |
 | v, then f | Configure tracked events (client only) |
 | v, then l | Configure rendering levels |
 | q / Ctrl+C | Quit the client, leaving server work running |
 
-Rows show **name, status, model, latest tracked event**. Children are indented
-by two additional cells per hierarchy level. Archived agents are hidden.
+Rows default to **name, status, model, latest tracked event**. Use `v`, then
+`t` to choose visible table fields: Space toggles a field, Left/Right moves it,
+`1`–`9` / `0` assigns its position (`0` = 10), and `z` restores defaults. At least
+one field must remain visible. Changes are saved in the client config. The first
+shown field always carries the tree indentation. Available fields include status,
+launch settings, error, session number, and revision. Metadata columns fit their
+contents up to sensible caps; **Event gets the remaining width** and priority
+when space is tight. Short values such as harness `pi` only need a compact column
+wide enough for the header. Columns recalculate on resize and live updates.
+Children are indented by two additional cells per hierarchy level. Archived
+agents are hidden.
 Latest events always use the summary strategy, regardless of chat levels.
 Compatible message chunks are combined per agent, so the preview shows the
 message rather than only its last streamed chunk. Assistant previews omit the
@@ -109,15 +119,17 @@ form, alongside global defaults. Add/edit/delete entries, choose server-discover
 local images/volumes, and choose network from `pasta`, `slirp4netns`, or `none`.
 Unregistered volumes prompt for a container destination. The top-level defaults
 now use the same four **RO/RW directory** and **RO/RW volume** lists as configurations,
-with volume pickers on **a**. They seed new configurations and new client-created
-agent drafts for review, without a server restart or changes to existing agents.
+with volume pickers on **a**. They seed new configurations and new root-agent
+drafts for review, without a server restart or changes to existing agents.
 Legacy destination policies remain preserved but are omitted from the normal
 form. **S** stages the entry,
 then the list; the normal server-wide Save confirmation still commits the draft.
-Use **n → Container configuration** to select one when creating an agent. Image,
-runtime, cwd, and grant defaults are copied into the draft for review and then
-snapshotted on the agent; later catalog edits/removal don't alter existing agents.
-Stale selections return a conflict rather than silently using updated defaults.
+Use **n / e → Container** to select one when creating or editing an agent. Image,
+runtime, cwd, and configured mounts are copied into the draft for review and then
+snapshotted on the agent; later catalog edits/removal don't alter existing snapshots.
+Root drafts select **Default**; child drafts inherit their parent's image/runtime
+and configured mounts unless another container is selected. Extra per-agent grants
+do not inherit. Stale selections return a conflict rather than silently using updated defaults.
 Provider/model fields are still manual until in-container capability discovery is
 implemented. Removing volume defaults does not delete host volumes or identity
 pins. Other plugins remain read-only until they opt in. See the
@@ -150,7 +162,34 @@ the agent field list, but visible in their entry form. `J` explicitly opens
 validated raw JSON as an advanced fallback; errors preserve the input. Treat
 other settings and raw events as sensitive too.
 
-When the server advertises the Podman plugin, the editor also includes `containerImage`, `readOnlyDirs`, and `readWriteDirs`. Servers advertising volume discovery also add `readOnlyVolumes` and `readWriteVolumes`: use add/edit/remove, type to fuzzy-filter server-reported names, ↑/↓ to select, Tab to complete, Enter to stage and Escape to cancel. Destination/description hints distinguish choices. Any existing plain local host volume is discoverable without adding it to server plugin configuration or restarting the server. If it has no destination yet, the editor asks for an absolute container path (e.g. `/home/pi/.pi`) and registers it through the trusted client endpoint; this alone grants no agent access. No local Podman installation or JSON entry is needed. Discovery/registration errors preserve drafts. Volumes are persistent shared stores (including any credentials), not private per-agent sessions; RO prevents writes, not reads. Directory grants use the same reusable list editor; empty means no grants, not inheritance. Add/edit shows cwd-like server directory suggestions: ↑/↓ selects, Tab inserts/descends, Space/Enter stages the current path, and Escape discards the entry. Grants must be existing directories; unlike cwd, accepting a grant never creates directories. Completion uses the captured parent/server startup base, including relative paths and `~/`, never the client's filesystem. Older servers retain manual path entry with server validation at save. Explicitly grant a directory covering cwd. A blank image inherits the parent's image. Saving an image change asks whether to update this node only, descendants inheriting its image, or all descendants (including explicit overrides). The client-only `podman.modify` endpoint reports partial failures; refresh rather than blindly retrying. See the [Podman plugin](../agentorg-plugin-podman/README.md).
+When the server advertises the Podman plugin, the editor includes **Container**
+(if configurations are available), `readOnlyDirs`, and `readWriteDirs`, not a separate
+image picker. Servers advertising volume discovery also add `readOnlyVolumes` and
+`readWriteVolumes`: use add/edit/remove, type to fuzzy-filter server-reported names,
+↑/↓ to select, Tab to complete, Enter to stage and Escape to cancel.
+Destination/description hints distinguish choices. Any existing plain local host
+volume is discoverable without plugin configuration or a server restart. If it has
+no destination yet, the editor asks for an absolute container path (e.g.
+`/home/pi/.pi`) and registers it through the trusted client endpoint; this alone
+grants no agent access. No local Podman installation or JSON entry is needed.
+Discovery/registration errors preserve drafts. Volumes are persistent shared
+stores (including any credentials), not private per-agent sessions; RO prevents
+writes, not reads.
+
+Directory grants use the same reusable list editor. Empty lists request no extra
+grants; configured mounts remain mandatory. Add/edit shows server directory
+suggestions: ↑/↓ selects, Tab inserts/descends, Space/Enter stages the current path,
+and Escape discards the entry. Grants must be existing directories; unlike cwd,
+accepting a grant never creates directories. Completion uses the captured
+parent/server startup base, including relative paths and `~/`, never the client's
+filesystem. Older servers retain manual path entry with server validation at save.
+The configured mounts plus any extra directory grants must cover cwd.
+
+Saving a container selection that changes the image asks whether to update this
+node only, descendants inheriting its image, or all descendants (including explicit
+overrides). These scopes propagate images, not configuration snapshots. The
+client-only `podman.modify` endpoint reports partial failures; refresh rather than
+blindly retrying. See the [Podman plugin](../agentorg-plugin-podman/README.md).
 
 Creation starts the agent immediately. Harness choices come from the server's
 loaded plugins. For discovery-capable harnesses, Enter on provider opens its
