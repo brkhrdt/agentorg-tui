@@ -7,26 +7,21 @@ import { AgentEditor } from '../src/agent-editor.js';
 import { Session } from '../src/session.js';
 import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
 
-test('Podman editor has explicit empty grants, inheritance and isolated namespace replacement', () => {
-  const create = new AgentEditor('root', undefined, true);
+test('Podman agent editor selects containers instead of exposing a separate image field', () => {
+  const create = new AgentEditor('root', undefined, true, [], false, true);
   create.values.harness = 'pi'; create.values.cwd = '/project';
-  expect(create.fields).toContain('containerImage');
-  expect(create.params().settings).toMatchObject({ extensions: { podman: { image: null, readOnlyDirs: [], readWriteDirs: [] } } });
+  expect(create.fields).toContain('container');
+  expect(create.fields).not.toContain('containerImage');
+  const profile: ContainerProfile = { id: 'default', name: 'Default', image: 'pi:v2', network: 'pasta', containerUid: 1000, containerGid: 1000,
+    env: [], cwd: '', readOnlyDirs: [], readWriteDirs: [], readOnlyVolumes: [], readWriteVolumes: [] };
+  create.selectProfile(profile, 3);
+  expect(create.params().settings).toMatchObject({ extensions: { podman: { image: 'pi:v2', profile: { id: 'default', revision: 3 }, readOnlyDirs: [], readWriteDirs: [] } } });
   const record = agent('worker', 'root', { revision: 4, settings: { harness: 'pi', cwd: '/project', extensions: { skills: { test: 'installed' }, podman: { readOnlyDirs: ['/credentials'], readWriteDirs: ['/project'] } } } });
   const editor = new AgentEditor('root', record, true);
-  editor.values.containerImage = 'pi:v2';
-  expect(editor.imageChanged).toBe(true);
-  expect(editor.params()).toEqual({ agentId: 'worker', expectedRevision: 4, settings: { extensions: { skills: { test: 'installed' }, podman: { image: 'pi:v2', readOnlyDirs: ['/credentials'], readWriteDirs: ['/project'] } } } });
-  editor.values.containerImage = '';
-  expect(editor.imageChanged).toBe(false);
   editor.values.readOnlyDirs = 'bad json'; expect(() => editor.params()).toThrow('JSON array');
   editor.values.readOnlyDirs = '[4]'; expect(() => editor.params()).toThrow('JSON array');
   editor.values.readOnlyDirs = '["/external"]'; expect(editor.params().settings).toMatchObject({ extensions: { podman: { readOnlyDirs: ['/external'] } } });
-  const raw = new AgentEditor('root', record, true);
-  raw.values.extensions = '{"podman":{"image":"raw:v2","readOnlyDirs":["/project"]}}';
-  expect(raw.imageChanged).toBe(true);
-  raw.values.containerImage = 'other:v2'; expect(() => raw.params()).toThrow('not both');
-  expect(new AgentEditor(null).fields).not.toContain('containerImage');
+  expect(new AgentEditor(null).fields).not.toContain('container');
 });
 
 test('selecting a container configuration snapshots its runtime and grants without changing harness settings', () => {
@@ -35,20 +30,20 @@ test('selecting a container configuration snapshots its runtime and grants witho
   const editor = new AgentEditor(null, undefined, true, [], true, true);
   editor.values.harness = 'fixture'; editor.values.provider = 'provider-a'; editor.values.model = 'model-a'; editor.values.options = '{"thinking":"low"}';
   editor.selectProfile(profile, 4); profile.containerUid = 9999; profile.readWriteDirs.push('/not-copied');
-  expect(editor.fields).toContain('containerProfile');
+  expect(editor.fields).toContain('container');
   expect(editor.values).toMatchObject({ harness: 'fixture', provider: 'provider-a', model: 'model-a', options: '{"thinking":"low"}' });
   const settings = editor.params().settings as any;
   expect(settings.extensions.podman).toMatchObject({ image: 'pi:v2', profile: { id: 'coding', name: 'Coding', revision: 4 },
     runtime: { network: 'none', containerUid: 2000, containerGid: 2001, env: ['PUBLIC_CONFIG'] }, readWriteDirs: ['/project'], readOnlyVolumes: ['config'] });
   const persisted = agent('worker', null, { settings });
   const modify = new AgentEditor(null, persisted, true, [], true, true); modify.values.readOnlyVolumes = '[]';
-  expect(modify.fields).toContain('containerProfile');
-  expect(modify.values.containerProfile).toBe('Coding');
+  expect(modify.fields).toContain('container');
+  expect(modify.values.container).toBe('Coding');
   expect((modify.params().settings as any).extensions.podman.runtime).toEqual(settings.extensions.podman.runtime);
   expect((modify.params().settings as any).extensions.podman.profile).toEqual(settings.extensions.podman.profile);
   modify.selectProfile(profile, 5);
   expect((modify.params().settings as any).extensions.podman.profile.revision).toBe(5);
-  editor.selectProfile(undefined); expect((editor.params().settings as any).extensions.podman.runtime).toBeUndefined();
+  expect((editor.params().settings as any).extensions.podman.runtime.containerUid).toBe(2000);
 });
 
 test('Podman scopes use discovered client-only endpoint once and surface partial failures', async () => {
@@ -74,12 +69,17 @@ test('Podman scopes use discovered client-only endpoint once and surface partial
   } finally { session.close(); await running; await mock.close(); }
 });
 
-test('terminal image edits explicitly ask for all three propagation scopes', async () => {
+test('terminal container choices, not image fields, trigger the existing propagation scopes', async () => {
   const root = agent('root', null, { name: 'scope-root', settings: { harness: 'pi', cwd: '/project', extensions: { podman: { image: 'pi:v1', readOnlyDirs: ['/project'], readWriteDirs: [] } } } });
   const changes: any[] = [];
+  let selectedImage = 'pi:v2';
   const mock = await mockServer((socket, request) => {
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { harnesses: ['pi'], plugins: { podman: { endpoints: { modify: 'podman.modify' }, modelDiscovery: false } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { harnesses: ['pi'], plugins: { podman: { endpoints: { modify: 'podman.modify', profiles: 'podman.profiles' }, modelDiscovery: false } } } });
     else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 1, latestSeq: 0, expired: false });
+    else if (request.method === 'podman.profiles') respond(socket, request.id, { revision: 1, profiles: [
+      { id: 'default', name: 'Default', image: 'pi:v1', network: 'pasta', containerUid: 1000, containerGid: 1000, env: [], cwd: '', readOnlyDirs: [], readWriteDirs: [], readOnlyVolumes: [], readWriteVolumes: [] },
+      { id: 'coding', name: 'Coding', image: selectedImage, network: 'none', containerUid: 1000, containerGid: 1000, env: [], cwd: '', readOnlyDirs: ['/project'], readWriteDirs: [], readOnlyVolumes: [], readWriteVolumes: [] },
+    ] });
     else if (request.method === 'podman.modify') {
       changes.push(request.params); root.settings.extensions = request.params.settings.extensions; root.revision++;
       respond(socket, request.id, { operations: [{ ...operation('completed'), id: `image-${changes.length}` }], errors: [] });
@@ -97,15 +97,17 @@ test('terminal image edits explicitly ask for all three propagation scopes', asy
   try {
     await visible('scope-root');
     for (const [index, scope] of (['node', 'inherited', 'all'] as const).entries()) {
+      selectedImage = `pi:v${index + 2}`;
       keys('e'); await visible('Modify agent');
-      keys('\x1b[B'.repeat(9) + '\r'); await visible('Edit containerImage');
-      keys('\x15' + `pi:v${index + 2}` + '\r'); await visible('Modify agent');
-      keys('\x1b[B'.repeat(3) + '\r'); await visible('Image change · choose');
+      keys('\x1b[B'.repeat(9) + '\r'); await visible('Container');
+      keys('\x1b[B\r'); await visible('Coding');
+      keys('\r'); await visible('Modify agent');
+      keys('S'); await visible('Image change · choose');
       expect(changes).toHaveLength(index);
       keys('\x1b[B'.repeat(index) + '\r');
       await waitFor(() => changes.length === index + 1);
       expect(changes[index].imageScope).toBe(scope);
-      expect(changes[index].settings.extensions.podman.readOnlyDirs).toEqual(['/project']);
+      expect(changes[index].settings.extensions.podman.image).toBe(selectedImage);
       await visible('LATEST TRACKED EVENT');
     }
   } finally {

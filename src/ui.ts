@@ -255,8 +255,7 @@ export class UI {
       }
     } else if (this.view === 'agent-edit') {
       if (this.menuIndex === fields.length) void this.saveAgent();
-      else if (fields[this.menuIndex] === 'containerProfile') void this.openProfileChoices();
-      else if (fields[this.menuIndex] === 'containerImage' && this.session.podmanImagesEnabled) this.openImageChoices();
+      else if (fields[this.menuIndex] === 'container') void this.openProfileChoices();
       else if (['harness', 'provider', 'model'].includes(fields[this.menuIndex] ?? '')) void this.openAgentOptions();
       else this.openField();
     } else if (this.view === 'image-scope') void this.saveAgent((['node', 'inherited', 'all'] as const)[this.menuIndex]);
@@ -353,19 +352,15 @@ export class UI {
     const editor = this.editor!; const index = this.menuIndex;
     let catalog: { revision: number; profiles: ContainerProfile[] };
     const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
-    await this.openChoices('Container configurations', async () => {
+    await this.openChoices('Container', async () => {
       catalog = await this.session.listProfiles();
-      return [{ value: '', label: 'Manual configuration / no profile' }, ...catalog.profiles.map(p => ({ value: p.id, label: `${p.name} · ${p.image} · ${p.network}` }))];
+      return catalog.profiles.map(p => ({ value: p.id, label: `${p.name} · ${p.image} · ${p.network}` }));
     }, { back, choose: value => {
-      editor.selectProfile(catalog.profiles.find(p => p.id === value), catalog.revision); back();
-      this.showNotice('Configuration copied into draft; review cwd, image and grants before saving.');
+      const profile = catalog.profiles.find(p => p.id === value);
+      if (!profile) return;
+      editor.selectProfile(profile, catalog.revision); back();
+      this.showNotice('Container selected; review cwd and grants before saving.');
     } });
-  }
-  private openImageChoices(): void {
-    const editor = this.editor!, index = this.menuIndex;
-    const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
-    void this.openChoices('Local container images', () => this.session.listImages(), { back,
-      choose: value => { editor.stage('containerImage', value); back(); }, manual: () => { back(); this.openField(); } });
   }
   private openRecord(add: boolean, choice?: SettingsChoice): void {
     const records = this.records; if (!records) return;
@@ -533,9 +528,12 @@ export class UI {
     const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
     const request = ++this.editorRequest, view = this.view, previous = this.editor;
     let defaults;
+    let containerCatalog: { revision: number; profiles: ContainerProfile[] } | undefined;
     if (!modify && this.session.podmanDefaultsEnabled) {
-      try { defaults = await this.session.containerGrantDefaults(); }
-      catch (error) { if (!this.closing && request === this.editorRequest && this.view === view) this.showNotice((error as Error).message); return; }
+      try {
+        defaults = await this.session.containerGrantDefaults();
+        if (this.session.podmanProfilesEnabled) containerCatalog = await this.session.listProfiles();
+      } catch (error) { if (!this.closing && request === this.editorRequest && this.view === view) this.showNotice((error as Error).message); return; }
       if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
     }
     this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
@@ -546,6 +544,8 @@ export class UI {
       this.editor.values.provider = String(parent?.settings.provider ?? '');
       this.editor.values.cwd = this.pathBase ? `${this.pathBase.replace(/\/$/, '')}/` : '';
       if (defaults) for (const key of ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const) this.editor.values[key] = JSON.stringify(defaults[key]);
+      const defaultProfile = containerCatalog?.profiles.find(profile => profile.id === 'default');
+      if (defaultProfile && containerCatalog) this.editor.selectProfile(defaultProfile, containerCatalog.revision);
     }
     this.setView('agent-edit');
   }
@@ -945,7 +945,7 @@ export class UI {
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
-      this.view === 'agent-field' ? `Edit ${this.editor?.label(this.editField!)} · ${this.editField === 'containerImage' ? 'blank inherits image' : this.editor?.spec(this.editField!).editor}` :
+      this.view === 'agent-field' ? `Edit ${this.editor?.label(this.editField!)} · ${this.editor?.spec(this.editField!).editor}` :
       this.view === 'harness-options' ? `Select ${this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
       this.view === 'image-scope' ? 'Image change · choose which agents to update' :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
@@ -1018,7 +1018,7 @@ export class UI {
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...AGENT_FIELDS.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') || field === 'containerProfile' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.values[field] || (field === 'containerImage' ? '(inherit image)' : '(omitted)')}`, width - 1)), 'Save changes']);
+        [...this.editor!.fields.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.values[field] || '(omitted)'}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :

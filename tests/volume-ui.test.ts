@@ -10,13 +10,13 @@ const choices = [
   { name: 'pi-secondary', destination: '/home/pi/.pi', readOnly: false },
   { name: 'claude', destination: '/home/pi/.claude', readOnly: true },
 ];
-test('volume fields are arrays, preserve grants on image edits, and suppress duplicate generic descriptors', () => {
+test('volume fields are arrays, preserve grants on container edits, and suppress duplicate generic descriptors', () => {
   const root = agent('root', null, { settings: { harness: 'pi', cwd: '/project', extensions: { podman: { readOnlyDirs: ['/project'], readOnlyVolumes: ['pi-main'], readWriteVolumes: [] } } } });
   const editor = new AgentEditor(null, root, true, [
     { namespace: 'podman', key: 'readOnlyVolumes', editor: 'list' },
   ], true);
   expect(editor.fields.filter(field => field.includes('readOnlyVolumes'))).toEqual(['readOnlyVolumes']);
-  editor.values.containerImage = 'new-image';
+  editor.values.readWriteDirs = '["/project", "/workspace"]';
   expect(editor.params().settings).toMatchObject({ extensions: { podman: { readOnlyVolumes: ['pi-main'], readWriteVolumes: [] } } });
   expect(filterVolumes(choices, 'pm', false).map(v => v.name)).toEqual(['pi-main']);
   expect(filterVolumes(choices, '', true).map(v => v.name)).toEqual(['pi-main', 'pi-secondary']);
