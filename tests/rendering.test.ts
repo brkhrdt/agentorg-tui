@@ -40,7 +40,7 @@ test('server Markdown controls content, client controls styles/cell limits and r
   expect(renderEvent(raw, 3, 80, hostile)).not.toContain('\x1b]0;');
 });
 
-test('tool updates show the latest output line in extended and five lines in a plain code block in full', () => {
+test('tool updates show the latest output row in extended and five rows in full', () => {
   const update = event(1, 'tool.update', { title: 'bash', status: 'in_progress', rawInput: { command: 'long-running' }, rawOutput: { content: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive\nsix' }], details: {} } });
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ long-running', extended: '$ long-running\nsix', full: '$ long-running\n\n```\none\ntwo\nthree\nfour\nfive\nsix\n```' };
   const extended = stripAnsi(renderEvent(update, 2, 80, presentation));
@@ -53,7 +53,31 @@ test('tool updates show the latest output line in extended and five lines in a p
   expect(full).toContain('two'); expect(full).toContain('three'); expect(full).toContain('four');
   expect(full).toContain('five'); expect(full).toContain('six');
   expect(full).not.toContain('one');
-  expect(renderedFull).toContain('\x1b[47;30m');
+  expect(full).toContain('showing last 5 rows');
+  expect(full).toContain('  │ two');
+  expect(renderedFull).not.toContain('\x1b[47;30m');
+});
+
+test('rolling output is bounded after wrapping, stays literal and fits narrow Unicode terminals', () => {
+  const update = event(1, 'tool.update', { title: 'bash', rawInput: { command: 'a long command that wraps' }, rawOutput: `OLD OUTPUT\n${'文件🦊 é '.repeat(80)}LATEST` });
+  for (const width of [1, 2, 3, 5, 6, 12, 40, 80]) {
+    for (const [level, maxRows] of [[2, 1], [3, 5]] as const) {
+      const rendered = renderEvent(update, level, width);
+      const lines = stripAnsi(rendered).split('\n');
+      // Wrapped header, one clipped metadata row, then the bounded output viewport.
+      const header = stripAnsi(renderEvent(update, 1, 1000));
+      const expectedHeaderRows = Math.ceil(stringWidth(header) / width);
+      expect(lines.length).toBeLessThanOrEqual(expectedHeaderRows + 1 + maxRows);
+      for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      expect(rendered).not.toContain('OLD OUTPUT');
+      if (width >= 12) expect(rendered).toContain('LATEST');
+      expect(rendered).not.toContain('�');
+    }
+  }
+  const literal = event(2, 'tool.update', { title: 'bash', rawOutput: '**not bold**\n  indented\n\n```ts\n{blessed}' });
+  const rendered = renderEvent(literal, 3, 80);
+  expect(stripAnsi(rendered).split('\n').slice(2)).toEqual(['  │ **not bold**', '  │   indented', '  │ ', '  │ ```ts', '  │ {blessed}']);
+  expect(rendered).not.toContain('\x1b[1m');
 });
 
 test('updates without output retain renderer details instead of inventing received lines', () => {
@@ -247,6 +271,47 @@ test('terminal level selector previews renderer examples, saves subtype override
     tui.keys('c'); await tui.visible('Chat · root');
     await tui.visible('ORIGINAL OUTPUT');
     expect(tui.screen()).not.toContain('Custom read complete');
+  } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
+test('terminal compact chat advances a bounded output tail with theme-neutral styling', async () => {
+  const call = event(1, 'tool.call', { toolCallId: 'rolling', title: 'bash', rawInput: { command: 'watch-output' } });
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 1, agents: [agent('root')], operations: [] });
+    else if (request.method === 'subscribe') respond(socket, request.id, { seq: 1, liveOnly: true });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: request.params.after < 1 ? [call] : [], oldestSeq: 1, latestSeq: 1, expired: false });
+  });
+  const settings = new Settings(); settings.compactToolCalls = true;
+  await settings.save(join(mock.directory, 'config.json'));
+  const tui = terminalClient(mock.path, mock.directory);
+  const live = (seq: number, type: string, rawOutput: string) => {
+    for (const socket of mock.sockets) send(socket, { ...call, seq, type, data: { ...call.data as object, status: type === 'tool.result' ? 'completed' : 'in_progress', rawOutput } });
+  };
+  try {
+    await tui.visible('$ watch-output');
+    tui.keys('c'); await tui.visible('Chat · root');
+    live(2, 'tool.update', 'FIRST_HIDDEN\ntwo\nthree\nfour\nfive\nsix');
+    await tui.visible('6 lines received · showing last 5 rows');
+    await tui.visible('│ six');
+    expect(tui.screen()).not.toContain('FIRST_HIDDEN');
+    expect(tui.screen().match(/\$ watch-output/g)).toHaveLength(1);
+    const lines = tui.screen().split('\n');
+    const row = lines.findIndex(line => line.includes('│ six'));
+    const column = lines[row]!.indexOf('│ six');
+    expect(tui.cell(row, column)?.getFgColor()).toBe(8); // Muted rail, no forced output background.
+    expect(tui.cell(row, column + 2)?.isBgDefault()).toBeTruthy();
+    live(3, 'tool.update', `SECOND_HIDDEN\n${'long-output '.repeat(100)}LATEST_TAIL`);
+    await tui.visible('2 lines received · showing last 5 rows');
+    await tui.visible('LATEST_TAIL');
+    expect(tui.screen()).not.toContain('SECOND_HIDDEN');
+    expect(tui.screen()).not.toContain('│ six');
+    const outputRows = tui.screen().split('\n').filter(line => /^  │ /.test(line));
+    expect(outputRows).toHaveLength(5);
+    live(4, 'tool.result', 'FINISHED_OUTPUT');
+    await tui.visible('FINISHED_OUTPUT');
+    expect(tui.screen()).not.toContain('lines received');
+    expect(tui.screen()).not.toContain('LATEST_TAIL');
+    expect(tui.screen().match(/\$ watch-output/g)).toHaveLength(1);
   } finally { await tui.close(); await mock.close(); }
 }, 15000);
 

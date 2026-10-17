@@ -57,13 +57,15 @@ function fenced(text: string): string {
   const fence = '`'.repeat(longest + 1);
   return `${fence}\n${text}\n${fence}`;
 }
-function terminalCodeBlock(text: string, width: number): string {
-  const indent = Math.min(2, width), available = Math.max(1, width - indent);
-  return text.split('\n').flatMap(line => wrapAnsi(line, available, { hard: true, trim: false }).split('\n'))
-    .map(line => {
-      const content = ' '.repeat(indent) + line;
-      return `\x1b[47;30m${content}${' '.repeat(Math.max(0, width - stringWidth(content)))}\x1b[0m`;
-    }).join('\n');
+/** Limit the viewport after wrapping so a long output line cannot flood chat. */
+function terminalOutputTail(lines: string[], width: number, maxRows: number): { text: string; hidden: boolean } {
+  const gutter = width >= 6 ? '  │ ' : width >= 3 ? '│ ' : '';
+  const available = width - stringWidth(gutter);
+  const rows = lines.slice(-maxRows).flatMap(line => wrapAnsi(line, available, { hard: true, trim: false }).split('\n'));
+  return {
+    text: rows.slice(-maxRows).map(line => paint(gutter, '90') + clip(line, available)).join('\n'),
+    hidden: lines.length > maxRows || rows.length > maxRows,
+  };
 }
 const textContent = (value: unknown): string => {
   if (typeof value === 'string') return value;
@@ -199,10 +201,11 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       const lines = text === '' ? [] : logicalLines(text).map(clean);
       if (lines.length > 1 && lines.at(-1) === '') lines.pop();
       const lineCount = lines.length;
-      const visible = lines.slice(-(level === 2 ? 1 : 5)).join('\n');
-      const heading = toolHeader(markdown(rendering.summary, width, true), event, rendering.subtype);
-      const count = `\x1b[97;1m${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received\x1b[0m`;
-      return heading + '\n' + count + (visible ? '\n' + terminalCodeBlock(visible, width) : '');
+      const maxRows = level === 2 ? 1 : 5;
+      const tail = terminalOutputTail(lines, width, maxRows);
+      const heading = wrapAnsi(toolHeader(markdown(rendering.summary, width, true), event, rendering.subtype), width, { hard: true, trim: false });
+      const count = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received${tail.hidden ? ` · showing last ${maxRows} ${maxRows === 1 ? 'row' : 'rows'}` : ''}`;
+      return heading + '\n' + paint(clip(count, width), '90') + (tail.text ? '\n' + tail.text : '');
     }
     if (level === 1) return renderTreeEvent(event, width, rendering);
     if (level === 2) {

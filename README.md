@@ -357,10 +357,14 @@ calls, orange for updates, green for successful results, or red for failed/cance
 results. The command/filename stays plain and the same across phases; output and
 errors appear in extended/full views, not as a replacement tree label. Edit
 summaries additionally show green `+N` and red `-N` counts. Unknown/incomplete
-result status stays neutral. Full tool updates show the latest five output lines in
-a plain-text code block; extended updates show only the latest line. As new update
-events arrive, that excerpt advances to the latest output. Output bodies keep their
-own Markdown/code colors.
+result status stays neutral. Full tool updates show a plain-text output tail of at
+most five terminal rows; extended updates show only the latest row. The limit is
+applied after wrapping, so long lines cannot flood the chat pane. A muted gutter
+separates output from the transcript without forcing a background color. The line
+count describes the received output; a tail indicator appears when earlier rows
+are hidden. As new update events arrive, the excerpt advances to the latest output.
+Updates without output retain their renderer's normal details. Other output bodies
+keep their own Markdown/code colors.
 Selected tree rows preserve these colors and the blue selection background.
 
 Sparse tool updates/results recover their command/path from retained call context
