@@ -219,11 +219,31 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
   return `\x1b[90m${header}\x1b[0m\n${markdown(text, width)}`;
 }
 
-/** Coalesce only contiguous compatible text chunks. Raw keeps every wire record. */
+/** Coalesce compatible text chunks and, optionally, replace tool lifecycle phases in chat. */
 export function chatGroups(events: ServerEvent[], settings: Settings, renderings: Map<number, EventRendering> = new Map()): ServerEvent[] {
   const groups: ServerEvent[] = [];
+  const toolCalls = new Map<string, number>();
   let adjacent = false;
   for (const event of events) {
+    const data = object(event.data);
+    const toolPhase = ['tool.call', 'tool.update', 'tool.result'].includes(event.type);
+    const callId = settings.compactToolCalls && toolPhase && typeof data.toolCallId === 'string' && event.agentId
+      ? `${event.agentId}\0${event.generation ?? ''}\0${data.toolCallId}` : undefined;
+    const raw = settings.level(event.type, renderings.get(event.seq)?.subtype) === 4;
+    if (callId && raw) toolCalls.delete(callId);
+    else if (callId && !raw) {
+      const priorIndex = toolCalls.get(callId);
+      if (settings.tracked(event.type)) {
+        if (priorIndex !== undefined) groups[priorIndex] = event;
+        else {
+          toolCalls.set(callId, groups.length);
+          groups.push(event);
+        }
+      }
+      if (event.type === 'tool.result') toolCalls.delete(callId);
+      adjacent = false;
+      continue;
+    }
     if (!settings.tracked(event.type)) { adjacent = false; continue; }
     const previous = adjacent ? groups[groups.length - 1] : undefined;
     const rendering = renderings.get(event.seq);

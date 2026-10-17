@@ -31,6 +31,7 @@ export class Settings {
   ]);
   levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.result': 2, 'agent.plan': 3 };
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
+  compactToolCalls = false;
   tracked(type: string): boolean { return !this.excluded.has(type); }
   level(type: string, subtype?: string): Level {
     const key = subtype ? `${type}:${subtype}` : type;
@@ -50,6 +51,8 @@ export class Settings {
           !data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels)) throw new Error('Invalid settings format');
       settings.excluded = new Set(data.excluded);
       settings.tableFields = normalizeTableFields(data.tableFields);
+      if (data.compactToolCalls !== undefined && typeof data.compactToolCalls !== 'boolean') throw new Error('Invalid compactToolCalls setting');
+      settings.compactToolCalls = data.compactToolCalls ?? false;
       settings.levels = {};
       for (const [type, level] of Object.entries(data.levels)) {
         if (![1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
@@ -63,7 +66,7 @@ export class Settings {
   async save(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields }, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields, compactToolCalls: this.compactToolCalls }, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   }
 }

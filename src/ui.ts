@@ -258,7 +258,9 @@ export class UI {
       const offset = this.session.serverSettingsCapability ? 1 : 0;
       if (offset && this.menuIndex === 0) void this.openServerSettings();
       else if (this.menuIndex === offset) this.setView('table-fields');
-      else this.setView(this.menuIndex === offset + 1 ? 'filters' : 'levels');
+      else if (this.menuIndex === offset + 1) this.setView('filters');
+      else if (this.menuIndex === offset + 2) this.setView('levels');
+      else if (this.menuIndex === offset + 3) { this.settings.compactToolCalls = !this.settings.compactToolCalls; this.saveSettings(); this.draw(); }
     } else if (this.view === 'settings-options') {
       const choice = this.genericChoices[this.menuIndex];
       try {
@@ -304,6 +306,8 @@ export class UI {
     } else if (this.view === 'filters') {
       const type = this.menuTypes[this.menuIndex];
       if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
+    } else if (this.view === 'view' && this.menuIndex === (this.session.serverSettingsCapability ? 4 : 3)) {
+      this.settings.compactToolCalls = !this.settings.compactToolCalls; this.saveSettings(); this.draw();
     } else if (this.view === 'skills') {
       const states: SkillState[] = ['unavailable', 'available', 'installed'];
       this.changeSkill(states[(states.indexOf(this.skillDraft[this.skillNames[this.menuIndex]!] ?? 'unavailable') + 1) % 3]!);
@@ -352,7 +356,7 @@ export class UI {
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => { this.settings.compactToolCalls = !this.settings.compactToolCalls; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
       action('space', 'Toggle field visibility', cycle),
       ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((key, index) =>
@@ -1115,10 +1119,10 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ' ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload  Esc discard') : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`]);
       this.menu.select(this.menuIndex);
       this.updating = false;
-      this.footer.setContent(' s server settings   t table fields   f client filters   l client levels   ↑↓ select   Enter open   Esc tree');
+      this.footer.setContent(' s server settings   t table fields   f client filters   l client levels   c compact tool phases   ↑↓ select   Enter open   Esc tree');
     } else if (this.view === 'table-fields') {
       this.updating = true;
       this.menu.setItems(TABLE_FIELDS.map(field => {

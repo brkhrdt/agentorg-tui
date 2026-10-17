@@ -118,6 +118,19 @@ test('edit extended uses semantic old/new colors and aligns using terminal cells
   expect(rendererPreview(metadata, e.type, 2, 100, 7)).toContain('\x1b[31mold <code>*');
 });
 
+test('chat can replace tool call/update phases in place while preserving raw and unrelated events', () => {
+  const settings = new Settings(); settings.excluded.clear(); settings.compactToolCalls = true;
+  const call = event(1, 'tool.call', { toolCallId: 'x', title: 'bash', rawInput: { command: 'echo hi' } });
+  const update = event(3, 'tool.update', { toolCallId: 'x', title: 'bash', status: 'in_progress' });
+  const result = event(4, 'tool.result', { toolCallId: 'x', title: 'bash', status: 'completed' });
+  const other = event(2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } });
+  expect(chatGroups([call, other, update, result], settings).map(item => item.seq)).toEqual([4, 2]);
+  settings.levels['tool.call'] = 4; settings.levels['tool.update'] = 4; settings.levels['tool.result'] = 4;
+  expect(chatGroups([call, update, result], settings).map(item => item.seq)).toEqual([1, 3, 4]);
+  settings.compactToolCalls = false;
+  expect(chatGroups([call, update, result], settings).map(item => item.seq)).toEqual([1, 3, 4]);
+});
+
 test('presentation sidecars select tree summaries independently of chat subtype levels and do not merge custom messages', () => {
   const store = new Store(), settings = new Settings();
   store.install({ seq: 0, agents: [agent('root')], operations: [] });

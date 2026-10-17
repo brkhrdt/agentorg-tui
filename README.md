@@ -394,7 +394,11 @@ settings are saved, not prompts, agent settings, or transcript data.
 
 The chat shows the selected agent's retained event history using the configured
 levels. Compatible contiguous message chunks are combined for readable text;
-raw mode preserves each original record. Thinking and user chunks are labeled
+raw mode preserves each original record. **v → c** toggles compact tool phases
+(chat only): a tool update replaces its call, and the result replaces the latest
+visible phase in that call's position. Correlation uses the tool call ID scoped
+to its agent and generation; events without an ID remain separate. The tree view
+is unchanged. Thinking and user chunks are labeled
 separately. Generation changes and intervening events prevent chunk merging.
 Prompt result text is not appended again as an assistant response.
 
