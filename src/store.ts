@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { Agent, Operation, ServerEvent, Snapshot } from './protocol.js';
+import type { Agent, Operation, ServerEvent, Snapshot, EventRendering } from './protocol.js';
 import type { Settings } from './settings.js';
 
 export const object = (value: unknown): Record<string, any> =>
@@ -25,6 +25,7 @@ export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
   operations = new Map<string, Operation>();
   events = new Map<number, ServerEvent>();
+  renderings = new Map<number, EventRendering>();
   discovered = new Set<string>();
   watermark = -1;
   historyCursor = 0; // Global history coverage, not the most recent live event.
@@ -36,7 +37,7 @@ export class Store extends EventEmitter {
   private latestDirty = false;
 
   reset(): void {
-    this.agents.clear(); this.operations.clear(); this.events.clear();
+    this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
@@ -49,6 +50,13 @@ export class Store extends EventEmitter {
     for (const event of this.orderedEvents()) if (event.seq > snapshot.seq) this.reduce(event);
     this.emit('change');
   }
+  present(seq: number, rendering: EventRendering): void {
+    this.renderings.set(seq, rendering);
+    const event = this.events.get(seq);
+    if (event && rendering.subtype) this.discovered.add(`${event.type}:${rendering.subtype}`);
+    this.latestDirty = true;
+    this.emit('change');
+  }
   ingest(event: ServerEvent): void {
     if (this.events.has(event.seq)) return;
     this.events.set(event.seq, event);
@@ -58,6 +66,8 @@ export class Store extends EventEmitter {
     if (!this.latestDirty && event.seq > this.latestIndexedSeq) this.indexLatest(event);
     else this.latestDirty = true;
     this.discovered.add(event.type);
+    const subtype = this.renderings.get(event.seq)?.subtype;
+    if (subtype) this.discovered.add(`${event.type}:${subtype}`);
     if (this.watermark >= 0 && event.seq > this.watermark) this.reduce(event);
     this.emit('change');
   }
@@ -115,7 +125,9 @@ export class Store extends EventEmitter {
   private indexLatest(event: ServerEvent): void {
     this.latestIndexedSeq = event.seq;
     if (!event.agentId) return;
-    const summary = appendMessageChunk(this.lastByAgent.get(event.agentId), event) ?? event;
+    const previous = this.lastByAgent.get(event.agentId);
+    const custom = this.renderings.has(event.seq) || (previous && this.renderings.has(previous.seq));
+    const summary = (!custom && appendMessageChunk(previous, event)) || event;
     this.lastByAgent.set(event.agentId, summary);
     const types = this.latestByType.get(event.agentId) ?? new Map<string, ServerEvent>();
     types.set(event.type, summary);

@@ -1,5 +1,5 @@
 import stringWidth from 'string-width';
-import type { ServerEvent } from './protocol.js';
+import type { ServerEvent, EventRendering } from './protocol.js';
 import { cell, clean, renderTreeEvent, styledCell } from './render.js';
 import type { TableField } from './settings.js';
 import type { TreeRow } from './store.js';
@@ -31,7 +31,7 @@ function value({ agent }: TreeRow, field: TableField): string {
 }
 
 /** Width includes only usable list cells (the caller reserves the scrollbar). */
-export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, fields: readonly TableField[], width: number) {
+export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, fields: readonly TableField[], width: number, renderings: Map<number, EventRendering> = new Map()) {
   width = Math.max(0, Math.floor(width));
   if (!fields.length) return { header: '', items: rows.map(() => ''), widths: [] as number[] };
   const gap = fields.length < 2 ? 0 : Math.max(0, Math.min(2, Math.floor((width - fields.length) / (fields.length - 1))));
@@ -75,7 +75,7 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
       const prefix = index === 0 ? indent(row.depth) : '';
       if (field !== 'event') return cell(prefix + values[r]![index]!, size);
       const event = latest.get(row.agent.id);
-      const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix))) : '—';
+      const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq)) : '—';
       return styledCell(prefix + preview, size);
     }).join(separator)),
   };

@@ -32,7 +32,10 @@ export class Settings {
   levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.result': 2, 'agent.plan': 3 };
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   tracked(type: string): boolean { return !this.excluded.has(type); }
-  level(type: string): Level { return this.levels[type] ?? 1; }
+  level(type: string, subtype?: string): Level {
+    const key = subtype ? `${type}:${subtype}` : type;
+    return this.levels[key] ?? this.levels[type.split(':')[0]!] ?? 1;
+  }
   toggle(type: string): void {
     if (!this.excluded.delete(type)) this.excluded.add(type);
   }

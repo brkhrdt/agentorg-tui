@@ -3,7 +3,7 @@ import { markedTerminal } from 'marked-terminal';
 import stringWidth from 'string-width';
 import stripAnsi from 'strip-ansi';
 import wrapAnsi from 'wrap-ansi';
-import type { ServerEvent } from './protocol.js';
+import type { ServerEvent, EventRendering } from './protocol.js';
 import type { Level, Settings } from './settings.js';
 import { appendMessageChunk, object, truncated } from './store.js';
 
@@ -122,15 +122,21 @@ function label(event: ServerEvent): string {
   return event.type;
 }
 /** Tree previews render Markdown, but remain exactly one terminal-width-aware line. */
-export function renderTreeEvent(event: ServerEvent, width: number): string {
+export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering): string {
   if (width <= 0) return '';
   const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
   const prefix = assistant ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
-  return clipStyled(prefix + markdown(eventText(event), Math.max(1, width), true), width);
+  return clipStyled(prefix + markdown(rendering ? rendering.summary.split(/\r\n?|\n|\u2028|\u2029/)[0] || '—' : eventText(event), Math.max(1, width), true), width);
 }
-export function renderEvent(event: ServerEvent, level: Level, width: number): string {
+export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering): string {
   width = Math.max(1, width);
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
+  if (rendering) {
+    if (level === 1) return renderTreeEvent(event, width, rendering);
+    if (level === 2) return rendering.extended.split(/\r\n?|\n|\u2028|\u2029/).slice(0, 2)
+      .map(line => wrapAnsi(markdown(line, width, true), width, { hard: true, trim: false })).join('\n');
+    return `\x1b[90m${clip(`${event.time} · ${label(event)}`, width)}\x1b[0m\n${markdown(rendering.full, width)}`;
+  }
   const prefix = label(event);
   const text = clean(eventText(event));
   if (level === 1) {
@@ -147,13 +153,14 @@ export function renderEvent(event: ServerEvent, level: Level, width: number): st
 }
 
 /** Coalesce only contiguous compatible text chunks. Raw keeps every wire record. */
-export function chatGroups(events: ServerEvent[], settings: Settings): ServerEvent[] {
+export function chatGroups(events: ServerEvent[], settings: Settings, renderings: Map<number, EventRendering> = new Map()): ServerEvent[] {
   const groups: ServerEvent[] = [];
   let adjacent = false;
   for (const event of events) {
     if (!settings.tracked(event.type)) { adjacent = false; continue; }
     const previous = adjacent ? groups[groups.length - 1] : undefined;
-    const merged = settings.level(event.type) !== 4 ? appendMessageChunk(previous, event) : undefined;
+    const rendering = renderings.get(event.seq);
+    const merged = settings.level(event.type, rendering?.subtype) !== 4 && !rendering && !(previous && renderings.has(previous.seq)) ? appendMessageChunk(previous, event) : undefined;
     if (merged && previous) {
       groups[groups.length - 1] = { ...previous, data: merged.data };
     } else groups.push(event);

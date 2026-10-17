@@ -66,7 +66,7 @@ export class TreeProbe {
   private render() {
     const began = performance.now();
     const rows = this.session.store.tree();
-    const table = renderTable(rows, this.session.store.latest(this.settings), this.settings.tableFields, this.width);
+    const table = renderTable(rows, this.session.store.latest(this.settings), this.settings.tableFields, this.width, this.session.store.renderings);
     if (table.items.length !== rows.length) throw new Error('TUI tree/table row mismatch');
     const next = new Set(rows.map(row => row.agent.id));
     const at = performance.now();

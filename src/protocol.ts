@@ -31,6 +31,12 @@ export interface ServerEvent {
   generation?: string;
   data: unknown;
 }
+export interface EventRendering { rendererId: string; subtype?: string; summary: string; extended: string; full: string }
+export interface RendererMetadata {
+  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string;
+  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string }>;
+}
+export interface RenderingCapability { version: number; catalog: string }
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
 export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
@@ -59,9 +65,10 @@ export interface ServerSettingsGroup extends ServerSettingsDescriptor {
 }
 export interface ServerSettingsCatalog { groups: ServerSettingsGroup[]; facts: { cwd: string; dataDir: string; socketPath: string; harnesses: string[]; plugins: string[] } }
 export interface ServerSettingsCapability { version: number; groups: ServerSettingsDescriptor[]; endpoints: { list: string; get: string; update: string } }
-export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
+export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { rendering?: RenderingCapability; cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
 export interface HistoryPage {
   events: ServerEvent[];
+  renderings?: Record<string, EventRendering>;
   oldestSeq: number;
   latestSeq: number;
   expired: boolean;
@@ -150,6 +157,10 @@ export class RpcClient extends EventEmitter {
         const frame = JSON.parse(line);
         if (frame.kind === 'event' && Number.isSafeInteger(frame.seq) && typeof frame.type === 'string') {
           this.emit('event', frame as ServerEvent);
+        } else if (frame.kind === 'presentation' && Number.isSafeInteger(frame.seq) &&
+          typeof frame.rendering?.rendererId === 'string' && ['summary', 'extended', 'full'].every(level => typeof frame.rendering[level] === 'string') &&
+          (frame.rendering.subtype === undefined || typeof frame.rendering.subtype === 'string')) {
+          this.emit('presentation', frame.seq, frame.rendering as EventRendering);
         } else if (frame.kind === 'response') {
           if (frame.id === null) {
             this.emit('diagnostic', `${frame.error?.code ?? 'PROTOCOL'}: ${frame.error?.message ?? 'Uncorrelated response'}`);

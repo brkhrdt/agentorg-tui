@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
 import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
@@ -23,6 +23,8 @@ export class Session extends EventEmitter {
   podmanEnabled = false;
   settingsFields: PluginField[] = [];
   serverSettingsCapability?: ServerSettingsCapability;
+  renderingCapability?: RenderingCapability;
+  renderers: RendererMetadata[] = [];
   serverSettingsCatalog?: ServerSettingsCatalog;
   private installServerSettings(catalog: ServerSettingsCatalog): void {
     const previous = this.serverSettingsCatalog;
@@ -128,6 +130,13 @@ export class Session extends EventEmitter {
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
     this.settingsFields = pluginFields(snapshot.capabilities?.settingsEditors);
+    const rendering = snapshot.capabilities?.rendering;
+    this.renderingCapability = rendering?.version === 1 && typeof rendering.catalog === 'string' ? rendering : undefined;
+    this.renderers = [];
+    if (this.renderingCapability) {
+      const catalog = await client.request<{ version: number; renderers: RendererMetadata[] }>(this.renderingCapability.catalog, {});
+      if (client === this.client && !this.stopped && catalog.version === 1) this.renderers = catalog.renderers;
+    }
     const serverSettings = snapshot.capabilities?.serverSettings;
     this.serverSettingsCapability = serverSettings?.version === 1 && ['list', 'get', 'update'].every(key => typeof serverSettings.endpoints?.[key as keyof typeof serverSettings.endpoints] === 'string') ? serverSettings : undefined;
     if (!this.serverSettingsCapability) this.serverSettingsCatalog = undefined;
@@ -173,6 +182,7 @@ export class Session extends EventEmitter {
       const client = this.client = new RpcClient(this.socketPath);
       let buffering = true;
       const buffered: ServerEvent[] = [];
+      const presentations = new Map<number, EventRendering>();
       client.on('event', (event: ServerEvent) => {
         this.emit('event', event);
         if (buffering) buffered.push(event);
@@ -180,6 +190,10 @@ export class Session extends EventEmitter {
           this.store.ingest(event);
           if (event.type === 'skills.catalog_added' || event.type === 'organization.settings.changed') this.scheduleRefresh();
         }
+      });
+      client.on('presentation', (seq: number, rendering: EventRendering) => {
+        if (buffering) presentations.set(seq, rendering);
+        else this.store.present(seq, rendering);
       });
       client.on('diagnostic', (message: string) => this.emit('notice', message));
       const closed = new Promise<void>(resolve => client.once('disconnect', resolve));
@@ -203,7 +217,9 @@ export class Session extends EventEmitter {
           this.emit('notice', 'Server history changed; loaded a new organization.');
         }
         await this.loadSkills(client, snapshot);
+        if (this.renderingCapability) await client.request('subscribe', { renderings: true });
         this.store.install(snapshot);
+        for (const [seq, rendering] of presentations) this.store.present(seq, rendering);
         buffered.sort((a, b) => a.seq - b.seq).forEach(event => this.store.ingest(event));
         buffering = false;
         delay = 250;
@@ -231,12 +247,13 @@ export class Session extends EventEmitter {
   }
   private async replay(client: RpcClient, target: number): Promise<void> {
     while (!this.stopped && this.store.historyCursor < target) {
-      const page = await client.request<HistoryPage>('events.history', { after: this.store.historyCursor, limit: 100 });
+      const page = await client.request<HistoryPage>('events.history', { after: this.store.historyCursor, limit: 100, ...(this.renderingCapability && { renderings: true }) });
       if (page.expired && !this.store.historyGap) {
         this.store.historyGap = true;
         this.emit('notice', 'History retention gap: earlier chat is unavailable.');
         this.scheduleRefresh();
       }
+      for (const [seq, rendering] of Object.entries(page.renderings ?? {})) this.store.present(Number(seq), rendering);
       for (const event of page.events) this.store.ingest(event);
       if (!page.events.length) { this.store.historyCursor = target; break; }
       this.store.historyCursor = page.events[page.events.length - 1]!.seq;

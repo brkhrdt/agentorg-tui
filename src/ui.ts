@@ -3,6 +3,7 @@ import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProf
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
+import { genericPreview, rendererPreview } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, PODMAN_FIELDS, type AgentField, type ImageScope } from './agent-editor.js';
 import { ServerSettingsEditor } from './server-settings-editor.js';
@@ -52,6 +53,8 @@ export class UI {
     style: { selected: { bg: 'blue', fg: 'white', bold: true } },
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
+  private preview = blessed.box({ parent: this.screen, top: 3, bottom: 2, right: 0, width: '50%', hidden: true, tags: false, border: 'line', label: ' Renderer examples ', style: { border: { fg: 'cyan' } } });
+  private previewIndex = 0;
   private form = blessed.box({ parent: this.screen, top: 3, height: 5, hidden: true, tags: false, border: 'line', label: ' Entry draft ', style: { border: { fg: 'cyan' } } });
   private structured?: StructuredEditor;
   private structuredField?: AgentField;
@@ -107,7 +110,9 @@ export class UI {
     this.tree.on('select item', (_item, index) => {
       if (!this.updating) this.selectedAgent = this.rows[index]?.agent.id;
     });
-    this.menu.on('select item', (_item, index) => { if (!this.updating) this.menuIndex = index; });
+    this.menu.on('select item', (_item, index) => {
+      if (!this.updating) { this.menuIndex = index; this.previewIndex = 0; if (this.view === 'levels') this.scheduleDraw(); }
+    });
     for (const widget of [this.tree, this.menu]) {
       widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape'], (ch, key) => {
         const binding = ['space', 'left', 'right', 'enter', 'escape'].includes(key.name) ? key.name : ch;
@@ -376,6 +381,13 @@ export class UI {
     ];
     if (this.view === 'filters') return [action('space', 'Toggle selected event', cycle), back];
     if (this.view === 'levels') return [1, 2, 3, 4].map(level => action(String(level), LEVEL_NAMES[level - 1]!, () => this.changeLevel(0, level as Level))).concat([
+      action('r', 'Next renderer example (does not change server selection)', () => { this.previewIndex++; this.draw(); }),
+      action('z', 'Inherit parent / default rendering level', () => {
+        const type = this.menuTypes[this.menuIndex];
+        if (type?.includes(':')) delete this.settings.levels[type];
+        else if (type) this.settings.levels[type] = new Settings().level(type);
+        this.saveSettings(); this.draw();
+      }),
       action('left', 'Previous level', () => this.changeLevel(-1)), action('right', 'Next level', () => this.changeLevel(1)), action('space', 'Cycle level', () => this.changeLevel(1)), action('enter', 'Cycle level', () => this.changeLevel(1)), back,
     ]);
     return [];
@@ -807,9 +819,10 @@ export class UI {
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     this.view = view;
     this.menuIndex = 0;
+    this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     this.input.bottom = this.isPathInput() || this.isVolumeInput() ? 7 : 2;
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
@@ -977,6 +990,8 @@ export class UI {
     const AGENT_FIELDS = this.editor?.fields ?? [];
     if (this.closing) return;
     const width = Math.max(1, Number(this.screen.width));
+    this.menu.width = '100%';
+    this.preview.hide();
     const store = this.session.store;
     const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
     const structuredLabel = this.structuredServer ? this.serverField?.label : this.structuredField ? this.editor?.label(this.structuredField) : '';
@@ -1039,7 +1054,7 @@ export class UI {
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
       const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
       // Blessed lists reserve a scrollbar cell even when it is hidden.
-      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1);
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.renderings);
       this.columns.setContent(header);
       this.updating = true;
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
@@ -1112,21 +1127,41 @@ export class UI {
       this.footer.setContent(' ↑↓ field  Space toggle  ←→ reorder  1–9/0 position  z defaults  ? keys  Esc tree');
     } else if (this.view === 'filters' || this.view === 'levels') {
       const currentType = this.menuTypes[this.menuIndex];
-      this.menuTypes = this.settings.types(store.discovered);
+      const subtypes = this.session.renderers.flatMap(renderer => renderer.tool ? renderer.eventTypes.map(type => `${type}:${renderer.tool}`) : []);
+      this.menuTypes = this.settings.types([...store.discovered, ...(this.view === 'levels' ? subtypes : [])]).filter(type => this.view === 'levels' || !type.includes(':'));
       if (currentType) this.menuIndex = Math.max(0, this.menuTypes.indexOf(currentType));
+      const type = this.menuTypes[this.menuIndex] ?? '';
+      const [parent, subtype] = type.split(':');
+      const candidates = this.session.renderers.filter(renderer => renderer.eventTypes.includes(parent!) && (!renderer.tool || renderer.tool === subtype))
+        .sort((a, b) => Number(b.harness === agent?.settings.harness) - Number(a.harness === agent?.settings.harness));
+      const preview = candidates[this.previewIndex % Math.max(1, candidates.length)] ?? genericPreview(parent!);
+      const height = Number(this.screen.height);
+      const showPreview = this.view === 'levels' && preview && width >= 60 && height >= 16;
+      const menuWidth = showPreview && width >= 90 ? Math.floor(width / 2) : width;
+      if (showPreview) {
+        const side = width >= 90;
+        this.menu.width = side ? '50%' : '100%';
+        this.menu.bottom = side ? 2 : 11;
+        this.preview.width = side ? '50%' : '100%';
+        this.preview.top = side ? 3 : height - 11;
+        this.preview.show();
+        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 5 : 9) - 2)));
+      } else this.menu.bottom = 2;
       this.updating = true;
       this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?
         `[${this.settings.tracked(type) ? 'x' : ' '}] ${clean(type)}` :
-        `${cell(type, Math.min(30, Math.max(12, width - 22)))}  ${this.settings.level(type)} ${LEVEL_NAMES[this.settings.level(type) - 1]}`));
+        `${cell(type, Math.min(30, Math.max(12, menuWidth - 22)))}  ${this.settings.level(type)} ${LEVEL_NAMES[this.settings.level(type) - 1]}`));
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.view === 'filters' ? ' ↑↓ select   Space toggle tracked   Esc tree · changes saved automatically' : ' ↑↓ event   ←→ level   1 summary  2 extended  3 full  4 raw   Esc tree');
+      this.footer.setContent(this.view === 'filters' ? ' ↑↓ select   Space toggle tracked   Esc tree · changes saved automatically' : ' ↑↓ event  ←→ level  1–4 level  r examples  z inherit  Esc tree');
     } else if (this.view === 'chat') {
       const events = store.orderedEvents().filter(event => event.agentId === this.chatAgent);
-      const blocks = chatGroups(events, this.settings).map(event => {
-        const signature = JSON.stringify(event);
+      const blocks = chatGroups(events, this.settings, store.renderings).map(event => {
+        const rendering = store.renderings.get(event.seq);
+        const level = this.settings.level(event.type, rendering?.subtype);
+        const signature = JSON.stringify([event, rendering, level, width]);
         const cached = this.renderedEvents.get(event.seq);
         if (cached?.signature === signature) return cached.text;
-        const text = renderEvent(event, this.settings.level(event.type), Math.max(1, width - 1));
+        const text = renderEvent(event, level, Math.max(1, width - 1), rendering);
         this.renderedEvents.set(event.seq, { signature, text });
         return text;
       });

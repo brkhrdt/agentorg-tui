@@ -324,13 +324,42 @@ Use ↑ / ↓ to select an event type. Choose a level with 1–4, or cycle with
 ← / →, Space, or Enter. Escape returns to the tree.
 
 1. **Summary**: one line, truncated to terminal cell width.
-2. **Extended**: at most two lines, with a truncation indicator.
+2. **Extended**: at most two logical lines from the renderer, with a truncation
+   indicator when capped. These may wrap onto additional terminal rows.
 3. **Full**: all available event text, with terminal Markdown rendering
    (headings, emphasis, lists, tables, fenced code, and links).
 4. **Raw**: the complete event JSON envelope, pretty-printed and wrapped.
 
 `agent.message`, `prompt.queued`, and `agent.plan` default to full;
 `tool.result` defaults to extended; other events default to summary.
+
+On compatible servers, harnesses choose event-specific Markdown formats; tool
+subtypes such as **`tool.call:edit`** and **`tool.result:read`** also appear in the
+level selector. A subtype inherits its event-type level unless explicitly set;
+`z` removes the selected override and restores inheritance/default. Filters remain
+per parent event type. Subtype levels do not change server renderer selection.
+
+The inline **Renderer examples** panel shows generated synthetic examples for
+all four levels when space allows (only the selected level on smaller terminals).
+`r` cycles matching renderer examples for comparison; this is a preview only,
+not a server configuration change. The panel hides below 60 columns/16 rows;
+level controls still work. Full/raw previews are explicitly bounded excerpts,
+not limits on actual chat content. Older servers use local generic examples.
+
+Server precedence is harness renderer → configured server default → generic.
+Pi initially supplies distinct read/bash/edit/write call/update/result styles:
+paths/ranges and line counts, shell commands/exit information, edit diffs, and
+write sizes/content. Unknown tools and missing/partial data remain readable.
+Clients own Markdown styles, colors, terminal sanitization and cell clipping;
+remote terminal commands are never trusted. Raw mode bypasses custom formatters
+and excludes presentation sidecars. Harness-rendered messages are not coalesced,
+so custom content cannot be accidentally joined using generic chunk rules.
+
+Administrators can set `rendering.defaultToolRenderer` under **v → s → Event
+rendering**. Defaults affect future deliveries/history reads; downloaded
+presentations may stay cached until history is reloaded. Changing an agent's
+harness may also change historical rendering; events store no historical harness
+identity. No tools are rerun. See [the server contract](../agentorg/EXTENSIONS.md#event-renderers-presentation-contract-v1).
 
 Filters and levels are saved automatically to
 `$XDG_CONFIG_HOME/org-tui/settings.json`, or `~/.config/org-tui/settings.json`
@@ -388,7 +417,8 @@ bun run typecheck
 
 Tests use deterministic mock Unix servers (no model calls), including fragmented
 UTF-8 JSONL, response/event races, history replay, database replacement,
-filtering, rendering, and saved settings. The UI test launches the actual Bun CLI
+filtering, rendering, presentation-sidecar negotiation, raw preservation, subtype
+level inheritance, renderer previews, and saved settings. The UI test launches the actual Bun CLI
 in a pseudo-terminal via `script` (util-linux) and checks the rendered screen
 using a headless terminal emulator, including selection highlight, `v f`, `v l`,
 live events, interrupting tree/chat prompts, Escape navigation, empty-tree root
