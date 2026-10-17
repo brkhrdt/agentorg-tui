@@ -143,7 +143,7 @@ describe('Markdown tree previews', () => {
   });
   test('renders other event types and sanitizes remote terminal commands before styling', () => {
     const tool = event(1, 'tool.call', { title: '**Search**', status: 'pending' });
-    expect(stripAnsi(renderTreeEvent(tool, 80))).toBe('tool.call: Search · pending');
+    expect(stripAnsi(renderTreeEvent(tool, 80))).toBe('• **Search**');
     const rendered = renderTreeEvent(message('\x1b[2J**safe**\x07'), 80);
     expect(stripAnsi(rendered)).toBe('safe');
     expect(rendered).not.toContain('\x1b[2J');

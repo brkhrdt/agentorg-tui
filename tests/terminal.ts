@@ -13,6 +13,7 @@ export function terminalClient(socket: string, directory: string) {
   const keys = (text: string) => child.stdin.write(text);
   return {
     keys, screen,
+    cell(row: number, column: number) { return terminal.buffer.active.getLine(row)?.getCell(column); },
     async visible(text: string) {
       try { await waitFor(() => screen().includes(text), 5000); }
       catch { throw new Error(`Missing ${text}; exit=${child.exitCode}\n${screen()}`); }

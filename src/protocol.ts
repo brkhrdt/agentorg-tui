@@ -31,10 +31,11 @@ export interface ServerEvent {
   generation?: string;
   data: unknown;
 }
-export interface EventRendering { rendererId: string; subtype?: string; summary: string; extended: string; full: string }
+export interface ExtendedDiff { prefix: string; before: string; after: string }
+export interface EventRendering { rendererId: string; subtype?: string; summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff }
 export interface RendererMetadata {
   id: string; name: string; harness?: string; eventTypes: string[]; tool?: string;
-  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string }>;
+  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; extendedDiff?: ExtendedDiff }>;
 }
 export interface RenderingCapability { version: number; catalog: string }
 export type SkillState = 'unavailable' | 'available' | 'installed';

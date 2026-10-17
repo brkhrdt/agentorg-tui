@@ -24,6 +24,8 @@ export class UI {
   private columns = blessed.box({ parent: this.screen, top: 2, height: 1, style: { fg: 'gray' } });
   private tree = blessed.list({
     parent: this.screen, top: 3, bottom: 2, keys: true, vi: false, mouse: true,
+    // Keep the selection background, but preserve locally generated event colors.
+    invertSelected: false,
     tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } },
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });

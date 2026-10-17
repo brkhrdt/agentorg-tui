@@ -349,7 +349,23 @@ not limits on actual chat content. Older servers use local generic examples.
 Server precedence is harness renderer → configured server default → generic.
 Pi initially supplies distinct read/bash/edit/write call/update/result styles:
 paths/ranges and line counts, shell commands/exit information, edit diffs, and
-write sizes/content. Unknown tools and missing/partial data remain readable.
+write sizes/content. Headers are compact: **`$` bash**, **`<` read**, **`>` write**,
+**`Δ` edit**, and **`• toolname`** for unknown/MCP tools. There is no `tool.call:`
+or `tool.result:` prefix or routine `pending`/`completed` label. Paths, ranges,
+commands, sizes, counts and errors remain. Headers are **yellow for calls**,
+**orange for updates**, **green for successful results**, and **red for failed or
+cancelled results**. Unknown/incomplete result status stays neutral. Output
+bodies keep their own Markdown/code colors. Selected tree rows retain the event
+color as well as the blue selection background.
+
+Edit's extended level shows `Δ filename` followed by old text in red, then new
+text in green on the next logical line, aligned below the old text. Multiline or
+multiple changes are abbreviated with `↵`/`…`; `∅` denotes an empty side. Full
+shows a context diff of changed regions with red removals and green additions.
+Actual result diffs take precedence; pending calls use the retained replacement
+text, labelled with replacement-relative line numbers, never current file reads.
+Failed edits show errors rather than a misleading green replacement preview.
+Unknown tools and missing/partial data remain readable.
 Clients own Markdown styles, colors, terminal sanitization and cell clipping;
 remote terminal commands are never trusted. Raw mode bypasses custom formatters
 and excludes presentation sidecars. Harness-rendered messages are not coalesced,

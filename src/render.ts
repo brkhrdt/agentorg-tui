@@ -28,6 +28,25 @@ export function cell(value: string, width: number): string {
   return text + ' '.repeat(Math.max(0, width - stringWidth(text)));
 }
 const pretty = (value: unknown) => JSON.stringify(value, null, 2) ?? String(value);
+const isTool = (event: ServerEvent) => ['tool.call', 'tool.update', 'tool.result'].includes(event.type);
+const paint = (text: string, color: string) => `\x1b[${color}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${color}m`)}\x1b[0m`;
+function toolColor(event: ServerEvent): string {
+  if (event.type === 'tool.call') return '33';
+  if (event.type === 'tool.update') return '38;5;208';
+  const data = object(event.data), result = object(data.rawOutput);
+  const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
+    ((data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/exit (?:code|status):?\s*(\d+)/i)?.[1] : undefined);
+  if (['failed', 'cancelled', 'canceled'].includes(data.status) || result.isError === true || (exit !== undefined && Number(exit) !== 0)) return '31';
+  return data.status === 'completed' ? '32' : '90';
+}
+const logicalLines = (text: string) => text.split(/\r\n?|\n|\u2028|\u2029/);
+const literalMarkdown = (text: string) => text.replace(/([\\`*_{}\[\]<>])/g, '\\$1');
+function fenced(text: string): string {
+  let longest = 2;
+  for (const match of text.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}\n${text}\n${fence}`;
+}
 const textContent = (value: unknown): string => {
   const content = object(value);
   if (typeof content.text === 'string') return content.text;
@@ -51,12 +70,15 @@ export function eventText(event: ServerEvent): string {
       // Prompt result.text is not another assistant chunk.
       return `${data.type ?? 'operation'} · ${data.status ?? ''}${data.error ? ` · ${data.error.message}` : ''}`;
     case 'tool.call': case 'tool.update': case 'tool.result': {
-      const title = `${data.title ?? data.toolCallId ?? 'Tool'} · ${data.status ?? 'pending'}`;
+      const tool = data.toolName ?? data.title ?? data.toolCallId ?? 'Tool', input = object(data.rawInput);
+      const title = tool === 'bash' ? `$ ${input.command ?? '[command unavailable]'}` :
+        ['read', 'write', 'edit'].includes(tool) ? `${tool === 'read' ? '<' : tool === 'write' ? '>' : 'Δ'} ${input.path ?? input.file_path ?? '[path unavailable]'}` : `• ${tool}`;
       const details: string[] = [];
-      if (data.rawInput !== undefined) details.push(`Input:\n${typeof data.rawInput === 'string' ? data.rawInput : pretty(data.rawInput)}`);
-      if (data.rawOutput !== undefined) details.push(`Output:\n${textContent(data.rawOutput)}`);
-      else if (data.content !== undefined) details.push(textContent(data.content));
-      return [title, ...details].join('\n\n');
+      if (data.rawInput !== undefined) details.push(`Input:\n${fenced(typeof data.rawInput === 'string' ? data.rawInput : pretty(data.rawInput))}`);
+      if (data.rawOutput !== undefined) details.push(fenced(textContent(data.rawOutput)));
+      else if (data.content !== undefined) details.push(fenced(textContent(data.content)));
+      if (data.status === 'failed' && details.length === 0) details.push('Tool failed');
+      return [literalMarkdown(String(title).replace(/\s+/g, ' ').trim()), ...details].join('\n\n');
     }
     case 'agent.plan':
       return Array.isArray(data.entries) ? data.entries.map((entry: any) => `- [${entry.status === 'completed' ? 'x' : ' '}] ${entry.content} (${entry.status})`).join('\n') : pretty(event.data);
@@ -79,6 +101,16 @@ function markdown(text: string, width: number, summary = false): string {
       em: style('3'), codespan: style('33'), blockquote: style('90'),
       link: style('34'), href: style('4;34'),
     }) as unknown as MarkedExtension);
+    // Semantic diff colors are local and deterministic, even without FORCE_COLOR/TTY.
+    parser.use({ renderer: { code({ text, lang }) {
+      if (lang?.split(/\s/)[0] !== 'diff') return false;
+      let inHunk = false;
+      return '\n' + text.split('\n').map(line => {
+        if (line.startsWith('@@')) { inHunk = true; return paint(line, '36'); }
+        if (!inHunk && /^(--- |\+\+\+ |diff --git)/.test(line)) return paint(line, '90');
+        return line.startsWith('-') ? paint(line, '31') : line.startsWith('+') ? paint(line, '32') : line;
+      }).join('\n') + '\n\n';
+    } } });
     if (markdownCache.size > 8) markdownCache.clear();
     markdownCache.set(key, parser);
   }
@@ -125,16 +157,41 @@ function label(event: ServerEvent): string {
 export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering): string {
   if (width <= 0) return '';
   const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
-  const prefix = assistant ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
-  return clipStyled(prefix + markdown(rendering ? rendering.summary.split(/\r\n?|\n|\u2028|\u2029/)[0] || '—' : eventText(event), Math.max(1, width), true), width);
+  const prefix = assistant || isTool(event) ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
+  const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
+  const preview = prefix + markdown(text, Math.max(1, width), true);
+  return clipStyled(isTool(event) ? paint(preview, toolColor(event)) : preview, width);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering): string {
   width = Math.max(1, width);
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
+  if (!rendering && isTool(event)) {
+    const full = eventText(event), data = object(event.data);
+    const output = data.rawOutput ?? data.content;
+    const summary = logicalLines(full)[0]!;
+    rendering = { rendererId: 'client.generic-tool', summary, extended: summary + (output !== undefined ? `\n${literalMarkdown(textContent(output).replace(/\s+/g, ' ').slice(0, 240))}` : ''), full };
+  }
   if (rendering) {
     if (level === 1) return renderTreeEvent(event, width, rendering);
-    if (level === 2) return rendering.extended.split(/\r\n?|\n|\u2028|\u2029/).slice(0, 2)
-      .map(line => wrapAnsi(markdown(line, width, true), width, { hard: true, trim: false })).join('\n');
+    if (level === 2) {
+      const diff = rendering.extendedDiff;
+      if (isTool(event) && diff && [diff.prefix, diff.before, diff.after].every(text => typeof text === 'string')) {
+        const prefix = clean(diff.prefix).replace(/\s+/g, ' ').trim();
+        const before = clean(diff.before).replace(/\s+/g, ' '), after = clean(diff.after).replace(/\s+/g, ' ');
+        const first = paint(prefix, toolColor(event)) + ' ' + paint(before, '31');
+        const second = ' '.repeat((stringWidth(prefix) + 1) % width) + paint(after, '32');
+        return [first, second].map(line => wrapAnsi(line, width, { hard: true, trim: false })).join('\n');
+      }
+      return logicalLines(rendering.extended).slice(0, 2).map((line, index) => {
+        const text = markdown(line, width, true);
+        return wrapAnsi(isTool(event) && index === 0 ? paint(text, toolColor(event)) : text, width, { hard: true, trim: false });
+      }).join('\n');
+    }
+    if (isTool(event)) {
+      const [heading, ...body] = logicalLines(rendering.full);
+      return wrapAnsi(paint(markdown(heading ?? '', width, true), toolColor(event)), width, { hard: true, trim: false }) +
+        (body.join('\n').trim() ? '\n' + markdown(body.join('\n'), width) : '');
+    }
     return `\x1b[90m${clip(`${event.time} · ${label(event)}`, width)}\x1b[0m\n${markdown(rendering.full, width)}`;
   }
   const prefix = label(event);

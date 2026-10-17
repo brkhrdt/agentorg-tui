@@ -39,6 +39,63 @@ test('server Markdown controls content, client controls styles/cell limits and r
   expect(renderEvent(raw, 3, 80, hostile)).not.toContain('\x1b]0;');
 });
 
+test('tool headers use lifecycle colors without event prefixes or coloring output bodies', () => {
+  const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ echo hello', extended: '$ echo hello\nhello', full: '$ echo hello\n\n```\nhello\n```' };
+  for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31'], ['tool.result', 'cancelled', '31'], ['tool.result', undefined, '90']]) {
+    const e = event(1, type, { title: 'bash', status });
+    for (const level of [1, 2, 3] as const) {
+      const rendered = renderEvent(e, level, 80, presentation);
+      expect(rendered).toStartWith(`\x1b[${color}m$ echo hello`);
+      expect(stripAnsi(rendered)).not.toContain(type! + ':');
+      expect(stripAnsi(rendered)).not.toContain('pending');
+      if (level === 2) expect(rendered.split('\n')[1]).toBe('hello');
+    }
+    expect(renderTreeEvent(e, 80, presentation)).toStartWith(`\x1b[${color}m$ echo hello`);
+    expect(JSON.parse(renderEvent(e, 4, 10000, presentation))).toEqual(e);
+  }
+  for (const rawOutput of [{ isError: true }, { structuredContent: { exit_code: 7 } }, { content: [{ type: 'text', text: 'exit code: 2' }] }]) {
+    expect(renderTreeEvent(event(1, 'tool.result', { title: 'bash', status: 'completed', rawOutput }), 80, presentation)).toStartWith('\x1b[31m');
+  }
+  for (const [tool, symbol] of [['bash', '$'], ['read', '<'], ['write', '>'], ['edit', 'Δ'], ['mcp__organization__child_create', '• mcp__organization__child_create']]) {
+    const e = event(1, 'tool.call', { title: tool, status: 'pending', rawInput: { path: 'a.ts', command: 'echo hello' } });
+    expect(stripAnsi(renderEvent(e, 1, 100))).toStartWith(symbol!);
+    expect(stripAnsi(renderEvent(e, 3, 100))).not.toContain('tool.call');
+    expect(stripAnsi(renderEvent(e, 3, 100))).not.toContain('pending');
+  }
+});
+
+test('edit extended uses semantic old/new colors and aligns using terminal cells; full colors diff hunks', () => {
+  const prefix = 'Δ src/文件🦊.ts';
+  const e = event(1, 'tool.call', { title: 'edit', rawInput: { path: 'src/文件🦊.ts' } });
+  const presentation: EventRendering = {
+    rendererId: 'pi/edit', subtype: 'edit', summary: `${prefix} · +1 / -1`, extended: `${prefix} old\n  new`,
+    extendedDiff: { prefix, before: 'old <code>*', after: 'new <code>*' },
+    full: `${prefix} · +1 / -1\n\nProposed changes:\n\n\`\`\`diff\n@@ -1 +1 @@\n-old <code>*\n+new <code>*\n\`\`\``,
+  };
+  const extended = renderEvent(e, 2, 100, presentation);
+  expect(extended).toContain('\x1b[31mold <code>*'); expect(extended).toContain('\x1b[32mnew <code>*');
+  expect(stripAnsi(extended).split('\n')).toEqual([`${prefix} old <code>*`, `${' '.repeat(stringWidth(prefix) + 1)}new <code>*`]);
+  const full = renderEvent(e, 3, 100, presentation);
+  expect(full).toStartWith('\x1b[33mΔ');
+  expect(full).toContain('\x1b[31m-old <code>*'); expect(full).toContain('\x1b[32m+new <code>*');
+  expect(stripAnsi(full)).not.toContain('tool.call');
+  expect(stripAnsi(full)).toContain('@@ -1 +1 @@');
+  for (const width of [1, 8, 16, 40]) {
+    const summary = renderTreeEvent(e, width, presentation);
+    expect(summary.split('\n')).toHaveLength(1); expect(stringWidth(summary)).toBeLessThanOrEqual(width);
+    const wrapped = renderEvent(e, 2, width, presentation);
+    for (const line of wrapped.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(Math.max(width, 2)); // Wide glyphs occupy two cells.
+    expect(stripAnsi(wrapped)).not.toMatch(/\n {8,}\n/);
+  }
+  const hostile = { ...presentation, extendedDiff: { prefix: '\x1b[2JΔ file\x07', before: '\x1b]0;bad\x07old\ntext', after: '\x1b[2Jnew' } };
+  const safe = renderEvent(e, 2, 80, hostile);
+  expect(safe).not.toContain('\x1b[2J'); expect(safe).not.toContain('\x1b]0;');
+  expect(stripAnsi(safe).split('\n')).toHaveLength(2);
+  expect(JSON.parse(renderEvent(e, 4, 10000, presentation))).toEqual(e);
+  const metadata: RendererMetadata = { id: 'pi/edit', name: 'Pi edit', tool: 'edit', eventTypes: ['tool.call'], examples: [{ type: e.type, ...presentation, raw: JSON.stringify(e) }] };
+  expect(rendererPreview(metadata, e.type, 2, 100, 7)).toContain('\x1b[31mold <code>*');
+});
+
 test('presentation sidecars select tree summaries independently of chat subtype levels and do not merge custom messages', () => {
   const store = new Store(), settings = new Settings();
   store.install({ seq: 0, agents: [agent('root')], operations: [] });
@@ -118,6 +175,54 @@ test('terminal level selector previews renderer examples, saves subtype override
     tui.keys('c'); await tui.visible('Chat · root');
     await tui.visible('ORIGINAL OUTPUT');
     expect(tui.screen()).not.toContain('Custom read complete');
+  } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
+test('terminal paints lifecycle headers and edit diff text with independent semantic colors', async () => {
+  const call = event(1, 'tool.call', { title: 'bash', status: 'pending', rawInput: { command: 'echo ready' } });
+  const bash: EventRendering = { rendererId: 'core.tools', subtype: 'bash', summary: '$ echo ready', extended: '$ echo ready\nready', full: '$ echo ready\n\n```\nready\n```' };
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 1, agents: [agent('root')], operations: [], capabilities: { rendering: { version: 1, catalog: 'events.renderers' } } });
+    else if (request.method === 'events.renderers') respond(socket, request.id, { version: 1, renderers: [] });
+    else if (request.method === 'subscribe') respond(socket, request.id, { seq: 1, liveOnly: true });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: request.params.after < 1 ? [call] : [], renderings: { 1: bash }, oldestSeq: 1, latestSeq: 1, expired: false });
+  });
+  const settings = new Settings(); settings.excluded.clear(); settings.levels['tool.result'] = 3;
+  await settings.save(join(mock.directory, 'config.json'));
+  const tui = terminalClient(mock.path, mock.directory);
+  const fg = (text: string) => {
+    const lines = tui.screen().split('\n'), row = lines.findIndex(line => line.includes(text));
+    return row < 0 ? undefined : tui.cell(row, lines[row]!.indexOf(text))?.getFgColor();
+  };
+  const live = (e: typeof call, rendering: EventRendering) => {
+    for (const socket of mock.sockets) { send(socket, { kind: 'presentation', seq: e.seq, rendering }); send(socket, e); }
+  };
+  try {
+    await tui.visible('$ echo ready');
+    await waitFor(() => fg('$ echo ready') === 3).catch(() => { throw new Error(`Expected yellow header; fg=${fg('$ echo ready')}\n${tui.screen()}`); });
+    expect(tui.screen()).not.toContain('tool.call:'); expect(tui.screen()).not.toContain('pending');
+    live({ ...call, seq: 2, type: 'tool.update', data: { ...call.data as object, status: 'in_progress' } }, bash);
+    await waitFor(() => fg('$ echo ready') === 208);
+    live({ ...call, seq: 3, type: 'tool.result', data: { ...call.data as object, status: 'completed' } }, bash);
+    await waitFor(() => fg('$ echo ready') === 2);
+    live({ ...call, seq: 4, type: 'tool.result', data: { ...call.data as object, status: 'failed' } }, { ...bash, summary: '$ echo ready · exit 2' });
+    await waitFor(() => fg('$ echo ready') === 1);
+    const edit = event(5, 'tool.result', { title: 'edit', status: 'completed', rawInput: { path: 'file.ts' } });
+    const delta: EventRendering = { rendererId: 'pi/edit', subtype: 'edit', summary: 'Δ file.ts · +1 / -1', extended: 'Δ file.ts old text\n  new text', extendedDiff: { prefix: 'Δ file.ts', before: 'old text', after: 'new text' }, full: 'Δ file.ts · +1 / -1\n\n```diff\n@@ -1 +1 @@\n-old text\n+new text\n```' };
+    live(edit, delta); await tui.visible('Δ file.ts');
+    tui.keys('c'); await tui.visible('Chat · root');
+    await tui.visible('-old text'); await tui.visible('+new text');
+    expect(fg('Δ file.ts')).toBe(2); expect(fg('-old text')).toBe(1); expect(fg('+new text')).toBe(2);
+    tui.keys('\x1b'); await tui.visible('LATEST TRACKED EVENT');
+    tui.keys('vl'); await tui.visible('Event rendering levels');
+    const index = settings.types(['tool.call:bash', 'tool.update:bash', 'tool.result:bash', 'tool.result:edit']).indexOf('tool.result:edit');
+    tui.keys('\x1b[B'.repeat(index) + '2');
+    await waitFor(asyncReadGuard(join(mock.directory, 'config.json'), 'tool.result:edit', 2));
+    tui.keys('\x1b'); await tui.visible('LATEST TRACKED EVENT');
+    tui.keys('c'); await tui.visible('Chat · root');
+    await tui.visible('Δ file.ts old text');
+    expect(fg('old text')).toBe(1); expect(fg('new text')).toBe(2);
+    expect(tui.screen()).not.toContain('tool.result:');
   } finally { await tui.close(); await mock.close(); }
 }, 15000);
 
