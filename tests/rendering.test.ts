@@ -56,6 +56,27 @@ test('tool updates show the latest output line in extended and five lines in a p
   expect(renderedFull).toContain('\x1b[47;30m');
 });
 
+test('updates without output retain renderer details instead of inventing received lines', () => {
+  const update = event(1, 'tool.update', { title: 'custom', status: 'in_progress' });
+  const presentation: EventRendering = { rendererId: 'custom', summary: '• custom', extended: '• custom\n**Waiting for approval**', full: '• custom\n\n**Custom progress**' };
+  expect(stripAnsi(renderEvent(update, 2, 80, presentation))).toBe('• custom\nWaiting for approval');
+  expect(stripAnsi(renderEvent(update, 3, 80, presentation))).toContain('Custom progress');
+  for (const level of [2, 3] as const) {
+    expect(stripAnsi(renderEvent(update, level, 80))).not.toContain('lines received');
+    const empty = { ...update, data: { ...update.data as object, rawOutput: '' } };
+    expect(stripAnsi(renderEvent(empty, level, 80))).toContain('0 lines received');
+    expect(stripAnsi(renderEvent(empty, level, 80))).not.toContain('1 line received');
+  }
+});
+
+test('update output normalizes line endings before removing unsafe terminal commands', () => {
+  const update = event(1, 'tool.update', { title: 'bash', rawOutput: '\x1b]0;bad\x07one\r\ntwo\rthree\u2028four\u2029five\n' });
+  const rendered = renderEvent(update, 3, 80);
+  expect(stripAnsi(rendered)).toContain('5 lines received');
+  for (const line of ['one', 'two', 'three', 'four', 'five']) expect(stripAnsi(rendered)).toContain(line);
+  expect(rendered).not.toContain('\x1b]0;');
+});
+
 test('only tool symbols use lifecycle colors; commands, filenames and output stay plain', () => {
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ echo hello', extended: '$ echo hello\nhello', full: '$ echo hello\n\n```\nhello\n```' };
   for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31'], ['tool.result', 'cancelled', '31'], ['tool.result', undefined, '90']]) {

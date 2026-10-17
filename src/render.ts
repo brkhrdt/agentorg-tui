@@ -191,11 +191,12 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     rendering = { rendererId: 'client.generic-tool', summary, extended: summary + (output !== undefined ? `\n${literalMarkdown(textContent(output).replace(/\s+/g, ' ').slice(0, 240))}` : ''), full };
   }
   if (rendering) {
-    if (event.type === 'tool.update' && (level === 2 || level === 3)) {
-      const data = object(event.data);
-      const output = data.rawOutput ?? data.content;
-      const text = output === undefined ? logicalLines(rendering.extended).slice(1).join('\n') : textContent(output);
-      const lines = logicalLines(clean(text));
+    const data = object(event.data);
+    const output = data.rawOutput ?? data.content;
+    // A renderer's extended text may be a diff or status, not streamed output.
+    if (event.type === 'tool.update' && output !== undefined && (level === 2 || level === 3)) {
+      const text = textContent(output);
+      const lines = text === '' ? [] : logicalLines(text).map(clean);
       if (lines.length > 1 && lines.at(-1) === '') lines.pop();
       const lineCount = lines.length;
       const visible = lines.slice(-(level === 2 ? 1 : 5)).join('\n');
