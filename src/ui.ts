@@ -13,7 +13,7 @@ import { enablePathKeys, type PathCandidate } from './path-input.js';
 import { filterVolumes, type VolumeChoice } from './volume-input.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
-type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm';
+type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -27,6 +27,11 @@ export class UI {
     // Keep the selection background, but preserve locally generated event colors.
     invertSelected: false,
     tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } },
+    scrollbar: { ch: '│', style: { bg: 'gray' } },
+  });
+  private details = blessed.box({
+    parent: this.screen, top: 2, bottom: 2, hidden: true, scrollable: true,
+    alwaysScroll: true, keys: true, mouse: true, tags: false,
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
   private chat = blessed.box({
@@ -86,7 +91,7 @@ export class UI {
   private agentOptions: { value: string; label: string }[] = [];
   private choicesRequest = 0;
   private actionAgent?: Agent;
-  private actions: { label: string; method?: LifecycleMethod; create?: boolean; edit?: boolean }[] = [];
+  private actions: { label: string; method?: LifecycleMethod; create?: boolean; edit?: boolean; info?: boolean }[] = [];
   private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
   private skillDraft: SkillStates = {};
   private skillNames: string[] = [];
@@ -195,6 +200,14 @@ export class UI {
         this.follow = false;
         this.chat.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.chat.height) - 2));
       }
+      this.screen.render();
+    });
+    this.details.key(['escape', 'pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
+      if (this.view !== 'agent-info') return;
+      if (key.name === 'escape') { this.setView('actions'); return; }
+      if (key.full === 'C-home') this.details.setScroll(0);
+      else if (key.full === 'C-end') this.details.setScrollPerc(100);
+      else this.details.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.details.height) - 2));
       this.screen.render();
     });
     this.screen.key('C-c', () => this.close());
@@ -340,6 +353,7 @@ export class UI {
     });
     const choose = () => this.chooseMenu();
     const cycle = () => this.cycleMenu();
+    if (this.view === 'agent-info') return [action('escape', 'Back to agent actions', () => this.setView('actions'))];
     if (this.view === 'structured') return [
       action('a', 'Add entry', () => this.openEntry(true)), action('e', 'Edit selected entry', () => this.openEntry(false)), action('enter', 'Edit selected entry', choose),
       action('d', 'Remove selected entry from draft', () => { const entry = this.structured?.entries()[this.menuIndex]; if (entry) { this.structured!.remove(entry.id); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); } }),
@@ -349,10 +363,14 @@ export class UI {
       action('escape', 'Discard list / map draft', () => this.returnAgentField()),
     ];
     if (this.view === 'entry-type') return (['string', 'number', 'boolean', 'null', 'json'] as const).map((type, index) => action(['s', 'n', 'b', 'z', 'j'][index]!, type, () => this.selectEntryType(type))).concat([action('enter', 'Choose selected type', choose), action('escape', 'Discard entry', () => this.returnStructured())]);
-    if (this.view === 'tree' || this.view === 'actions') return [
+    if (this.view === 'actions') return this.actions.flatMap((item, index) => {
+      const key = (this.actionAgent ? ['n', 'i', 'e', 'r', 'x', 'R', 'p', 'd'] : ['n'])[index];
+      return key ? [action(key, item.label, () => { this.menuIndex = index; this.chooseAction(); })] : [];
+    }).concat([action('enter', 'Choose selected action', choose), back]);
+    if (this.view === 'tree') return [
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
-        action('enter', this.view === 'actions' ? 'Choose selected action' : 'Interrupting prompt', () => this.view === 'actions' ? this.chooseMenu() : this.openPrompt()), action('c', 'Chat', () => this.openChat()),
+        action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()),
         ...(this.session.skillsEnabled ? [action('s', 'Skills', () => this.openSkills())] : [])] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
@@ -563,6 +581,7 @@ export class UI {
     this.actionAgent = this.createParent();
     this.actions = [{ label: this.actionAgent ? 'Create child (starts immediately)' : 'Create root (starts immediately)', create: true }];
     if (this.actionAgent) this.actions.push(
+      { label: 'View all agent info', info: true },
       { label: 'Modify agent', edit: true },
       { label: 'Start / restart agent', method: 'agent.restart' },
       { label: 'Stop agent (descendants stay active)', method: 'agent.stop' },
@@ -572,10 +591,48 @@ export class UI {
     );
     this.setView('actions');
   }
+  private openAgentInfo(agent?: Agent): void {
+    if (!agent) return;
+    const format = (value: unknown, indent: number): string[] => {
+      const pad = ' '.repeat(indent);
+      if (Array.isArray(value)) {
+        if (!value.length) return [`${pad}(none)`];
+        return value.flatMap(item => item !== null && typeof item === 'object'
+          ? [`${pad}•`, ...format(item, indent + 2)]
+          : [`${pad}• ${item === null ? 'null' : String(item)}`]);
+      }
+      if (value !== null && typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>);
+        if (!entries.length) return [`${pad}(none)`];
+        return entries.flatMap(([key, child]) => {
+          const label = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+          if (child !== null && typeof child === 'object') return [`${pad}${label}:`, ...format(child, indent + 2)];
+          return [`${pad}${label}: ${child === null ? 'null' : String(child)}`];
+        });
+      }
+      return [`${pad}${value === null ? 'null' : String(value)}`];
+    };
+    const lines = [
+      'AGENT',
+      `  Name: ${agent.name}`, `  ID: ${agent.id}`, `  Parent: ${agent.parentId ?? '(root)'}`,
+      `  State: ${agent.state}`, `  Revision: ${agent.revision}`, `  Generation: ${agent.generation ?? '(none)'}`,
+      `  Created: ${agent.createdAt ?? '(unknown)'}`, `  Updated: ${agent.updatedAt ?? '(unknown)'}`,
+      `  Removed: ${agent.removedAt ?? '(no)'}`, `  Error: ${agent.error ?? '(none)'}`,
+      '', 'HARNESS SETTINGS', ...format(agent.settings, 2),
+      '', 'METADATA / PLUGIN STATE', ...format(agent.metadata, 2),
+    ];
+    const known = new Set(['id', 'parentId', 'name', 'state', 'revision', 'generation', 'removedAt', 'createdAt', 'updatedAt', 'error', 'settings', 'metadata']);
+    const additional = Object.fromEntries(Object.entries(agent).filter(([key]) => !known.has(key)));
+    if (Object.keys(additional).length) lines.push('', 'ADDITIONAL AGENT STATE', ...format(additional, 2));
+    this.details.setContent(lines.join('\n'));
+    this.setView('agent-info');
+    this.details.setScroll(0);
+  }
   private chooseAction(): void {
     if (this.sending) return;
     const action = this.actions[this.menuIndex];
     if (!action) return;
+    if (action.info) { this.openAgentInfo(this.actionAgent); return; }
     if (action.create || action.edit) { this.openEditor(!!action.edit, this.actionAgent); return; }
     if (!action.method || !this.actionAgent) return;
     this.pendingAction = { method: action.method, agentId: this.actionAgent.id, label: `${action.label} · ${this.actionAgent.name}` };
@@ -830,12 +887,14 @@ export class UI {
     this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     this.input.bottom = this.isPathInput() || this.isVolumeInput() ? 7 : 2;
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree') {
       this.tree.show(); this.columns.show(); this.tree.focus();
+    } else if (view === 'agent-info') {
+      this.details.show(); this.details.focus();
     } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
@@ -1009,6 +1068,7 @@ export class UI {
       this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
       this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${structuredLabel} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
       this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
+      this.view === 'agent-info' ? `Agent info · ${this.actionAgent?.name ?? 'agent'}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
@@ -1075,7 +1135,7 @@ export class UI {
       this.footer.setContent(` ↑↓ select  Enter prompt  c chat  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
-      this.menu.setItems(this.view === 'actions' ? this.actions.map((action, index) => `${['n', 'e', 'r', 'x', 'R', 'p', 'd'][index]}  ${action.label}`) :
+      this.menu.setItems(this.view === 'actions' ? this.actions.map((action, index) => `${(this.actionAgent ? ['n', 'i', 'e', 'r', 'x', 'R', 'p', 'd'] : ['n'])[index]}  ${action.label}`) :
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
@@ -1084,7 +1144,7 @@ export class UI {
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
         ['harness-options', 'image-scope'].includes(this.view) ? ' ↑↓ select   Enter choose   Esc back' :
-        this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : ' ↑↓ action   Enter open   Esc tree');
+        this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : this.view === 'actions' ? ' ↑↓ action   Enter open   n create   i agent info   e edit   Esc tree' : ' ↑↓ action   Enter open   Esc tree');
     } else if (this.view === 'skills') {
       this.updating = true;
       this.menu.setItems(this.skillNames.map(name => {
