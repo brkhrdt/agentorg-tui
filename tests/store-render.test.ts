@@ -34,13 +34,13 @@ describe('state and transcripts', () => {
     store.ingest(event(3, 'agent.state', { state: 'failed' }, { generation: undefined }));
     expect(store.agents.get('root')!.state).toBe('failed');
     expect(store.agents.get('root')!.generation).toBeNull();
-    expect(store.latest(settings).get('root')!.seq).toBe(1);
+    expect(store.latest(settings).get('root')!.seq).toBe(2);
     store.ingest(event(4, 'plugin.custom', { foo: 'bar' }));
     expect(store.latest(settings).get('root')!.seq).toBe(4);
     expect(settings.types(store.discovered)).toContain('plugin.custom');
-    expect(store.transcript('root', settings)).toHaveLength(2);
+    expect(store.transcript('root', settings)).toHaveLength(3);
     settings.toggle('agent.message');
-    expect(store.transcript('root', settings)).toHaveLength(1);
+    expect(store.transcript('root', settings)).toHaveLength(2);
   });
   test('latest message combines chunks per agent and keeps raw records intact', () => {
     const store = new Store(); const settings = new Settings();

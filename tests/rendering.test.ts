@@ -40,6 +40,22 @@ test('server Markdown controls content, client controls styles/cell limits and r
   expect(renderEvent(raw, 3, 80, hostile)).not.toContain('\x1b]0;');
 });
 
+test('tool updates show the latest output line in extended and five lines in a plain code block in full', () => {
+  const update = event(1, 'tool.update', { title: 'bash', status: 'in_progress', rawInput: { command: 'long-running' }, rawOutput: { content: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive\nsix' }], details: {} } });
+  const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ long-running', extended: '$ long-running\nsix', full: '$ long-running\n\n```\none\ntwo\nthree\nfour\nfive\nsix\n```' };
+  const extended = stripAnsi(renderEvent(update, 2, 80, presentation));
+  expect(extended).toContain('6 lines received');
+  expect(extended).toContain('six');
+  expect(extended).not.toContain('five');
+  const renderedFull = renderEvent(update, 3, 80, presentation);
+  const full = stripAnsi(renderedFull);
+  expect(full).toContain('6 lines received');
+  expect(full).toContain('two'); expect(full).toContain('three'); expect(full).toContain('four');
+  expect(full).toContain('five'); expect(full).toContain('six');
+  expect(full).not.toContain('one');
+  expect(renderedFull).toContain('\x1b[47;30m');
+});
+
 test('only tool symbols use lifecycle colors; commands, filenames and output stay plain', () => {
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ echo hello', extended: '$ echo hello\nhello', full: '$ echo hello\n\n```\nhello\n```' };
   for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31'], ['tool.result', 'cancelled', '31'], ['tool.result', undefined, '90']]) {
@@ -49,7 +65,7 @@ test('only tool symbols use lifecycle colors; commands, filenames and output sta
       expect(rendered).toStartWith(`\x1b[${color}m$\x1b[0m echo hello`);
       expect(stripAnsi(rendered)).not.toContain(type! + ':');
       expect(stripAnsi(rendered)).not.toContain('pending');
-      if (level === 2) expect(rendered.split('\n')[1]).toBe('hello');
+      if (level === 2 && type !== 'tool.update') expect(rendered.split('\n')[1]).toBe('hello');
     }
     expect(renderTreeEvent(e, 80, presentation)).toStartWith(`\x1b[${color}m$\x1b[0m echo hello`);
     expect(JSON.parse(renderEvent(e, 4, 10000, presentation))).toEqual(e);

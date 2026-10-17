@@ -13,7 +13,9 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     expect(settings.level('agent.message')).toBe(3);
     expect(settings.level('tool.call')).toBe(1);
     expect(['agent.message', 'prompt.queued', 'tool.call', 'tool.result'].filter(type => settings.tracked(type))).toEqual(['agent.message', 'prompt.queued', 'tool.call', 'tool.result']);
-    expect(['agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed', 'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed', 'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling', 'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped', 'tool.update'].filter(type => settings.tracked(type))).toEqual([]);
+    expect(['agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed', 'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed', 'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling', 'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped'].filter(type => settings.tracked(type))).toEqual([]);
+    expect(settings.tracked('tool.update')).toBe(true);
+    expect(settings.level('tool.update')).toBe(3);
     settings.toggle('agent.message');
     settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;

@@ -27,9 +27,9 @@ export class Settings {
     'agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed',
     'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed',
     'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling',
-    'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped', 'tool.update',
+    'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped',
   ]);
-  levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.result': 2, 'agent.plan': 3 };
+  levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.update': 3, 'tool.result': 2, 'agent.plan': 3 };
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   compactToolCalls = false;
   tracked(type: string): boolean { return !this.excluded.has(type); }

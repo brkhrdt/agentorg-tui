@@ -330,7 +330,7 @@ Use ↑ / ↓ to select an event type. Choose a level with 1–4, or cycle with
    (headings, emphasis, lists, tables, fenced code, and links).
 4. **Raw**: the complete event JSON envelope, pretty-printed and wrapped.
 
-`agent.message`, `prompt.queued`, and `agent.plan` default to full;
+`agent.message`, `prompt.queued`, `agent.plan`, and `tool.update` default to full;
 `tool.result` defaults to extended; other events default to summary.
 
 On compatible servers, harnesses choose event-specific Markdown formats; tool
@@ -357,7 +357,10 @@ calls, orange for updates, green for successful results, or red for failed/cance
 results. The command/filename stays plain and the same across phases; output and
 errors appear in extended/full views, not as a replacement tree label. Edit
 summaries additionally show green `+N` and red `-N` counts. Unknown/incomplete
-result status stays neutral. Output bodies keep their own Markdown/code colors.
+result status stays neutral. Full tool updates show the latest five output lines in
+a plain-text code block; extended updates show only the latest line. As new update
+events arrive, that excerpt advances to the latest output. Output bodies keep their
+own Markdown/code colors.
 Selected tree rows preserve these colors and the blue selection background.
 
 Sparse tool updates/results recover their command/path from retained call context

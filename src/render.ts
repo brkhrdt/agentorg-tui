@@ -57,10 +57,19 @@ function fenced(text: string): string {
   const fence = '`'.repeat(longest + 1);
   return `${fence}\n${text}\n${fence}`;
 }
+function terminalCodeBlock(text: string, width: number): string {
+  const indent = Math.min(2, width), available = Math.max(1, width - indent);
+  return text.split('\n').flatMap(line => wrapAnsi(line, available, { hard: true, trim: false }).split('\n'))
+    .map(line => {
+      const content = ' '.repeat(indent) + line;
+      return `\x1b[47;30m${content}${' '.repeat(Math.max(0, width - stringWidth(content)))}\x1b[0m`;
+    }).join('\n');
+}
 const textContent = (value: unknown): string => {
+  if (typeof value === 'string') return value;
   const content = object(value);
   if (typeof content.text === 'string') return content.text;
-  if (content.type === 'content') return textContent(content.content);
+  if (content.content !== undefined) return textContent(content.content);
   if (Array.isArray(value)) return value.map(textContent).join('\n');
   return pretty(value);
 };
@@ -182,6 +191,18 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     rendering = { rendererId: 'client.generic-tool', summary, extended: summary + (output !== undefined ? `\n${literalMarkdown(textContent(output).replace(/\s+/g, ' ').slice(0, 240))}` : ''), full };
   }
   if (rendering) {
+    if (event.type === 'tool.update' && (level === 2 || level === 3)) {
+      const data = object(event.data);
+      const output = data.rawOutput ?? data.content;
+      const text = output === undefined ? logicalLines(rendering.extended).slice(1).join('\n') : textContent(output);
+      const lines = logicalLines(clean(text));
+      if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+      const lineCount = lines.length;
+      const visible = lines.slice(-(level === 2 ? 1 : 5)).join('\n');
+      const heading = toolHeader(markdown(rendering.summary, width, true), event, rendering.subtype);
+      const count = `\x1b[97;1m${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received\x1b[0m`;
+      return heading + '\n' + count + (visible ? '\n' + terminalCodeBlock(visible, width) : '');
+    }
     if (level === 1) return renderTreeEvent(event, width, rendering);
     if (level === 2) {
       const diff = rendering.extendedDiff;
