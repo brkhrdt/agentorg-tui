@@ -11,8 +11,12 @@ import { StructuredEditor, collection, parseTyped, previewValue, valueText, valu
 import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
 import { filterVolumes, type VolumeChoice } from './volume-input.js';
+import { renderAgentInfo } from './agent-info.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
+type AgentAction = { key: string; label: string } & (
+  { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
+);
 type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 export class UI {
@@ -90,8 +94,13 @@ export class UI {
   private optionField: 'harness' | 'provider' | 'model' = 'harness';
   private agentOptions: { value: string; label: string }[] = [];
   private choicesRequest = 0;
-  private actionAgent?: Agent;
-  private actions: { label: string; method?: LifecycleMethod; create?: boolean; edit?: boolean; info?: boolean }[] = [];
+  private actionAgentId?: string;
+  private get actionAgent(): Agent | undefined { return this.session.store.agents.get(this.actionAgentId ?? ''); }
+  private actions: AgentAction[] = [];
+  private infoAgentId?: string;
+  private infoReturn: { view: 'tree' | 'actions'; index: number } = { view: 'tree', index: 0 };
+  private infoRaw = false;
+  private lastInfo = '';
   private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
   private skillDraft: SkillStates = {};
   private skillNames: string[] = [];
@@ -120,9 +129,10 @@ export class UI {
     this.menu.on('select item', (_item, index) => {
       if (!this.updating) { this.menuIndex = index; this.previewIndex = 0; if (this.view === 'levels') this.scheduleDraw(); }
     });
-    for (const widget of [this.tree, this.menu]) {
-      widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape'], (ch, key) => {
-        const binding = ['space', 'left', 'right', 'enter', 'escape'].includes(key.name) ? key.name : ch;
+    for (const widget of [this.tree, this.menu, this.details]) {
+      widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
+        const binding = key.full === 'C-home' || key.full === 'C-end' ? key.full :
+          ['space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
         else if (this.view === 'keys') {
           if (binding === 'escape') this.restoreKeyContext();
@@ -200,14 +210,6 @@ export class UI {
         this.follow = false;
         this.chat.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.chat.height) - 2));
       }
-      this.screen.render();
-    });
-    this.details.key(['escape', 'pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
-      if (this.view !== 'agent-info') return;
-      if (key.name === 'escape') { this.setView('actions'); return; }
-      if (key.full === 'C-home') this.details.setScroll(0);
-      else if (key.full === 'C-end') this.details.setScrollPerc(100);
-      else this.details.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.details.height) - 2));
       this.screen.render();
     });
     this.screen.key('C-c', () => this.close());
@@ -353,7 +355,15 @@ export class UI {
     });
     const choose = () => this.chooseMenu();
     const cycle = () => this.cycleMenu();
-    if (this.view === 'agent-info') return [action('escape', 'Back to agent actions', () => this.setView('actions'))];
+    if (this.view === 'agent-info') return [
+      action('j', this.infoRaw ? 'Readable agent info' : 'Full agent JSON', () => { this.infoRaw = !this.infoRaw; this.draw(); this.details.setScroll(0); this.screen.render(); }),
+      ...(['pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'] as const).map(key => action(key,
+        key.endsWith('home') ? 'Top' : key.endsWith('end') ? 'Bottom' : key === 'pageup' ? 'Previous page' : 'Next page', () => this.scrollAgentInfo(key))),
+      action('escape', `Back to ${this.infoReturn.view === 'tree' ? 'tree' : 'agent actions'}`, () => {
+        const { view, index } = this.infoReturn;
+        this.setView(view); this.menuIndex = index; this.draw();
+      }),
+    ];
     if (this.view === 'structured') return [
       action('a', 'Add entry', () => this.openEntry(true)), action('e', 'Edit selected entry', () => this.openEntry(false)), action('enter', 'Edit selected entry', choose),
       action('d', 'Remove selected entry from draft', () => { const entry = this.structured?.entries()[this.menuIndex]; if (entry) { this.structured!.remove(entry.id); this.menuIndex = Math.max(0, this.menuIndex - 1); this.draw(); } }),
@@ -363,13 +373,12 @@ export class UI {
       action('escape', 'Discard list / map draft', () => this.returnAgentField()),
     ];
     if (this.view === 'entry-type') return (['string', 'number', 'boolean', 'null', 'json'] as const).map((type, index) => action(['s', 'n', 'b', 'z', 'j'][index]!, type, () => this.selectEntryType(type))).concat([action('enter', 'Choose selected type', choose), action('escape', 'Discard entry', () => this.returnStructured())]);
-    if (this.view === 'actions') return this.actions.flatMap((item, index) => {
-      const key = (this.actionAgent ? ['n', 'i', 'e', 'r', 'x', 'R', 'p', 'd'] : ['n'])[index];
-      return key ? [action(key, item.label, () => { this.menuIndex = index; this.chooseAction(); })] : [];
-    }).concat([action('enter', 'Choose selected action', choose), back]);
+    if (this.view === 'actions') return this.actions.map((item, index) =>
+      action(item.key, item.label, () => { this.menuIndex = index; this.chooseAction(); })
+    ).concat([action('enter', 'Choose selected action', choose), back]);
     if (this.view === 'tree') return [
       action('n', 'Create agent', () => this.openEditor(false)),
-      ...(this.selected() ? [action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
+      ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
         action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()),
         ...(this.session.skillsEnabled ? [action('s', 'Skills', () => this.openSkills())] : [])] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
@@ -578,63 +587,42 @@ export class UI {
   }
   private openActions(): void {
     if (this.sending) return;
-    this.actionAgent = this.createParent();
-    this.actions = [{ label: this.actionAgent ? 'Create child (starts immediately)' : 'Create root (starts immediately)', create: true }];
+    this.actionAgentId = this.createParent()?.id;
+    this.actions = [{ key: 'n', label: this.actionAgent ? 'Create child (starts immediately)' : 'Create root (starts immediately)', kind: 'create' }];
     if (this.actionAgent) this.actions.push(
-      { label: 'View all agent info', info: true },
-      { label: 'Modify agent', edit: true },
-      { label: 'Start / restart agent', method: 'agent.restart' },
-      { label: 'Stop agent (descendants stay active)', method: 'agent.stop' },
-      { label: 'Restart subtree (including stopped descendants)', method: 'agent.restart_subtree' },
-      { label: 'Replace session (fresh conversation)', method: 'agent.replace_session' },
-      { label: 'Remove agent and descendants (archive)', method: 'agent.remove' },
+      { key: 'i', label: 'View all agent info', kind: 'info' },
+      { key: 'e', label: 'Modify agent', kind: 'edit' },
+      { key: 'r', label: 'Start / restart agent', kind: 'lifecycle', method: 'agent.restart' },
+      { key: 'x', label: 'Stop agent (descendants stay active)', kind: 'lifecycle', method: 'agent.stop' },
+      { key: 'R', label: 'Restart subtree (including stopped descendants)', kind: 'lifecycle', method: 'agent.restart_subtree' },
+      { key: 'p', label: 'Replace session (fresh conversation)', kind: 'lifecycle', method: 'agent.replace_session' },
+      { key: 'd', label: 'Remove agent and descendants (archive)', kind: 'lifecycle', method: 'agent.remove' },
     );
     this.setView('actions');
   }
   private openAgentInfo(agent?: Agent): void {
     if (!agent) return;
-    const format = (value: unknown, indent: number): string[] => {
-      const pad = ' '.repeat(indent);
-      if (Array.isArray(value)) {
-        if (!value.length) return [`${pad}(none)`];
-        return value.flatMap(item => item !== null && typeof item === 'object'
-          ? [`${pad}•`, ...format(item, indent + 2)]
-          : [`${pad}• ${item === null ? 'null' : String(item)}`]);
-      }
-      if (value !== null && typeof value === 'object') {
-        const entries = Object.entries(value as Record<string, unknown>);
-        if (!entries.length) return [`${pad}(none)`];
-        return entries.flatMap(([key, child]) => {
-          const label = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-          if (child !== null && typeof child === 'object') return [`${pad}${label}:`, ...format(child, indent + 2)];
-          return [`${pad}${label}: ${child === null ? 'null' : String(child)}`];
-        });
-      }
-      return [`${pad}${value === null ? 'null' : String(value)}`];
-    };
-    const lines = [
-      'AGENT',
-      `  Name: ${agent.name}`, `  ID: ${agent.id}`, `  Parent: ${agent.parentId ?? '(root)'}`,
-      `  State: ${agent.state}`, `  Revision: ${agent.revision}`, `  Generation: ${agent.generation ?? '(none)'}`,
-      `  Created: ${agent.createdAt ?? '(unknown)'}`, `  Updated: ${agent.updatedAt ?? '(unknown)'}`,
-      `  Removed: ${agent.removedAt ?? '(no)'}`, `  Error: ${agent.error ?? '(none)'}`,
-      '', 'HARNESS SETTINGS', ...format(agent.settings, 2),
-      '', 'METADATA / PLUGIN STATE', ...format(agent.metadata, 2),
-    ];
-    const known = new Set(['id', 'parentId', 'name', 'state', 'revision', 'generation', 'removedAt', 'createdAt', 'updatedAt', 'error', 'settings', 'metadata']);
-    const additional = Object.fromEntries(Object.entries(agent).filter(([key]) => !known.has(key)));
-    if (Object.keys(additional).length) lines.push('', 'ADDITIONAL AGENT STATE', ...format(additional, 2));
-    this.details.setContent(lines.join('\n'));
+    this.infoAgentId = agent.id;
+    this.infoReturn = { view: this.view === 'actions' ? 'actions' : 'tree', index: this.menuIndex };
+    this.infoRaw = false;
+    this.lastInfo = '';
     this.setView('agent-info');
     this.details.setScroll(0);
+    this.screen.render();
+  }
+  private scrollAgentInfo(key: string): void {
+    if (key.endsWith('home')) this.details.setScroll(0);
+    else if (key.endsWith('end')) this.details.setScrollPerc(100);
+    else this.details.scroll((key === 'pageup' ? -1 : 1) * Math.max(1, Number(this.details.height) - 2));
+    this.screen.render();
   }
   private chooseAction(): void {
     if (this.sending) return;
     const action = this.actions[this.menuIndex];
     if (!action) return;
-    if (action.info) { this.openAgentInfo(this.actionAgent); return; }
-    if (action.create || action.edit) { this.openEditor(!!action.edit, this.actionAgent); return; }
-    if (!action.method || !this.actionAgent) return;
+    if (action.kind === 'info') { this.openAgentInfo(this.actionAgent); return; }
+    if (action.kind === 'create' || action.kind === 'edit') { this.openEditor(action.kind === 'edit', this.actionAgent); return; }
+    if (action.kind !== 'lifecycle' || !this.actionAgent) return;
     this.pendingAction = { method: action.method, agentId: this.actionAgent.id, label: `${action.label} · ${this.actionAgent.name}` };
     this.setView('confirm');
   }
@@ -1060,7 +1048,8 @@ export class UI {
     this.menu.width = '100%';
     this.preview.hide();
     const store = this.session.store;
-    const agent = this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
+    const agent = this.view === 'agent-info' ? store.agents.get(this.infoAgentId ?? '') :
+      this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
     const structuredLabel = this.structuredServer ? this.serverField?.label : this.structuredField ? this.editor?.label(this.structuredField) : '';
     const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; ${this.structuredServer ? 'server' : 'agent'} Save applies` :
       this.view === 'volume-destination' ? `Container destination · ${this.pendingVolume?.name} · e.g. /home/pi/.pi` :
@@ -1068,7 +1057,7 @@ export class UI {
       this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
       this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${structuredLabel} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
       this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
-      this.view === 'agent-info' ? `Agent info · ${this.actionAgent?.name ?? 'agent'}` :
+      this.view === 'agent-info' ? `Agent info · ${agent?.name ?? this.infoAgentId} · ${this.infoRaw ? 'JSON' : 'read-only'}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
@@ -1116,6 +1105,14 @@ export class UI {
       this.menu.setItems(this.keyActions.map(action => `${cell(action.key === 'escape' ? 'Esc' : action.key, 8)} ${action.label}`));
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' Press shown key to act · ↑↓ browse · Enter choose · Esc back');
+    } else if (this.view === 'agent-info') {
+      const content = agent ? renderAgentInfo(agent, this.infoRaw) : `Agent ${clean(this.infoAgentId ?? '')} is no longer in the current snapshot.`;
+      if (content !== this.lastInfo) {
+        const scroll = this.details.getScroll();
+        this.details.setContent(content); this.lastInfo = content;
+        this.details.setScroll(scroll);
+      }
+      this.footer.setContent(' ↑↓ scroll  PgUp/PgDn page  Home/End top/bottom  j readable/JSON  ? keys  Esc back');
     } else if (this.view === 'tree') {
       this.rows = store.tree();
       const selectedIndex = Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent));
@@ -1132,10 +1129,10 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(` ↑↓ select  Enter prompt  c chat  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
+      this.footer.setContent(` ↑↓ select  Enter prompt  c chat  i info  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
-      this.menu.setItems(this.view === 'actions' ? this.actions.map((action, index) => `${(this.actionAgent ? ['n', 'i', 'e', 'r', 'x', 'R', 'p', 'd'] : ['n'])[index]}  ${action.label}`) :
+      this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
@@ -1144,7 +1141,7 @@ export class UI {
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
         ['harness-options', 'image-scope'].includes(this.view) ? ' ↑↓ select   Enter choose   Esc back' :
-        this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : this.view === 'actions' ? ' ↑↓ action   Enter open   n create   i agent info   e edit   Esc tree' : ' ↑↓ action   Enter open   Esc tree');
+        this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : this.view === 'actions' ? ` ↑↓ action   Enter open   n create${this.actionAgent ? '   i agent info   e edit' : ''}   Esc tree` : ' ↑↓ action   Enter open   Esc tree');
     } else if (this.view === 'skills') {
       this.updating = true;
       this.menu.setItems(this.skillNames.map(name => {

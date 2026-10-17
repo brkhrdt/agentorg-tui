@@ -96,7 +96,8 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | ↑ / ↓ | Select an agent (highlighted blue) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
-| a | Key-labelled lifecycle actions (arrow navigation remains optional) |
+| a | Key-labelled agent info, editing and lifecycle actions |
+| i | View all information about the selected agent (read-only) |
 | r / x | Start/restart / stop selected agent (confirmation required) |
 | R / p / d | Restart subtree / replace session / remove subtree (confirmation required) |
 | f / l | Event filters / rendering levels directly |
@@ -127,6 +128,21 @@ role label and use all available cells in the event column, truncating with `…
 Event previews render Markdown styles and fold blocks into a single line;
 clipping preserves styles and terminal-cell boundaries.
 Both live and retained history events update the tree.
+
+### Agent info: `i` (or `a`, then `i`)
+
+Inspect the complete public agent record: identity, status, revision, timestamps,
+errors, session ID/number/generation, harness settings (including environment,
+options and plugin extensions), metadata and any additional server fields.
+Nested values and long lines are not truncated. The view follows live updates
+for the same agent ID without resetting your scroll position.
+
+Use ↑/↓ or the mouse wheel to scroll, PgUp/PgDn for pages, and Home/End (or
+Ctrl+Home/Ctrl+End) for top/bottom. `j` toggles between readable sections and the
+complete JSON record; `?` opens key help. Escape returns to the tree or the same
+actions-menu selection. Inspection sends no mutations. Settings/metadata may
+contain sensitive values; the view shows what the server sends, not redacted
+summaries. Chat/events and organization-wide settings remain separate views.
 
 ### Settings: `v`
 

@@ -216,13 +216,12 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     keys('\r'); await visible('Edit ');
     keys('\x15' + value + '\r'); await visible('agent ·');
   };
-  const action = async (index: number, method: string) => {
-    keys('a'); await visible('Agent actions'); down(index); keys('\r'); await visible('Confirm ·');
+  const action = async (binding: string, method: string) => {
+    keys('a'); await visible('Agent actions'); keys(binding); await visible('Confirm ·');
     const count = mutations.length;
     keys('\r'); await visible('LATEST TRACKED EVENT'); // Default selection is Cancel.
     expect(mutations).toHaveLength(count);
-    const binding = ['', '', 'r', 'x', 'R', 'p', 'd'][index]!;
-    if (index % 2) { keys('a'); await visible('Agent actions'); }
+    if (binding === 'x' || binding === 'p') { keys('a'); await visible('Agent actions'); }
     keys(binding); await visible('Confirm ·'); // Tree or contextual menu: one key, including Shift+R.
     keys('?'); await visible('Keys · confirm');
     keys('y'); await waitFor(() => mutations.length === count + 1); await visible('LATEST TRACKED EVENT');
@@ -280,11 +279,11 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     await field('conflicting'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('CONFLICT');
     expect(screen()).toContain('Save changes'); // Failure retains the draft, never retries.
     keys('\x1b'); await visible('LATEST TRACKED EVENT'); failEdit = false;
-    await action(3, 'agent.stop'); await visible('stopped');
-    await action(2, 'agent.restart');
-    await action(4, 'agent.restart_subtree');
-    await action(5, 'agent.replace_session');
-    await action(6, 'agent.remove');
+    await action('x', 'agent.stop'); await visible('stopped');
+    await action('r', 'agent.restart');
+    await action('R', 'agent.restart_subtree');
+    await action('p', 'agent.replace_session');
+    await action('d', 'agent.remove');
     expect(agents.every(a => a.removedAt)).toBe(true);
     keys('q'); await waitFor(() => exited);
   } finally { childProcess.kill('SIGTERM'); terminal.dispose(); await mock.close(); }
