@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import xterm from '@xterm/headless';
 import { waitFor } from './helpers.js';
 
 export function terminalClient(socket: string, directory: string) {
   const terminal = new xterm.Terminal({ cols: 120, rows: 30, allowProposedApi: true });
-  const child = spawn('script', ['-qefc', `stty cols 120 rows 30; exec bun src/main.ts --socket '${socket}' --config '${join(directory, 'config.json')}'`, '/dev/null'], {
+  const command = process.env.ORG_TUI_BINARY ? `'${resolve(process.env.ORG_TUI_BINARY)}'` : 'bun src/main.ts';
+  const child = spawn('script', ['-qefc', `stty cols 120 rows 30; exec ${command} --socket '${socket}' --config '${join(directory, 'config.json')}'`, '/dev/null'], {
     cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdout.on('data', data => terminal.write(data));

@@ -14,13 +14,14 @@ import { terminalClient } from './terminal.js';
 import { agent, event, mockServer, respond, send, waitFor } from './helpers.js';
 
 const raw = event(1, 'tool.result', { title: 'read', status: 'completed', rawInput: { path: 'src/main.ts' }, rawOutput: 'ORIGINAL OUTPUT' });
-const rendering: EventRendering = { rendererId: 'pi/read', subtype: 'read', summary: '**read src/main.ts** · completed', extended: 'read src/main.ts · completed\n2 lines', full: '**Custom read complete**\n\n```ts\nconst answer = 42;\n```' };
+const rendering: EventRendering = { rendererId: 'pi/read', subtype: 'read', summary: '\\< src/main.ts', extended: '\\< src/main.ts\n2 lines', full: '\\< src/main.ts\n\n**Custom read complete**\n\n```ts\nconst answer = 42;\n```' };
 const metadata: RendererMetadata = { id: 'pi/read', name: 'Pi read', harness: 'pi', eventTypes: ['tool.result'], tool: 'read', examples: [{ type: 'tool.result', ...rendering, raw: JSON.stringify(raw, null, 2) }] };
 
 test('server Markdown controls content, client controls styles/cell limits and raw ignores presentations', () => {
   const summary = renderTreeEvent(raw, 32, rendering);
-  expect(stripAnsi(summary)).toContain('read src/main.ts');
-  expect(summary).toContain('\x1b[1m');
+  expect(stripAnsi(summary)).toBe('< src/main.ts');
+  expect(summary).toStartWith('\x1b[32m<\x1b[0m src/main.ts');
+  expect(summary).not.toContain('\x1b[1m');
   expect(summary.split('\n')).toHaveLength(1);
   expect(stringWidth(summary)).toBeLessThanOrEqual(32);
   expect(renderEvent(raw, 1, 32, rendering)).toBe(summary);
@@ -39,18 +40,18 @@ test('server Markdown controls content, client controls styles/cell limits and r
   expect(renderEvent(raw, 3, 80, hostile)).not.toContain('\x1b]0;');
 });
 
-test('tool headers use lifecycle colors without event prefixes or coloring output bodies', () => {
+test('only tool symbols use lifecycle colors; commands, filenames and output stay plain', () => {
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ echo hello', extended: '$ echo hello\nhello', full: '$ echo hello\n\n```\nhello\n```' };
   for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31'], ['tool.result', 'cancelled', '31'], ['tool.result', undefined, '90']]) {
     const e = event(1, type, { title: 'bash', status });
     for (const level of [1, 2, 3] as const) {
       const rendered = renderEvent(e, level, 80, presentation);
-      expect(rendered).toStartWith(`\x1b[${color}m$ echo hello`);
+      expect(rendered).toStartWith(`\x1b[${color}m$\x1b[0m echo hello`);
       expect(stripAnsi(rendered)).not.toContain(type! + ':');
       expect(stripAnsi(rendered)).not.toContain('pending');
       if (level === 2) expect(rendered.split('\n')[1]).toBe('hello');
     }
-    expect(renderTreeEvent(e, 80, presentation)).toStartWith(`\x1b[${color}m$ echo hello`);
+    expect(renderTreeEvent(e, 80, presentation)).toStartWith(`\x1b[${color}m$\x1b[0m echo hello`);
     expect(JSON.parse(renderEvent(e, 4, 10000, presentation))).toEqual(e);
   }
   for (const rawOutput of [{ isError: true }, { structuredContent: { exit_code: 7 } }, { content: [{ type: 'text', text: 'exit code: 2' }] }]) {
@@ -58,10 +59,28 @@ test('tool headers use lifecycle colors without event prefixes or coloring outpu
   }
   for (const [tool, symbol] of [['bash', '$'], ['read', '<'], ['write', '>'], ['edit', 'Δ'], ['mcp__organization__child_create', '• mcp__organization__child_create']]) {
     const e = event(1, 'tool.call', { title: tool, status: 'pending', rawInput: { path: 'a.ts', command: 'echo hello' } });
-    expect(stripAnsi(renderEvent(e, 1, 100))).toStartWith(symbol!);
+    const rendered = renderEvent(e, 1, 100);
+    expect(stripAnsi(rendered)).toStartWith(symbol!);
+    expect(rendered).toStartWith(`\x1b[33m${symbol![0]}\x1b[0m `);
     expect(stripAnsi(renderEvent(e, 3, 100))).not.toContain('tool.call');
     expect(stripAnsi(renderEvent(e, 3, 100))).not.toContain('pending');
   }
+});
+
+test('edit filenames stay plain while only the symbol and signed line counts carry color', () => {
+  const presentation: EventRendering = { rendererId: 'pi/edit', subtype: 'edit', summary: 'Δ file-2.ts · +3 / -2', extended: 'Δ file-2.ts · +3 / -2', full: 'Δ file-2.ts · +3 / -2' };
+  for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31']]) {
+    const e = event(1, type, { toolCallId: 'same', status });
+    for (const level of [1, 2, 3] as const) {
+      const text = renderEvent(e, level, 80, presentation);
+      expect(text).toStartWith(`\x1b[${color}mΔ\x1b[0m file-2.ts · `);
+      expect(text).toContain('\x1b[32m+3\x1b[0m / \x1b[31m-2\x1b[0m');
+      expect(stripAnsi(text)).toBe('Δ file-2.ts · +3 / -2');
+    }
+  }
+  const sparseBash = event(2, 'tool.result', { toolCallId: 'old-call', status: 'completed', rawOutput: { content: [{ type: 'text', text: 'Command exited with code 127' }] } });
+  const bash: EventRendering = { rendererId: 'pi/bash', subtype: 'bash', summary: '$ python --version', extended: '$ python --version\nCommand exited with code 127', full: '$ python --version\nCommand exited with code 127' };
+  expect(renderTreeEvent(sparseBash, 80, bash)).toStartWith('\x1b[31m$\x1b[0m python --version');
 });
 
 test('edit extended uses semantic old/new colors and aligns using terminal cells; full colors diff hunks', () => {
@@ -75,8 +94,11 @@ test('edit extended uses semantic old/new colors and aligns using terminal cells
   const extended = renderEvent(e, 2, 100, presentation);
   expect(extended).toContain('\x1b[31mold <code>*'); expect(extended).toContain('\x1b[32mnew <code>*');
   expect(stripAnsi(extended).split('\n')).toEqual([`${prefix} old <code>*`, `${' '.repeat(stringWidth(prefix) + 1)}new <code>*`]);
+  const summary = renderTreeEvent(e, 100, presentation);
+  expect(summary).toStartWith(`\x1b[33mΔ\x1b[0m src/文件🦊.ts · `);
+  expect(summary).toContain('\x1b[32m+1\x1b[0m / \x1b[31m-1\x1b[0m');
   const full = renderEvent(e, 3, 100, presentation);
-  expect(full).toStartWith('\x1b[33mΔ');
+  expect(full).toStartWith('\x1b[33mΔ\x1b[0m src/文件🦊.ts');
   expect(full).toContain('\x1b[31m-old <code>*'); expect(full).toContain('\x1b[32m+new <code>*');
   expect(stripAnsi(full)).not.toContain('tool.call');
   expect(stripAnsi(full)).toContain('@@ -1 +1 @@');
@@ -105,7 +127,7 @@ test('presentation sidecars select tree summaries independently of chat subtype 
   expect(settings.level('tool.result', 'edit')).toBe(2);
   expect(settings.level('tool.result:write')).toBe(2);
   const table = renderTable(store.tree(), store.latest(settings), ['event'], 80, store.renderings);
-  expect(stripAnsi(table.items[0]!)).toContain('read src/main.ts');
+  expect(stripAnsi(table.items[0]!)).toContain('< src/main.ts');
   expect(stripAnsi(table.items[0]!)).not.toContain('ORIGINAL OUTPUT');
   expect(store.discovered.has('tool.result:read')).toBe(true);
   const messages = [event(2), event(3)];
@@ -154,7 +176,7 @@ test('Session negotiates server rendering, installs history sidecars and dispatc
 test('terminal level selector previews renderer examples, saves subtype overrides, and tree/raw chat stay independent', async () => {
   const mock = await renderingServer(), tui = terminalClient(mock.path, mock.directory);
   try {
-    await tui.visible('read src/main.ts');
+    await tui.visible('< src/main.ts');
     tui.keys('vl'); await tui.visible('Event rendering levels');
     const settings = new Settings();
     const index = settings.types(['tool.result:read']).indexOf('tool.result:read');
@@ -171,14 +193,14 @@ test('terminal level selector previews renderer examples, saves subtype override
     tui.keys('4'); await tui.visible('4 raw');
     await waitFor(asyncReadGuard(path, 'tool.result:read', 4));
     tui.keys('\x1b'); await tui.visible('LATEST TRACKED EVENT');
-    expect(tui.screen()).toContain('read src/main.ts');
+    expect(tui.screen()).toContain('< src/main.ts');
     tui.keys('c'); await tui.visible('Chat · root');
     await tui.visible('ORIGINAL OUTPUT');
     expect(tui.screen()).not.toContain('Custom read complete');
   } finally { await tui.close(); await mock.close(); }
 }, 15000);
 
-test('terminal paints lifecycle headers and edit diff text with independent semantic colors', async () => {
+test('terminal changes only symbol colors across phases and independently colors edit counts/text', async () => {
   const call = event(1, 'tool.call', { title: 'bash', status: 'pending', rawInput: { command: 'echo ready' } });
   const bash: EventRendering = { rendererId: 'core.tools', subtype: 'bash', summary: '$ echo ready', extended: '$ echo ready\nready', full: '$ echo ready\n\n```\nready\n```' };
   const mock = await mockServer((socket, request) => {
@@ -201,15 +223,20 @@ test('terminal paints lifecycle headers and edit diff text with independent sema
     await tui.visible('$ echo ready');
     await waitFor(() => fg('$ echo ready') === 3).catch(() => { throw new Error(`Expected yellow header; fg=${fg('$ echo ready')}\n${tui.screen()}`); });
     expect(tui.screen()).not.toContain('tool.call:'); expect(tui.screen()).not.toContain('pending');
+    expect(fg('echo ready')).toBe(7); // Plain selected-row text, not lifecycle yellow.
     live({ ...call, seq: 2, type: 'tool.update', data: { ...call.data as object, status: 'in_progress' } }, bash);
     await waitFor(() => fg('$ echo ready') === 208);
+    expect(fg('echo ready')).toBe(7);
     live({ ...call, seq: 3, type: 'tool.result', data: { ...call.data as object, status: 'completed' } }, bash);
     await waitFor(() => fg('$ echo ready') === 2);
-    live({ ...call, seq: 4, type: 'tool.result', data: { ...call.data as object, status: 'failed' } }, { ...bash, summary: '$ echo ready · exit 2' });
+    expect(fg('echo ready')).toBe(7);
+    live({ ...call, seq: 4, type: 'tool.result', data: { ...call.data as object, status: 'failed' } }, { ...bash, extended: '$ echo ready\nexit 2' });
     await waitFor(() => fg('$ echo ready') === 1);
+    expect(fg('echo ready')).toBe(7);
     const edit = event(5, 'tool.result', { title: 'edit', status: 'completed', rawInput: { path: 'file.ts' } });
     const delta: EventRendering = { rendererId: 'pi/edit', subtype: 'edit', summary: 'Δ file.ts · +1 / -1', extended: 'Δ file.ts old text\n  new text', extendedDiff: { prefix: 'Δ file.ts', before: 'old text', after: 'new text' }, full: 'Δ file.ts · +1 / -1\n\n```diff\n@@ -1 +1 @@\n-old text\n+new text\n```' };
     live(edit, delta); await tui.visible('Δ file.ts');
+    expect(fg('file.ts')).toBe(7); expect(fg('+1')).toBe(2); expect(fg('-1')).toBe(1);
     tui.keys('c'); await tui.visible('Chat · root');
     await tui.visible('-old text'); await tui.visible('+new text');
     expect(fg('Δ file.ts')).toBe(2); expect(fg('-old text')).toBe(1); expect(fg('+new text')).toBe(2);

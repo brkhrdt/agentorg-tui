@@ -352,11 +352,19 @@ paths/ranges and line counts, shell commands/exit information, edit diffs, and
 write sizes/content. Headers are compact: **`$` bash**, **`<` read**, **`>` write**,
 **`Δ` edit**, and **`• toolname`** for unknown/MCP tools. There is no `tool.call:`
 or `tool.result:` prefix or routine `pending`/`completed` label. Paths, ranges,
-commands, sizes, counts and errors remain. Headers are **yellow for calls**,
-**orange for updates**, **green for successful results**, and **red for failed or
-cancelled results**. Unknown/incomplete result status stays neutral. Output
-bodies keep their own Markdown/code colors. Selected tree rows retain the event
-color as well as the blue selection background.
+commands, sizes, counts and errors remain. **Only the symbol** is yellow for
+calls, orange for updates, green for successful results, or red for failed/cancelled
+results. The command/filename stays plain and the same across phases; output and
+errors appear in extended/full views, not as a replacement tree label. Edit
+summaries additionally show green `+N` and red `-N` counts. Unknown/incomplete
+result status stays neutral. Output bodies keep their own Markdown/code colors.
+Selected tree rows preserve these colors and the blue selection background.
+
+Sparse tool updates/results recover their command/path from retained call context
+on the server, including older adapter history, without changing raw envelopes.
+Context is fenced by agent/generation and prompt/session; expired calls are not
+guessed. After rebuilding, restart the server to load the updated/bundled harness
+renderers and restart the TUI; an already-running process retains its old code.
 
 Edit's extended level shows `Δ filename` followed by old text in red, then new
 text in green on the next logical line, aligned below the old text. Multiline or

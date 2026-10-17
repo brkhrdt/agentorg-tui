@@ -30,14 +30,24 @@ export function cell(value: string, width: number): string {
 const pretty = (value: unknown) => JSON.stringify(value, null, 2) ?? String(value);
 const isTool = (event: ServerEvent) => ['tool.call', 'tool.update', 'tool.result'].includes(event.type);
 const paint = (text: string, color: string) => `\x1b[${color}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${color}m`)}\x1b[0m`;
-function toolColor(event: ServerEvent): string {
+function toolColor(event: ServerEvent, tool?: string): string {
   if (event.type === 'tool.call') return '33';
   if (event.type === 'tool.update') return '38;5;208';
   const data = object(event.data), result = object(data.rawOutput);
   const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
-    ((data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/exit (?:code|status):?\s*(\d+)/i)?.[1] : undefined);
+    ((tool ?? data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/\bexit(?:ed)?(?: with)? (?:code|status):?\s*(-?\d+)/i)?.[1] : undefined);
   if (['failed', 'cancelled', 'canceled'].includes(data.status) || result.isError === true || (exit !== undefined && Number(exit) !== 0)) return '31';
   return data.status === 'completed' ? '32' : '90';
+}
+/** Only the symbol carries lifecycle color; edit's signed counts have independent diff colors. */
+function toolHeader(text: string, event: ServerEvent, tool?: string): string {
+  const plain = stripAnsi(text);
+  const match = /^([\s]*)([$<>Δ•])(?=\s|$)(.*)$/u.exec(plain);
+  if (!match) return plain;
+  let rest = match[3]!;
+  if (match[2] === 'Δ') rest = rest.replace(/( · )(\+\d+)( \/ )(-\d+)$/,
+    (_all, gap: string, added: string, separator: string, removed: string) => `${gap}${paint(added, '32')}${separator}${paint(removed, '31')}`);
+  return match[1] + paint(match[2]!, toolColor(event, tool)) + rest;
 }
 const logicalLines = (text: string) => text.split(/\r\n?|\n|\u2028|\u2029/);
 const literalMarkdown = (text: string) => text.replace(/([\\`*_{}\[\]<>])/g, '\\$1');
@@ -160,7 +170,7 @@ export function renderTreeEvent(event: ServerEvent, width: number, rendering?: E
   const prefix = assistant || isTool(event) ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
   const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
   const preview = prefix + markdown(text, Math.max(1, width), true);
-  return clipStyled(isTool(event) ? paint(preview, toolColor(event)) : preview, width);
+  return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype) : preview, width);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering): string {
   width = Math.max(1, width);
@@ -178,18 +188,18 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       if (isTool(event) && diff && [diff.prefix, diff.before, diff.after].every(text => typeof text === 'string')) {
         const prefix = clean(diff.prefix).replace(/\s+/g, ' ').trim();
         const before = clean(diff.before).replace(/\s+/g, ' '), after = clean(diff.after).replace(/\s+/g, ' ');
-        const first = paint(prefix, toolColor(event)) + ' ' + paint(before, '31');
+        const first = toolHeader(prefix, event, rendering.subtype) + ' ' + paint(before, '31');
         const second = ' '.repeat((stringWidth(prefix) + 1) % width) + paint(after, '32');
         return [first, second].map(line => wrapAnsi(line, width, { hard: true, trim: false })).join('\n');
       }
       return logicalLines(rendering.extended).slice(0, 2).map((line, index) => {
         const text = markdown(line, width, true);
-        return wrapAnsi(isTool(event) && index === 0 ? paint(text, toolColor(event)) : text, width, { hard: true, trim: false });
+        return wrapAnsi(isTool(event) && index === 0 ? toolHeader(text, event, rendering.subtype) : text, width, { hard: true, trim: false });
       }).join('\n');
     }
     if (isTool(event)) {
       const [heading, ...body] = logicalLines(rendering.full);
-      return wrapAnsi(paint(markdown(heading ?? '', width, true), toolColor(event)), width, { hard: true, trim: false }) +
+      return wrapAnsi(toolHeader(markdown(heading ?? '', width, true), event, rendering.subtype), width, { hard: true, trim: false }) +
         (body.join('\n').trim() ? '\n' + markdown(body.join('\n'), width) : '');
     }
     return `\x1b[90m${clip(`${event.time} · ${label(event)}`, width)}\x1b[0m\n${markdown(rendering.full, width)}`;
