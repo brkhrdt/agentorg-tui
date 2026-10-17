@@ -162,7 +162,7 @@ export class Session extends EventEmitter {
   private refreshTimer?: ReturnType<typeof setTimeout>;
   private refreshing = false;
   private refreshAgain = false;
-  constructor(readonly socketPath: string) {
+  constructor(readonly socketPath: string, private readonly options: { replayHistory?: boolean } = {}) {
     super();
     this.store.on('refresh', () => this.scheduleRefresh());
   }
@@ -174,6 +174,7 @@ export class Session extends EventEmitter {
       let buffering = true;
       const buffered: ServerEvent[] = [];
       client.on('event', (event: ServerEvent) => {
+        this.emit('event', event);
         if (buffering) buffered.push(event);
         else {
           this.store.ingest(event);
@@ -205,10 +206,12 @@ export class Session extends EventEmitter {
         this.store.install(snapshot);
         buffered.sort((a, b) => a.seq - b.seq).forEach(event => this.store.ingest(event));
         buffering = false;
-        this.setStatus('connected · loading history');
         delay = 250;
-        // Keep the UI live during history download, with a fixed replay target.
-        await this.replay(client, snapshot.seq);
+        if (this.options.replayHistory !== false) {
+          this.setStatus('connected · loading history');
+          // Keep the UI live during history download, with a fixed replay target.
+          await this.replay(client, snapshot.seq);
+        } else this.store.historyCursor = snapshot.seq;
         this.setStatus('connected');
         poll = setInterval(() => this.scheduleRefresh(), 10_000);
         await closed;

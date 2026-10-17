@@ -27,10 +27,35 @@ root agent; with an agent selected, `n` creates a child.
 For unattended synthetic server load, use the separate
 [harness benchmark runner](../agentorg-plugin-harness-bench/README.md). It creates a
 real agent tree without model credentials; attach this TUI to the socket it prints
-to watch streaming activity. Headless TUI performance assertions are not yet part
-of that benchmark. State refreshes request only nonterminal operations; completed
-prompt output is replayed from paged event history rather than repeatedly downloaded
-in snapshots.
+to watch streaming activity. Its optional `--tui-probe` measures this TUI's actual
+session/store/tree renderer during agent creation/removal, without terminal painting.
+State refreshes request only nonterminal operations; completed prompt output is
+normally replayed from paged event history rather than downloaded in snapshots.
+
+For current state and **new events only**, skip historical chat loading:
+
+```sh
+bun start --socket /tmp/bench/server.sock --no-history
+```
+
+This does not change server recovery or re-execute old prompts/tools. It simply
+omits historical chat, including after reconnect; the server still loads its tree
+and persisted sessions from SQLite. A reproducible server-recovery timing procedure
+is documented in the benchmark's [RECOVERY.md](../agentorg-plugin-harness-bench/RECOVERY.md).
+
+For unattended model/render measurements against a running server:
+
+```sh
+bun run bench:probe --socket /tmp/bench/server.sock --duration 30 --output /tmp/tui-probe.json
+```
+
+The probe uses `Session`, `Store` and `renderTable`, schedules frames every 16ms
+at 120 cells by default, skips historical chat, and records row additions/removals,
+event-to-render delay, render CPU duration, event-loop lag and disconnects. Percentiles
+use the latest 4096 samples. It does **not** measure Blessed/terminal painting or
+keyboard latency. `--duration 0` runs until SIGINT/SIGTERM; `--width` and `--frame-ms`
+control the recorded workload. Initial snapshot rows are counted as added but have
+no live-event latency; fast transitions coalesced into a frame are reported separately.
 
 ## Standalone binary
 
