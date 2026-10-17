@@ -359,9 +359,11 @@ errors appear in extended/full views, not as a replacement tree label. Edit
 summaries additionally show green `+N` and red `-N` counts. Unknown/incomplete
 result status stays neutral. Full tool updates show a plain-text output tail of at
 most five terminal rows; extended updates show only the latest row. The limit is
-applied after wrapping, so long lines cannot flood the chat pane. A muted gutter
-separates output from the transcript without forcing a background color. The line
-count describes the received output; a tail indicator appears when earlier rows
+applied after wrapping, so long lines cannot flood the chat pane. A light-gray
+gutter separates output from the transcript without forcing a background color.
+The gutter and line count use explicit grayscale rather than the terminal's
+bright-black color. The line count describes the received output; a tail indicator
+appears when earlier rows
 are hidden. As new update events arrive, the excerpt advances to the latest output.
 Updates without output retain their renderer's normal details. Other output bodies
 keep their own Markdown/code colors.

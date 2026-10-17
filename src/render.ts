@@ -63,7 +63,7 @@ function terminalOutputTail(lines: string[], width: number, maxRows: number): { 
   const available = width - stringWidth(gutter);
   const rows = lines.slice(-maxRows).flatMap(line => wrapAnsi(line, available, { hard: true, trim: false }).split('\n'));
   return {
-    text: rows.slice(-maxRows).map(line => paint(gutter, '90') + clip(line, available)).join('\n'),
+    text: rows.slice(-maxRows).map(line => paint(gutter, '38;5;250') + clip(line, available)).join('\n'),
     hidden: lines.length > maxRows || rows.length > maxRows,
   };
 }
@@ -205,7 +205,7 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       const tail = terminalOutputTail(lines, width, maxRows);
       const heading = wrapAnsi(toolHeader(markdown(rendering.summary, width, true), event, rendering.subtype), width, { hard: true, trim: false });
       const count = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received${tail.hidden ? ` · showing last ${maxRows} ${maxRows === 1 ? 'row' : 'rows'}` : ''}`;
-      return heading + '\n' + paint(clip(count, width), '90') + (tail.text ? '\n' + tail.text : '');
+      return heading + '\n' + paint(clip(count, width), '38;5;250') + (tail.text ? '\n' + tail.text : '');
     }
     if (level === 1) return renderTreeEvent(event, width, rendering);
     if (level === 2) {

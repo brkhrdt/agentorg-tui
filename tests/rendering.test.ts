@@ -55,6 +55,8 @@ test('tool updates show the latest output row in extended and five rows in full'
   expect(full).not.toContain('one');
   expect(full).toContain('showing last 5 rows');
   expect(full).toContain('  │ two');
+  expect(renderedFull.split('\n')[1]).toStartWith('\x1b[38;5;250m6 lines received');
+  expect(renderedFull).toContain('\x1b[38;5;250m  │ \x1b[0m');
   expect(renderedFull).not.toContain('\x1b[47;30m');
 });
 
@@ -347,7 +349,7 @@ test('terminal compact controls toggle via selection or shortcut with either set
   }
 }, 15000);
 
-test('terminal compact chat advances a bounded output tail with theme-neutral styling', async () => {
+test('terminal compact chat advances a bounded output tail with a visible gray gutter and count', async () => {
   const call = event(1, 'tool.call', { toolCallId: 'rolling', title: 'bash', rawInput: { command: 'watch-output' } });
   const mock = await mockServer((socket, request) => {
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 1, agents: [agent('root')], operations: [] });
@@ -371,8 +373,13 @@ test('terminal compact chat advances a bounded output tail with theme-neutral st
     const lines = tui.screen().split('\n');
     const row = lines.findIndex(line => line.includes('│ six'));
     const column = lines[row]!.indexOf('│ six');
-    expect(tui.cell(row, column)?.getFgColor()).toBe(8); // Muted rail, no forced output background.
+    const countRow = lines.findIndex(line => line.includes('6 lines received'));
+    for (const [y, x] of [[countRow, 0], [row, column]] as const) {
+      expect(tui.cell(y, x)?.getFgColor()).toBe(250); // Explicit gray, not theme-dependent bright black.
+      expect(tui.cell(y, x)?.isBgDefault()).toBeTruthy();
+    }
     expect(tui.cell(row, column + 2)?.isBgDefault()).toBeTruthy();
+    expect(tui.cell(row, column + 2)?.isFgDefault()).toBeTruthy();
     live(3, 'tool.update', `SECOND_HIDDEN\n${'long-output '.repeat(100)}LATEST_TAIL`);
     await tui.visible('2 lines received · showing last 5 rows');
     await tui.visible('LATEST_TAIL');
