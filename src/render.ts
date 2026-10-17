@@ -251,12 +251,13 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
   let adjacent = false;
   for (const event of events) {
     const data = object(event.data);
-    const toolPhase = ['tool.call', 'tool.update', 'tool.result'].includes(event.type);
-    const callId = settings.compactToolCalls && toolPhase && typeof data.toolCallId === 'string' && event.agentId
+    const rendering = renderings.get(event.seq);
+    const callId = settings.compactToolCalls && isTool(event) && typeof data.toolCallId === 'string' && event.agentId
       ? `${event.agentId}\0${event.generation ?? ''}\0${data.toolCallId}` : undefined;
-    const raw = settings.level(event.type, renderings.get(event.seq)?.subtype) === 4;
+    const raw = settings.level(event.type, rendering?.subtype) === 4;
+    // Raw phases remain separate and end any prior replacement chain.
     if (callId && raw) toolCalls.delete(callId);
-    else if (callId && !raw) {
+    else if (callId) {
       const priorIndex = toolCalls.get(callId);
       if (settings.tracked(event.type)) {
         if (priorIndex !== undefined) groups[priorIndex] = event;
@@ -271,8 +272,7 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
     }
     if (!settings.tracked(event.type)) { adjacent = false; continue; }
     const previous = adjacent ? groups[groups.length - 1] : undefined;
-    const rendering = renderings.get(event.seq);
-    const merged = settings.level(event.type, rendering?.subtype) !== 4 && !rendering && !(previous && renderings.has(previous.seq)) ? appendMessageChunk(previous, event) : undefined;
+    const merged = !raw && !rendering && !(previous && renderings.has(previous.seq)) ? appendMessageChunk(previous, event) : undefined;
     if (merged && previous) {
       groups[groups.length - 1] = { ...previous, data: merged.data };
     } else groups.push(event);

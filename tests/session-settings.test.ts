@@ -19,17 +19,25 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     settings.toggle('agent.message');
     settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;
+    expect(settings.compactToolCalls).toBe(false);
+    settings.compactToolCalls = true;
     await settings.save(path);
     const loaded = await Settings.load(path);
     expect(loaded.tracked('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
     expect(loaded.tableFields).toEqual(['error', 'name', 'status']);
+    expect(loaded.compactToolCalls).toBe(true);
     expect(JSON.parse(await readFile(path, 'utf8')).levels['plugin.custom']).toBe(4);
     for (const tableFields of [undefined, null, [], ['unknown', 3], ['harness', 'harness', null, 'event', 'unknown']]) {
       await writeFile(path, JSON.stringify({ excluded: [], levels: {}, tableFields }));
       const compatible = await Settings.load(path);
+      expect(compatible.compactToolCalls).toBe(false);
       expect(compatible.tableFields).toEqual(Array.isArray(tableFields) && tableFields.includes('harness')
         ? ['harness', 'event'] : [...DEFAULT_TABLE_FIELDS]);
+    }
+    for (const compactToolCalls of [null, 1, 'true', [], {}]) {
+      await writeFile(path, JSON.stringify({ excluded: [], levels: {}, compactToolCalls }));
+      await expect(Settings.load(path)).rejects.toThrow('Invalid compactToolCalls setting');
     }
     await writeFile(path, '{"excluded":[],"levels":{"agent.message":5}}');
     await expect(Settings.load(path)).rejects.toThrow('Invalid rendering level');

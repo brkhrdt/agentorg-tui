@@ -219,6 +219,10 @@ export class UI {
       .then(() => this.showNotice(`Saved ${this.configPath}`))
       .catch(error => this.showNotice(`Cannot save settings: ${error.message}`));
   }
+  private toggleCompactToolCalls(): void {
+    this.settings.compactToolCalls = !this.settings.compactToolCalls;
+    this.saveSettings(); this.draw();
+  }
   private setTableFieldPosition(position: number): void {
     const field = TABLE_FIELDS[this.menuIndex];
     const index = field ? this.settings.tableFields.indexOf(field) : -1;
@@ -260,7 +264,7 @@ export class UI {
       else if (this.menuIndex === offset) this.setView('table-fields');
       else if (this.menuIndex === offset + 1) this.setView('filters');
       else if (this.menuIndex === offset + 2) this.setView('levels');
-      else if (this.menuIndex === offset + 3) { this.settings.compactToolCalls = !this.settings.compactToolCalls; this.saveSettings(); this.draw(); }
+      else if (this.menuIndex === offset + 3) this.toggleCompactToolCalls();
     } else if (this.view === 'settings-options') {
       const choice = this.genericChoices[this.menuIndex];
       try {
@@ -306,8 +310,6 @@ export class UI {
     } else if (this.view === 'filters') {
       const type = this.menuTypes[this.menuIndex];
       if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
-    } else if (this.view === 'view' && this.menuIndex === (this.session.serverSettingsCapability ? 4 : 3)) {
-      this.settings.compactToolCalls = !this.settings.compactToolCalls; this.saveSettings(); this.draw();
     } else if (this.view === 'skills') {
       const states: SkillState[] = ['unavailable', 'available', 'installed'];
       this.changeSkill(states[(states.indexOf(this.skillDraft[this.skillNames[this.menuIndex]!] ?? 'unavailable') + 1) % 3]!);
@@ -356,7 +358,7 @@ export class UI {
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => { this.settings.compactToolCalls = !this.settings.compactToolCalls; this.saveSettings(); this.draw(); }), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), back];
     if (this.view === 'table-fields') return [
       action('space', 'Toggle field visibility', cycle),
       ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((key, index) =>

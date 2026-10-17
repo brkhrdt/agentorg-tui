@@ -192,6 +192,46 @@ test('chat can replace tool call/update phases in place while preserving raw and
   expect(chatGroups([call, update, result], settings).map(item => item.seq)).toEqual([1, 3, 4]);
 });
 
+test('compact tool groups scope IDs by agent/generation and leave unidentified phases separate', () => {
+  const settings = new Settings(); settings.compactToolCalls = true;
+  const events = [
+    event(1, 'tool.call', { toolCallId: 'same' }),
+    event(2, 'tool.call', { toolCallId: 'same' }, { agentId: 'worker' }),
+    event(3, 'tool.call', { toolCallId: 'same' }, { generation: 'g2' }),
+    event(4, 'tool.update', { toolCallId: 'same' }, { agentId: 'worker' }),
+    event(5, 'tool.result', { toolCallId: 'same' }, { generation: 'g2' }),
+    event(6, 'tool.result', { toolCallId: 'same' }),
+    event(7, 'tool.call', {}), event(8, 'tool.update', {}),
+    event(9, 'tool.call', { toolCallId: 'same' }, { agentId: undefined }),
+    event(10, 'tool.result', { toolCallId: 'same' }, { agentId: undefined }),
+  ];
+  const original = structuredClone(events);
+  expect(chatGroups(events, settings).map(item => item.seq)).toEqual([6, 4, 5, 7, 8, 9, 10]);
+  expect(events).toEqual(original);
+});
+
+test('compact groups honor filtered phases, close hidden results and retain mixed raw phases', () => {
+  const settings = new Settings(); settings.compactToolCalls = true;
+  const call = event(1, 'tool.call', { toolCallId: 'x' });
+  const update = event(2, 'tool.update', { toolCallId: 'x' });
+  const result = event(3, 'tool.result', { toolCallId: 'x' });
+  const events = [call, update, result];
+  settings.excluded.add('tool.call');
+  expect(chatGroups(events, settings).map(item => item.seq)).toEqual([3]);
+  settings.excluded.delete('tool.call'); settings.excluded.add('tool.update');
+  expect(chatGroups(events, settings).map(item => item.seq)).toEqual([3]);
+  settings.excluded.delete('tool.update'); settings.excluded.add('tool.result');
+  expect(chatGroups([...events, { ...call, seq: 4 }], settings).map(item => item.seq)).toEqual([2, 4]);
+  settings.excluded.delete('tool.result');
+  const sidecars = new Map([[2, { rendererId: 'pi/bash', subtype: 'bash', summary: '$ cmd', extended: '$ cmd', full: '$ cmd' }]]);
+  settings.levels['tool.update:bash'] = 4;
+  expect(chatGroups(events, settings, sidecars).map(item => item.seq)).toEqual([1, 2, 3]);
+  delete settings.levels['tool.update:bash']; settings.levels['tool.result'] = 4;
+  expect(chatGroups(events, settings, sidecars).map(item => item.seq)).toEqual([2, 3]);
+  settings.levels['tool.call'] = 4; settings.levels['tool.result'] = 2;
+  expect(chatGroups(events, settings, sidecars).map(item => item.seq)).toEqual([1, 3]);
+});
+
 test('presentation sidecars select tree summaries independently of chat subtype levels and do not merge custom messages', () => {
   const store = new Store(), settings = new Settings();
   store.install({ seq: 0, agents: [agent('root')], operations: [] });
@@ -272,6 +312,39 @@ test('terminal level selector previews renderer examples, saves subtype override
     await tui.visible('ORIGINAL OUTPUT');
     expect(tui.screen()).not.toContain('Custom read complete');
   } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
+test('terminal compact controls toggle via selection or shortcut with either settings menu layout', async () => {
+  for (const serverSettings of [false, true]) {
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: serverSettings ? { serverSettings: { version: 1, groups: [], endpoints: { list: 'settings.list', get: 'settings.get', update: 'settings.update' } } } : {} });
+      else if (request.method === 'subscribe') respond(socket, request.id, { seq: 0, liveOnly: true });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    });
+    const path = join(mock.directory, 'config.json');
+    let tui = terminalClient(mock.path, mock.directory);
+    const saved = (value: boolean) => {
+      let matched = false;
+      return () => { void Settings.load(path).then(settings => { matched = settings.compactToolCalls === value; }); return matched; };
+    };
+    try {
+      await tui.visible('connected');
+      tui.keys('v'); await tui.visible('Compact tool phases in chat: off');
+      tui.keys('\x1b[B'.repeat(serverSettings ? 4 : 3) + '\r');
+      await tui.visible('Compact tool phases in chat: on');
+      await waitFor(saved(true));
+      tui.keys('?'); await tui.visible('Toggle compact tool phases');
+      tui.keys('\x1b'); await tui.visible('View settings');
+      tui.keys('c'); await tui.visible('Compact tool phases in chat: off');
+      await waitFor(saved(false));
+      tui.keys('c'); await tui.visible('Compact tool phases in chat: on');
+      await waitFor(saved(true));
+      await tui.close();
+      tui = terminalClient(mock.path, mock.directory);
+      await tui.visible('connected');
+      tui.keys('v'); await tui.visible('Compact tool phases in chat: on');
+    } finally { await tui.close(); await mock.close(); }
+  }
 }, 15000);
 
 test('terminal compact chat advances a bounded output tail with theme-neutral styling', async () => {
