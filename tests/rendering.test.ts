@@ -121,6 +121,35 @@ test('terminal level selector previews renderer examples, saves subtype override
   } finally { await tui.close(); await mock.close(); }
 }, 15000);
 
+test('terminal level names use the available pane width before truncating long MCP tools', async () => {
+  const type = 'tool.call:mcp__organization__child_create';
+  const tooLong = `${type}_${'extra'.repeat(12)}`;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 2, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, {
+      events: request.params.after < 2 ? [event(1, type), event(2, tooLong)] : [], oldestSeq: 1, latestSeq: 2, expired: false,
+    });
+  });
+  const tui = terminalClient(mock.path, mock.directory);
+  try {
+    await tui.visible('connected');
+    tui.keys('vl'); await tui.visible('Event rendering levels');
+    const index = new Settings().types([type, tooLong]).indexOf(type);
+    tui.keys('\x1b[B'.repeat(index));
+    await tui.visible(type);
+    const row = tui.screen().split('\n').find(line => line.startsWith(type))!;
+    expect(row.slice(0, 60)).toContain('1 summary');
+    expect(row.slice(0, 60)).not.toContain('…');
+    const clipped = tui.screen().split('\n').find(line => line.startsWith(`${type}_`))!;
+    expect(clipped.slice(0, 60)).toContain('…');
+    expect(clipped.slice(0, 60)).toContain('1 summary');
+    expect(tui.screen()).toContain('Renderer examples');
+    tui.keys('2'); await waitFor(asyncReadGuard(join(mock.directory, 'config.json'), type, 2));
+    await tui.visible('2 extended');
+    expect(tui.screen().split('\n').find(line => line.startsWith(type))!.slice(0, 60)).toContain('2 extended');
+  } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
 // waitFor's predicate is synchronous; poll a detached read to avoid racing the atomic save.
 function asyncReadGuard(path: string, key: string, value: number | undefined): () => boolean {
   let matched = false;

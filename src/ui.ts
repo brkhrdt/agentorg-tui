@@ -1138,6 +1138,9 @@ export class UI {
       const height = Number(this.screen.height);
       const showPreview = this.view === 'levels' && preview && width >= 60 && height >= 16;
       const menuWidth = showPreview && width >= 90 ? Math.floor(width / 2) : width;
+      // Use the whole pane: reserve only the level label, gap and list scrollbar.
+      const levelWidth = Math.max(...LEVEL_NAMES.map(name => name.length)) + 2;
+      const typeWidth = Math.max(0, menuWidth - levelWidth - 3);
       if (showPreview) {
         const side = width >= 90;
         this.menu.width = side ? '50%' : '100%';
@@ -1150,7 +1153,7 @@ export class UI {
       this.updating = true;
       this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?
         `[${this.settings.tracked(type) ? 'x' : ' '}] ${clean(type)}` :
-        `${cell(type, Math.min(30, Math.max(12, menuWidth - 22)))}  ${this.settings.level(type)} ${LEVEL_NAMES[this.settings.level(type) - 1]}`));
+        `${cell(type, typeWidth)}  ${this.settings.level(type)} ${LEVEL_NAMES[this.settings.level(type) - 1]}`));
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.view === 'filters' ? ' ↑↓ select   Space toggle tracked   Esc tree · changes saved automatically' : ' ↑↓ event  ←→ level  1–4 level  r examples  z inherit  Esc tree');
     } else if (this.view === 'chat') {
