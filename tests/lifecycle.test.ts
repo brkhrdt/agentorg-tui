@@ -56,6 +56,7 @@ test('all lifecycle mutations wait for completion, preserve targets, and refresh
   const running = session.run();
   try {
     await waitFor(() => session.status === 'connected');
+    expect(requests.find(r => r.method === 'organization.snapshot').params).toEqual({ includeTerminalOperations: false });
     const methods: LifecycleMethod[] = ['agent.create', 'agent.modify', 'agent.restart', 'agent.stop', 'agent.restart_subtree', 'agent.replace_session', 'agent.remove'];
     for (const method of methods) {
       const params = method === 'agent.create' ? { parentId: null, settings: { harness: 'fixture' } } : method === 'agent.modify' ? { agentId: 'root', expectedRevision: 7, name: 'new' } : { agentId: 'root' };
@@ -74,6 +75,7 @@ test('all lifecycle mutations wait for completion, preserve targets, and refresh
     expect(notices.some(n => n.includes('agent.modify failed'))).toBe(true);
     await waitFor(() => requests.filter(r => r.method === 'organization.snapshot').length > snapshots);
     expect(requests.filter(r => r.method === 'agent.modify')).toHaveLength(2); // No conflict retry.
+    expect(requests.filter(r => r.method === 'organization.snapshot').every(r => r.params.includeTerminalOperations === false)).toBe(true);
     seq++; errorCode = 'START_FAILED';
     const beforePartial = requests.filter(r => r.method === 'organization.snapshot').length;
     await expect(session.mutate('agent.restart_subtree', { agentId: 'root' })).rejects.toThrow('START_FAILED');

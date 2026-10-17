@@ -24,6 +24,14 @@ bun start --help
 An empty organization is displayed as an empty tree. Press `n` to create its
 root agent; with an agent selected, `n` creates a child.
 
+For unattended synthetic server load, use the separate
+[harness benchmark runner](../agentorg-plugin-harness-bench/README.md). It creates a
+real agent tree without model credentials; attach this TUI to the socket it prints
+to watch streaming activity. Headless TUI performance assertions are not yet part
+of that benchmark. State refreshes request only nonterminal operations; completed
+prompt output is replayed from paged event history rather than repeatedly downloaded
+in snapshots.
+
 ## Standalone binary
 
 Build with **Bun 1.4.3+**:

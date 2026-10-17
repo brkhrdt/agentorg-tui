@@ -188,7 +188,7 @@ export class Session extends EventEmitter {
         await client.connect();
         let snapshot: Snapshot | undefined;
         for (let attempt = 0; !snapshot && attempt < 12 && !this.stopped; attempt++) {
-          try { snapshot = await client.request<Snapshot>('organization.snapshot'); }
+          try { snapshot = await client.request<Snapshot>('organization.snapshot', { includeTerminalOperations: false }); }
           catch (error) {
             if (!(error instanceof ApiError) || error.code !== 'NOT_READY') throw error;
             this.setStatus('server starting');
@@ -253,7 +253,7 @@ export class Session extends EventEmitter {
     if (!client || this.stopped) return;
     this.refreshing = true;
     try {
-      const snapshot = await client.request<Snapshot>('organization.snapshot');
+      const snapshot = await client.request<Snapshot>('organization.snapshot', { includeTerminalOperations: false });
       if (client !== this.client || this.stopped) return;
       await this.loadSkills(client, snapshot);
       if (client !== this.client || this.stopped) return;
