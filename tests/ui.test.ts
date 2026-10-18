@@ -82,6 +82,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('\r');
     await visible('Interrupting prompt · worker');
+    expect(screen()).toContain('└ worker');
     keys('tree interruption\r');
     await waitFor(() => prompts.length === 1);
     await visible('LATEST TRACKED EVENT');

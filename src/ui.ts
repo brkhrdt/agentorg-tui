@@ -879,8 +879,10 @@ export class UI {
     this.menu.bottom = 2;
     this.input.bottom = this.isPathInput() || this.isVolumeInput() ? 7 : 2;
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
-    if (view === 'tree') {
-      this.tree.show(); this.columns.show(); this.tree.focus();
+    if (view === 'tree' || view === 'prompt') {
+      this.tree.show(); this.columns.show();
+      if (view === 'tree') this.tree.focus();
+      else { this.input.show(); this.input.focus(); if (!this.sending) this.input.readInput(); }
     } else if (view === 'agent-info') {
       this.details.show(); this.details.focus();
     } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
@@ -1113,7 +1115,7 @@ export class UI {
         this.details.setScroll(scroll);
       }
       this.footer.setContent(' ↑↓ scroll  PgUp/PgDn page  Home/End top/bottom  j readable/JSON  ? keys  Esc back');
-    } else if (this.view === 'tree') {
+    } else if (this.view === 'tree' || this.view === 'prompt') {
       this.rows = store.tree();
       const selectedIndex = Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent));
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
@@ -1129,7 +1131,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(` ↑↓ select  Enter prompt  c chat  i info  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
+      this.footer.setContent(this.view === 'prompt' ? ' Text: Enter interrupt/send  Ctrl+U clear  Esc tree' : ` ↑↓ select  Enter prompt  c chat  i info  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
