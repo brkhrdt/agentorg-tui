@@ -53,7 +53,9 @@ test('selected tree row styling ends before the event summary', () => {
   const selected = table.items[0]!;
   const eventStart = selected.indexOf('Reading files');
   expect(selected).toContain('\x1b[37;44m');
-  expect(eventStart).toBeGreaterThan(selected.indexOf('\x1b[0m'));
+  const selectionEnd = selected.indexOf('\x1b[0m');
+  expect(eventStart).toBeGreaterThan(selectionEnd);
+  expect(selected.slice(selectionEnd + '\x1b[0m'.length, eventStart)).toMatch(/^\s+/);
   expect(selected.slice(eventStart)).not.toContain('\x1b[37;44m');
   expect(table.items[1]).not.toContain('\x1b[37;44m');
 });

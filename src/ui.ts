@@ -124,7 +124,10 @@ export class UI {
     // full styled row just because trailing ANSI resets increase string.length.
     this.tree.on('adopt', (item: blessed.Widgets.BoxElement & { wrap: boolean }) => { item.wrap = false; });
     this.tree.on('select item', (_item, index) => {
-      if (!this.updating) this.selectedAgent = this.rows[index]?.agent.id;
+      if (!this.updating) {
+        this.selectedAgent = this.rows[index]?.agent.id;
+        this.scheduleDraw();
+      }
     });
     this.menu.on('select item', (_item, index) => {
       if (!this.updating) { this.menuIndex = index; this.previewIndex = 0; if (this.view === 'levels') this.scheduleDraw(); }

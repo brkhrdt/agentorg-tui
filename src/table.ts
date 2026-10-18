@@ -83,7 +83,7 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
       const end = eventIndex < 0 ? cells.length : eventIndex;
       const rowText = cells.join(separator);
       if (r !== selectedIndex || end === 0) return rowText;
-      const prefixText = cells.slice(0, end).join(separator) + (eventIndex > 0 ? separator : '');
+      const prefixText = cells.slice(0, end).join(separator).trimEnd();
       const codes = `${ansiColor(colors.selectionFg ?? 'white')};${ansiColor(colors.selectionBg ?? 'blue', true)}`;
       return `\x1b[${codes}m${prefixText}\x1b[0m${rowText.slice(prefixText.length)}`;
     }),
