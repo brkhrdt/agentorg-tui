@@ -101,6 +101,12 @@ export class AgentEditor {
     return this.values[field];
   }
   skillChoices() { return this.skillDraft?.choices() ?? []; }
+  skillStates(): SkillStates { return this.skillDraft?.states ?? {}; }
+  stageSkillStates(states: SkillStates): void {
+    if (!this.skillDraft) throw new Error('Skills plugin is not available');
+    if (!isDeepStrictEqual(this.skillDraft.states, states)) this.skillsExplicit = true;
+    this.skillDraft.replace(states);
+  }
   setSkillState(name: string, state: 'available' | 'installed'): void {
     if (!this.skillDraft) throw new Error('Skills plugin is not available');
     const states = this.skillDraft.states;
@@ -122,7 +128,7 @@ export class AgentEditor {
     return spec.editor.endsWith('-map') ? '{}' : collection(spec.editor) ? '[]' : spec.editor === 'number' ? '0' : spec.editor === 'boolean' ? 'false' : '';
   }
   label(field: AgentField): string {
-    if (field === 'skills') return 'Skills';
+    if (field === 'skills') return 'Skills:';
     const spec = this.pluginSpecs.get(field);
     return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'harness' ? 'Agent' : field === 'thinking' ? 'Thinking' : field === 'container' ? 'Container' : field;
   }

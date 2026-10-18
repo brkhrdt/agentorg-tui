@@ -132,21 +132,11 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await waitFor(() => screen().split('\n').slice(1, 25).some(line => line.includes('chat message')) &&
       screen().split('\n')[26]?.trim() === '' && screen().includes('Prompt completed'));
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
-    keys('s'); await visible('Skills · worker');
-    await visible('unavailable  alpha');
-    keys('i'); await visible('installed    alpha');
-    keys('\r'); await waitFor(() => modifications.length === 1);
-    expect(modifications[0]).toEqual({ agentId: 'worker', expectedRevision: 1, settings: { extensions: { skills: { alpha: 'installed' } } } });
-    await visible('LATEST TRACKED EVENT');
-    await new Promise(resolve => setTimeout(resolve, 250));
-    keys('s'); await visible('Skills · worker');
-    keys('u'); await visible('unavailable  alpha');
-    keys('\x1b'); await visible('LATEST TRACKED EVENT');
-    expect(modifications.length).toBe(1); // Escape discards staged changes.
-    keys('s'); await visible('Skills · worker');
-    keys('+'); await visible('Add catalog skill');
-    keys('{"name":"beta","gitUrl":"https://github.com/org/beta"}\r');
-    await waitFor(() => catalog.length === 2);
+    keys('s');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(screen()).not.toContain('Skills · worker');
+    expect(modifications).toHaveLength(0);
+    expect(catalog).toHaveLength(1);
     await visible('LATEST TRACKED EVENT');
     keys('q'); await waitFor(() => exited);
   } finally {

@@ -2,6 +2,7 @@ import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
 import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
+import type { SkillChoice } from './skill-selection.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
@@ -19,7 +20,7 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
-type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function agentHierarchy(agent: Agent | undefined, agents: Map<string, Agent>): string {
   const names: string[] = [], seen = new Set<string>();
@@ -121,9 +122,7 @@ export class UI {
   private infoRaw = false;
   private lastInfo = '';
   private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
-  private skillDraft: SkillStates = {};
-  private skillNames: string[] = [];
-  private skillRevision = 0;
+  private skillPicker?: { editor: AgentEditor; states: SkillStates; choices: SkillChoice[]; returnIndex: number; filter: string };
   private chatAgent?: string;
   private promptAgent?: string;
   private rows: TreeRow[] = [];
@@ -151,7 +150,10 @@ export class UI {
       }
     });
     this.menu.on('select item', (_item, index) => {
-      if (!this.updating) { this.menuIndex = index; this.previewIndex = 0; if (this.view === 'levels') this.scheduleDraw(); }
+      if (!this.updating) {
+        this.menuIndex = index; this.previewIndex = 0;
+        if (['levels', 'agent-edit', 'agent-skills'].includes(this.view)) this.scheduleDraw();
+      }
     });
     for (const widget of [this.tree, this.menu, this.details]) {
       widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
@@ -225,6 +227,8 @@ export class UI {
       input.on('submit', (value: string) => { void this.submit(value); });
       input.on('cancel', () => {
         if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
+        else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
+        else if (this.view === 'agent-skills') this.cancelAgentSkills();
         else this.setView(this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
       });
     }
@@ -315,6 +319,7 @@ export class UI {
     return rows.find(row => row.agent.parentId === null)?.agent ?? rows[0]?.agent;
   }
   private chooseMenu(): void {
+    this.menuIndex = this.selectedMenuIndex();
     const fields = this.editor?.fields ?? [];
     if (this.view === 'colors') {
       const key = Object.keys(COLOR_SETTINGS)[this.menuIndex] as ColorSetting | undefined;
@@ -358,6 +363,7 @@ export class UI {
       else if (fields[this.menuIndex] === 'container') void this.openProfileChoices();
       else if (fields[this.menuIndex] === 'harness' && this.session.agentProfilesEnabled) void this.openAgentProfileChoices();
       else if (fields[this.menuIndex] === 'thinking') this.openThinkingChoices();
+      else if (fields[this.menuIndex] === 'skills') this.openAgentSkills();
       else if (['harness', 'provider', 'model'].includes(fields[this.menuIndex] ?? '')) void this.openAgentOptions();
       else this.openField();
     } else if (this.view === 'image-scope') void this.saveAgent((['node', 'inherited', 'all'] as const)[this.menuIndex]);
@@ -378,10 +384,7 @@ export class UI {
     else if (this.view === 'filters') {
       const type = this.menuTypes[this.menuIndex];
       if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
-    } else if (this.view === 'skills') {
-      const states: SkillState[] = ['unavailable', 'available', 'installed'];
-      this.changeSkill(states[(states.indexOf(this.skillDraft[this.skillNames[this.menuIndex]!] ?? 'unavailable') + 1) % 3]!);
-    }
+    } else if (this.view === 'agent-skills') this.cycleSkill();
   }
   private lifecycle(method: LifecycleMethod, label: string): void {
     if (this.sending) return;
@@ -433,7 +436,7 @@ export class UI {
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
         action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()),
-        ...(this.session.skillsEnabled ? [action('s', 'Skills', () => this.openSkills())] : [])] : []),
+        ] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
@@ -464,9 +467,19 @@ export class UI {
     if (this.view === 'agent-edit') return [action('enter', 'Edit selected field / save row', choose), action('S', 'Save changes', () => { void this.saveAgent(); }), back];
     if (this.view === 'image-scope') return (['node', 'inherited', 'all'] as const).map((scope, index) => action(String(index + 1), ['This node only', 'Inheriting descendants', 'All descendants'][index]!, () => { void this.saveAgent(scope); })).concat([action('enter', 'Choose selected scope', choose), back]);
     if (this.view === 'harness-options') return [action('enter', 'Choose selected option', choose), action('m', 'Manual entry', () => { this.menuIndex = this.editor!.fields.indexOf(this.optionField); this.openField(); }), back];
-    if (this.view === 'skills') return [
-      action('i', 'Installed', () => this.changeSkill('installed')), action('a', 'Available', () => this.changeSkill('available')), action('u', 'Unavailable', () => this.changeSkill('unavailable')),
-      action('space', 'Cycle selection', cycle), action('enter', 'Save skills', () => { void this.saveSkills(); }), action('+', 'Add catalog skill', () => { this.input.setValue(''); this.setView('skill-add'); }), back,
+    if (this.view === 'agent-skills') return [
+      action('a', 'Select as available', () => this.setPickerSkill('available')),
+      action('i', 'Select as installed', () => this.setPickerSkill('installed')),
+      action('d', 'Remove from this agent', () => this.removePickerSkill()),
+      action('space', 'Cycle available / installed / removed', cycle),
+      action('/', 'Filter catalog', () => { this.input.setValue(this.skillPicker?.filter ?? ''); this.setView('agent-skills-filter'); }),
+      action('S', 'Stage selection in agent form', () => this.stageAgentSkills()),
+      action('v', 'Open server settings for repository configuration', () => { this.cancelAgentSkills(); void this.openServerSettings(); }),
+      action('escape', 'Cancel field draft', () => this.cancelAgentSkills()),
+    ];
+    if (this.view === 'agent-skills-filter') return [
+      action('enter', 'Apply filter', () => this.applySkillFilter()),
+      action('escape', 'Cancel filter', () => this.cancelSkillFilter()),
     ];
     if (this.view === 'filters') return [action('space', 'Toggle selected event', cycle), back];
     if (this.view === 'levels') return [1, 2, 3, 4].map(level => action(String(level), LEVEL_NAMES[level - 1]!, () => this.changeLevel(0, level as Level))).concat([
@@ -535,11 +548,11 @@ export class UI {
     if (add) {
       const parentValues = records.parent.valuesObject();
       for (const [target, source] of Object.entries(records.field.itemDefaultsFrom ?? {})) value[target] = structuredClone(parentValues[source]);
-      if (records.field.itemIdKey) value[records.field.itemIdKey] = crypto.randomUUID();
+      if (records.field.itemIdKey && records.field.itemIdKey !== records.field.itemLabelKey) value[records.field.itemIdKey] = crypto.randomUUID();
     }
     records.index = add ? -1 : this.menuIndex;
     records.newKey = add ? choice?.value : undefined;
-    const label = records.keys ? (add ? records.newKey : records.keys[this.menuIndex]) : value[records.field.itemLabelKey ?? 'name'];
+    const label = records.keys ? (add ? records.newKey : records.keys[this.menuIndex]) : value[records.field.itemLabelKey ?? 'name'] || 'New entry';
     const group = { ...records.parent.group, title: `${records.field.label}: ${label ?? 'New entry'}`,
       fields: records.field.itemFields!, defaults: records.field.itemDefaults!, values: value, effective: value, overridden: [], restartRequired: [] };
     this.serverEditor = new ServerSettingsEditor(group); this.recordEditing = true; this.setView('server-group');
@@ -572,8 +585,10 @@ export class UI {
     this.setView('server-settings');
     this.showNotice('Loading shared server settings…');
     try {
-      await this.session.loadServerSettings();
-      if (!this.closing && request === this.settingsRequest && this.view === 'server-settings') { this.notice.setContent(''); this.draw(); }
+      const catalog = await this.session.loadServerSettings();
+      if (!this.closing && request === this.settingsRequest && this.view === 'server-settings') {
+        this.menuIndex = catalog.groups.length === 1 && catalog.groups[0]?.namespace === 'skills' ? 1 : 0; this.notice.setContent(''); this.draw();
+      }
     } catch (error) { if (!this.closing && request === this.settingsRequest) this.showNotice((error as Error).message); }
   }
   private async reloadServerGroup(): Promise<void> {
@@ -766,6 +781,7 @@ export class UI {
     if (this.sending || !this.editor) return;
     this.editField = AGENT_FIELDS[this.menuIndex];
     if (!this.editField) return;
+    if (this.editField === 'skills') { this.openAgentSkills(); return; }
     const value = this.editor.values[this.editField];
     if (collection(this.editor.spec(this.editField).editor)) {
       try {
@@ -909,32 +925,65 @@ export class UI {
     } catch (error) { this.showNotice((error as Error).message); }
     finally { this.sending = false; this.draw(); }
   }
-  private openSkills(): void {
-    if (this.sending) return;
-    const agent = this.selected();
-    if (!this.session.skillsEnabled) { this.showNotice('Skills plugin is not enabled on this server.'); return; }
-    if (!agent) return;
-    this.skillDraft = Object.fromEntries(this.session.skills.map(skill => [skill.name,
-      Object.hasOwn(this.session.skillStates(agent.id), skill.name) ? this.session.skillStates(agent.id)[skill.name] : 'unavailable']));
-    this.skillRevision = agent.revision;
-    this.skillNames = this.session.skills.map(skill => skill.name);
-    this.setView('skills');
-  }
-  private changeSkill(state: SkillState): void {
-    const name = this.skillNames[this.menuIndex];
-    if (name && !this.sending) { this.skillDraft[name] = state; this.draw(); }
-  }
-  private async saveSkills(): Promise<void> {
-    if (this.sending || !this.selectedAgent) return;
-    this.sending = true;
+  private openAgentSkills(): void {
+    const editor = this.editor;
+    if (!editor || this.sending) return;
+    this.skillPicker = { editor, states: editor.skillStates(), choices: editor.skillChoices(), returnIndex: this.menuIndex, filter: '' };
+    this.menuIndex = 0; this.setView('agent-skills');
+    this.showNotice(this.skillPicker.choices.length ? '' : 'No catalog skills yet. Open server settings (v) to add repository seeds, then restart the server.');
     this.draw();
-    this.showNotice('Applying skills · active agents restart…');
-    try {
-      await this.session.setSkills(this.selectedAgent, this.skillRevision, this.skillDraft);
-      if (this.view === 'skills') this.setView('tree');
-    } catch (error) { this.showNotice((error as Error).message); }
-    finally { this.sending = false; this.draw(); }
   }
+  private pickerChoices(): SkillChoice[] {
+    const picker = this.skillPicker;
+    if (!picker) return [];
+    const query = picker.filter.trim().toLowerCase();
+    return picker.choices.filter(choice => !query || `${choice.name} ${choice.description}`.toLowerCase().includes(query));
+  }
+  private selectedMenuIndex(): number { return Math.max(0, Number((this.menu as any).selected ?? this.menuIndex)); }
+  private pickerState(name: string): SkillState {
+    const states = this.skillPicker?.states ?? {};
+    return Object.hasOwn(states, name) ? states[name]! : 'unavailable';
+  }
+  private setPickerSkill(state: 'available' | 'installed'): void {
+    const choice = this.pickerChoices()[this.selectedMenuIndex()], picker = this.skillPicker;
+    if (!choice || !picker || this.sending) return;
+    if (choice.retainedUnknown) { this.showNotice(`${choice.name} is unavailable in the catalog; remove it or keep its existing state.`); return; }
+    picker.states = { ...picker.states, [choice.name]: state };
+    this.draw();
+  }
+  private removePickerSkill(): void {
+    const choice = this.pickerChoices()[this.selectedMenuIndex()], picker = this.skillPicker;
+    if (!choice || !picker || this.sending) return;
+    const states = { ...picker.states }; delete states[choice.name]; picker.states = states;
+    this.menuIndex = Math.max(0, Math.min(this.menuIndex, this.pickerChoices().length - 1)); this.draw();
+  }
+  private cycleSkill(): void {
+    const choice = this.pickerChoices()[this.selectedMenuIndex()];
+    if (!choice) return;
+    const state = this.pickerState(choice.name);
+    if (state === 'unavailable') this.setPickerSkill('available');
+    else if (state === 'available') this.setPickerSkill('installed');
+    else this.removePickerSkill();
+  }
+  private stageAgentSkills(): void {
+    const picker = this.skillPicker;
+    if (!picker || this.editor !== picker.editor) return;
+    try {
+      picker.editor.stageSkillStates(picker.states);
+      this.skillPicker = undefined;
+      this.setView('agent-edit'); this.menuIndex = picker.returnIndex; this.showNotice('Skills staged in this agent draft; save the form to apply.'); this.draw();
+    } catch (error) { this.showNotice((error as Error).message); }
+  }
+  private cancelAgentSkills(): void {
+    const picker = this.skillPicker;
+    this.skillPicker = undefined;
+    this.setView('agent-edit'); if (picker) this.menuIndex = picker.returnIndex; this.draw();
+  }
+  private applySkillFilter(): void {
+    if (!this.skillPicker) return;
+    this.skillPicker.filter = this.input.getValue(); this.menuIndex = 0; this.setView('agent-skills'); this.draw();
+  }
+  private cancelSkillFilter(): void { this.setView('agent-skills'); this.draw(); }
   private openChat(): void {
     if (this.sending) return;
     const agent = this.selected();
@@ -990,7 +1039,7 @@ export class UI {
       }
     } else if (view === 'agent-info') {
       this.details.show(); this.details.focus();
-    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -1004,6 +1053,7 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'agent-skills-filter') { this.skillPicker && (this.skillPicker.filter = value); this.menuIndex = 0; this.setView('agent-skills'); this.draw(); return; }
     if (this.view === 'settings-choice-setup' && this.pendingChoiceSetup?.setup) {
       const choice = this.pendingChoiceSetup, actions = this.choiceActions;
       this.sending = true;
@@ -1115,21 +1165,6 @@ export class UI {
       this.setView('agent-edit'); this.menuIndex = index; this.draw();
       return;
     }
-    if (this.view === 'skill-add') {
-      this.sending = true;
-      this.showNotice('Cloning catalog skill…');
-      try {
-        const data = JSON.parse(value);
-        await this.session.addSkill(data.name, data.gitUrl);
-        this.setView('tree');
-      } catch (error) { this.showNotice((error as Error).message); }
-      finally {
-        this.sending = false;
-        if (this.view === 'skill-add') { this.input.focus(); this.input.readInput(); }
-        this.draw();
-      }
-      return;
-    }
     const view = this.view;
     const agentId = view === 'chat' ? this.chatAgent : this.promptAgent;
     if (!agentId || !value.trim()) { this.input.focus(); this.input.readInput(); return; }
@@ -1173,6 +1208,7 @@ export class UI {
       this.view === 'agent-info' ? `Agent info · ${agent?.name ?? this.infoAgentId} · ${this.infoRaw ? 'JSON' : 'read-only'}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name ?? this.promptAgent}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
+      this.view === 'agent-edit' && this.editor?.fields[this.selectedMenuIndex()] === 'skills' ? `Skills: ${this.editor.agentId ? `modify draft · revision ${this.editor.revision}` : 'new agent draft'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
       this.view === 'agent-field' ? `Edit ${this.editor?.label(this.editField!)} · ${this.editor?.spec(this.editField!).editor}` :
       this.view === 'harness-options' ? `Select ${this.optionField === 'harness' ? 'Agent' : this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
@@ -1182,8 +1218,8 @@ export class UI {
       this.view === 'colors' ? 'TUI colors · client preferences · changes saved automatically' :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
-      this.view === 'skills' ? `Skills · ${agent?.name} · changes staged until Enter` :
-      this.view === 'skill-add' ? 'Add catalog skill · enter JSON {"name":"…","gitUrl":"https://…"}' :
+      this.view === 'agent-skills' ? `Skills: ${agent?.name} · staged in draft` :
+      this.view === 'agent-skills-filter' ? `Filter skills · ${this.skillPicker?.filter ?? ''}` :
       this.view === 'settings-choice-setup' ? `${this.pendingChoiceSetup?.setup?.label}` :
       this.view === 'settings-options' ? `${this.choiceLabel} · select an available option` :
       this.view === 'settings-records' ? `${this.records?.field.label} · ${this.records?.keys ? 'volume / resource entries' : 'named configurations'} · S stages; server Save applies` :
@@ -1245,27 +1281,28 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ' Text: Enter interrupt/send  Ctrl+U clear  Esc tree' : ` ↑↓ select  Enter prompt  c chat  i info  a actions  n create  e edit  ${this.session.skillsEnabled ? 's skills  ' : ''}v view  q quit`);
+      this.footer.setContent(this.view === 'prompt' ? ' Text: Enter interrupt/send  Ctrl+U clear  Esc tree' : ' ↑↓ select  Enter prompt  c chat  i info  a actions  n create  e edit  v view  q quit');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...this.editor!.fields.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.display(field) || '(omitted)'}`, width - 1)), 'Save changes']);
+        [...this.editor!.fields.map((field, index) => clip(`${cell(field === 'skills' && index !== this.selectedMenuIndex() ? 'Skills' : this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.display(field) || '(omitted)'}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
         ['harness-options', 'image-scope'].includes(this.view) ? ' ↑↓ select   Enter choose   Esc back' :
         this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : this.view === 'actions' ? ` ↑↓ action   Enter open   n create${this.actionAgent ? '   i agent info   e edit' : ''}   Esc tree` : ' ↑↓ action   Enter open   Esc tree');
-    } else if (this.view === 'skills') {
+    } else if (this.view === 'agent-skills') {
+      const choices = this.pickerChoices();
       this.updating = true;
-      this.menu.setItems(this.skillNames.map(name => {
-        const skill = this.session.skills.find(s => s.name === name);
-        return clip(`${cell(this.skillDraft[name] ?? 'unavailable', 11)}  ${name} · ${skill?.description ?? ''}`, width - 1);
-      }));
-      this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(' ↑↓ select   Space cycle   i installed   a available   u unavailable   Enter save   + add   Esc discard');
+      this.menu.setItems(choices.length ? choices.map(choice => clip(`${cell(this.pickerState(choice.name), 11)}  ${cell(choice.name, 24)} ${choice.retainedUnknown ? '[not in catalog] ' : ''}${choice.description}`, width - 1)) :
+        [this.skillPicker?.choices.length ? 'No skills match this filter.' : 'No catalog skills. Use v to open server settings and add repository seeds, then restart.']);
+      this.menu.select(Math.max(0, this.menuIndex)); this.updating = false;
+      this.footer.setContent(choices.length ? ' ↑↓ select  a available  i installed  d remove  Space cycle  / filter  S stage in form  Esc cancel' : ' v server settings  / filter  S stage  Esc cancel · changes are not saved until the agent form is saved');
+    } else if (this.view === 'agent-skills-filter') {
+      this.footer.setContent(' Type a name/description filter  Enter apply  Ctrl+U clear  Esc cancel');
     } else if (this.view === 'settings-options') {
       this.updating = true; this.menu.setItems(this.genericChoices.length ? this.genericChoices.map(c => clip(c.label, width - 1)) : ['No available options']);
       this.menu.select(this.menuIndex); this.updating = false;
@@ -1370,8 +1407,6 @@ export class UI {
       this.footer.setContent(this.isPathInput() ?
         ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :
         ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
-    } else if (this.view === 'skill-add') {
-      this.footer.setContent(' Catalog JSON entry · Enter validate / add  Ctrl+U clear  Esc cancel · no automatic retries');
     } else {
       this.footer.setContent(' Text: Enter interrupt/send (cancels active/queued work)  Ctrl+U clear  Esc cancel');
     }

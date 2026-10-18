@@ -33,6 +33,14 @@ export class SkillSelectionDraft {
     if (!this.catalog.some(skill => skill.name === name)) throw new Error(`Unknown catalog skill ${name}`);
     this.current = { ...this.current, [name]: state };
   }
+  replace(states: SkillStates): void {
+    for (const [name, state] of Object.entries(states)) {
+      if (!['unavailable', 'available', 'installed'].includes(state)) throw new Error(`Invalid state for ${name}`);
+      if (!this.catalog.some(skill => skill.name === name) && (!Object.hasOwn(this.current, name) || this.current[name] !== state))
+        throw new Error(`Cannot add unknown retained skill ${name}`);
+    }
+    this.current = structuredClone(states);
+  }
   remove(name: string): void {
     if (!Object.hasOwn(this.current, name)) return;
     const next = { ...this.current };
