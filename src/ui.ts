@@ -43,9 +43,10 @@ export class UI {
     alwaysScroll: true, tags: false, mouse: true,
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
+  private promptTop = blessed.box({ parent: this.screen, bottom: 4, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
+  private promptBottom = blessed.box({ parent: this.screen, bottom: 2, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private input = blessed.textbox({
-    parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
-    border: 'line', label: ' > ', style: { border: { fg: 'cyan' } },
+    parent: this.screen, bottom: 3, height: 1, hidden: true, keys: true, tags: false,
   });
   private paths = blessed.list({
     parent: this.screen, bottom: 2, height: 5, hidden: true, tags: false,
@@ -251,7 +252,8 @@ export class UI {
     this.menu.style.selected = { bg: c('selectionBg'), fg: c('selectionFg'), bold: true };
     this.paths.style.selected = { bg: c('selectionBg'), fg: c('selectionFg') };
     this.notice.style.fg = c('notice'); this.footer.style = { fg: c('footerFg'), bg: c('footerBg') };
-    this.input.style.border = { fg: c('border') }; this.preview.style.border = { fg: c('border') }; this.form.style.border = { fg: c('border') };
+    this.input.style.border = { fg: c('border') }; this.promptTop.style.fg = c('border'); this.promptBottom.style.fg = c('border');
+    this.preview.style.border = { fg: c('border') }; this.form.style.border = { fg: c('border') };
   }
   private toggleCompactToolCalls(): void {
     this.settings.compactToolCalls = !this.settings.compactToolCalls;
@@ -900,9 +902,11 @@ export class UI {
     this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.input.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.input.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
-    this.input.bottom = this.isPathInput() || this.isVolumeInput() ? 7 : 2;
+    const composer = view === 'chat' || view === 'prompt';
+    this.input.border = composer ? null as any : { type: 'line', left: true, right: true, top: true, bottom: true } as any;
+    this.input.bottom = composer ? 3 : this.isPathInput() || this.isVolumeInput() ? 7 : 2;
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree' || view === 'prompt') {
       this.tree.show(); this.columns.show();
@@ -919,6 +923,7 @@ export class UI {
       this.input.show(); this.input.focus();
       if (!this.sending) this.input.readInput();
     }
+    if (composer) { this.promptTop.show(); this.promptBottom.show(); }
     this.draw();
   }
   private async submit(value: string): Promise<void> {
