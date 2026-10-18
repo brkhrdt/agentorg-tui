@@ -44,7 +44,16 @@ test('terminal table field visibility, ordering, help, reset and persisted prefe
     client = terminalClient(mock.path, mock.directory);
     await client.visible('LATEST TRACKED EVENT');
     expect(client.screen().split('\n')[2]).toStartWith('HARNESS');
-    client.keys('vt'); await client.visible('Table fields / order · client preferences');
+    client.keys('vt'); await client.visible('TUI colors · client preferences');
+    client.keys('\x1b[C'); await client.visible('Selection background: magenta');
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const data = JSON.parse(await readFile(config, 'utf8').catch(() => '{}'));
+      if (data.colors?.selectionBg === 'magenta') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    client.keys('z'); await client.visible('Selection background: blue');
+    client.keys('\x1b'); await client.visible('LATEST TRACKED EVENT');
+    client.keys('vb'); await client.visible('Table fields / order · client preferences');
     client.keys('z'); await client.visible('[ ]     harness');
     await saved(['name', 'status', 'model', 'event']);
     client.keys('\x1b'); await client.visible('LATEST TRACKED EVENT');

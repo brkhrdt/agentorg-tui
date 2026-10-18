@@ -1,7 +1,7 @@
 import blessed from 'blessed';
 import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
-import { DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type Level, Settings } from './settings.js';
+import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
 import { genericPreview, rendererPreview } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
@@ -17,7 +17,7 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
-type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 export class UI {
   readonly screen = blessed.screen({
@@ -234,6 +234,22 @@ export class UI {
       .then(() => this.showNotice(`Saved ${this.configPath}`))
       .catch(error => this.showNotice(`Cannot save settings: ${error.message}`));
   }
+  private changeColor(delta: number): void {
+    const key = Object.keys(COLOR_SETTINGS)[this.menuIndex] as ColorSetting | undefined;
+    if (!key) return;
+    const current = COLOR_OPTIONS.indexOf(this.settings.color(key) as typeof COLOR_OPTIONS[number]);
+    this.settings.colors[key] = COLOR_OPTIONS[(current + delta + COLOR_OPTIONS.length) % COLOR_OPTIONS.length]!;
+    this.saveSettings(); this.renderColors(); this.draw();
+  }
+  private renderColors(): void {
+    const c = (key: ColorSetting) => this.settings.color(key) === 'orange' ? 'yellow' : this.settings.color(key);
+    this.title.style.fg = c('title'); this.columns.style.fg = c('headings');
+    this.tree.style.selected = {};
+    this.menu.style.selected = { bg: c('selectionBg'), fg: c('selectionFg'), bold: true };
+    this.paths.style.selected = { bg: c('selectionBg'), fg: c('selectionFg') };
+    this.notice.style.fg = c('notice'); this.footer.style = { fg: c('footerFg'), bg: c('footerBg') };
+    this.input.style.border = { fg: c('border') }; this.preview.style.border = { fg: c('border') }; this.form.style.border = { fg: c('border') };
+  }
   private toggleCompactToolCalls(): void {
     this.settings.compactToolCalls = !this.settings.compactToolCalls;
     this.saveSettings(); this.draw();
@@ -270,16 +286,20 @@ export class UI {
   }
   private chooseMenu(): void {
     const fields = this.editor?.fields ?? [];
-    if (this.view === 'structured') this.openEntry(false);
+    if (this.view === 'colors') {
+      const key = Object.keys(COLOR_SETTINGS)[this.menuIndex] as ColorSetting | undefined;
+      if (key) this.changeColor(1);
+    } else if (this.view === 'structured') this.openEntry(false);
     else if (this.view === 'entry-type') this.selectEntryType((['string', 'number', 'boolean', 'null', 'json'] as const)[this.menuIndex]!);
     else if (this.view === 'actions') this.chooseAction();
     else if (this.view === 'view') {
       const offset = this.session.serverSettingsCapability ? 1 : 0;
       if (offset && this.menuIndex === 0) void this.openServerSettings();
-      else if (this.menuIndex === offset) this.setView('table-fields');
-      else if (this.menuIndex === offset + 1) this.setView('filters');
-      else if (this.menuIndex === offset + 2) this.setView('levels');
-      else if (this.menuIndex === offset + 3) this.toggleCompactToolCalls();
+      else if (this.menuIndex === offset) this.setView('colors');
+      else if (this.menuIndex === offset + 1) this.setView('table-fields');
+      else if (this.menuIndex === offset + 2) this.setView('filters');
+      else if (this.menuIndex === offset + 3) this.setView('levels');
+      else if (this.menuIndex === offset + 4) this.toggleCompactToolCalls();
     } else if (this.view === 'settings-options') {
       const choice = this.genericChoices[this.menuIndex];
       try {
@@ -322,7 +342,8 @@ export class UI {
         else this.settings.tableFields.push(field);
         this.saveSettings(); this.draw();
       }
-    } else if (this.view === 'filters') {
+    } else if (this.view === 'colors') this.changeColor(1);
+    else if (this.view === 'filters') {
       const type = this.menuTypes[this.menuIndex];
       if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
     } else if (this.view === 'skills') {
@@ -385,7 +406,8 @@ export class UI {
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only event rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), back];
+    if (this.view === 'colors') return [action('space', 'Cycle selected color', cycle), action('left', 'Previous color', () => this.changeColor(-1)), action('right', 'Next color', () => this.changeColor(1)), action('enter', 'Next color', () => this.changeColor(1)), action('z', 'Reset all colors', () => { this.settings.colors = { ...DEFAULT_COLORS }; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
       action('space', 'Toggle field visibility', cycle),
       ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((key, index) =>
@@ -885,7 +907,7 @@ export class UI {
       else { this.input.show(); this.input.focus(); if (!this.sending) this.input.readInput(); }
     } else if (view === 'agent-info') {
       this.details.show(); this.details.focus();
-    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -1046,6 +1068,7 @@ export class UI {
   private draw(): void {
     const AGENT_FIELDS = this.editor?.fields ?? [];
     if (this.closing) return;
+    this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
     this.menu.width = '100%';
     this.preview.hide();
@@ -1068,6 +1091,7 @@ export class UI {
       this.view === 'image-scope' ? 'Image change · choose which agents to update' :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
       this.view === 'table-fields' ? 'Table fields / order · client preferences · changes saved automatically' :
+      this.view === 'colors' ? 'TUI colors · client preferences · changes saved automatically' :
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
       this.view === 'skills' ? `Skills · ${agent?.name} · changes staged until Enter` :
@@ -1121,7 +1145,7 @@ export class UI {
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
       const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
       // Blessed lists reserve a scrollbar cell even when it is hidden.
-      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.renderings);
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.renderings, this.settings.colors, selectedIndex);
       this.columns.setContent(header);
       this.updating = true;
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
@@ -1180,10 +1204,16 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ' ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload  Esc discard') : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`]);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`]);
       this.menu.select(this.menuIndex);
       this.updating = false;
-      this.footer.setContent(' s server settings   t table fields   f client filters   l client levels   c compact tool phases   ↑↓ select   Enter open   Esc tree');
+      this.footer.setContent(' s server settings   t TUI colors   b table fields   f event filters   l rendering levels   c compact phases   ↑↓ select   Enter open   Esc tree');
+    } else if (this.view === 'colors') {
+      this.updating = true;
+      const keys = Object.keys(COLOR_SETTINGS) as ColorSetting[];
+      this.menu.setItems(keys.map(key => `${COLOR_SETTINGS[key]}: ${this.settings.color(key)}`));
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(' ↑↓ component  Space / Enter / → next color  ← previous  z defaults  Esc settings');
     } else if (this.view === 'table-fields') {
       this.updating = true;
       this.menu.setItems(TABLE_FIELDS.map(field => {
@@ -1228,10 +1258,10 @@ export class UI {
       const blocks = chatGroups(events, this.settings, store.renderings).map(event => {
         const rendering = store.renderings.get(event.seq);
         const level = this.settings.level(event.type, rendering?.subtype);
-        const signature = JSON.stringify([event, rendering, level, width]);
+        const signature = JSON.stringify([event, rendering, level, width, this.settings.colors]);
         const cached = this.renderedEvents.get(event.seq);
         if (cached?.signature === signature) return cached.text;
-        const text = renderEvent(event, level, Math.max(1, width - 1), rendering);
+        const text = renderEvent(event, level, Math.max(1, width - 1), rendering, this.settings.colors);
         this.renderedEvents.set(event.seq, { signature, text });
         return text;
       });

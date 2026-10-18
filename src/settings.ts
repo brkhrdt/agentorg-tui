@@ -7,6 +7,28 @@ export const LEVEL_NAMES = ['summary', 'extended', 'full', 'raw'] as const;
 export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
 export type TableField = typeof TABLE_FIELDS[number];
 export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'model', 'event'];
+export const COLOR_OPTIONS = ['default', 'black', 'red', 'green', 'yellow', 'orange', 'blue', 'magenta', 'cyan', 'white', 'gray'] as const;
+export const COLOR_SETTINGS = {
+  selectionBg: 'Selection background', selectionFg: 'Selection text', title: 'Title', headings: 'Table headings',
+  notice: 'Notices', footerBg: 'Footer background', footerFg: 'Footer text', border: 'Borders',
+  eventHeading: 'Event headings', eventCode: 'Event code', eventLink: 'Event links', toolCall: 'Tool call',
+  toolUpdate: 'Tool update', toolSuccess: 'Tool success', toolFailure: 'Tool failure', diffAdd: 'Diff additions', diffRemove: 'Diff deletions',
+} as const;
+export type ColorSetting = keyof typeof COLOR_SETTINGS;
+export const DEFAULT_COLORS: Record<ColorSetting, string> = {
+  selectionBg: 'blue', selectionFg: 'white', title: 'cyan', headings: 'gray', notice: 'yellow',
+  footerBg: 'white', footerFg: 'black', border: 'cyan', eventHeading: 'cyan', eventCode: 'yellow',
+  eventLink: 'blue', toolCall: 'yellow', toolUpdate: 'orange', toolSuccess: 'green', toolFailure: 'red',
+  diffAdd: 'green', diffRemove: 'red',
+};
+export const ANSI_COLORS: Record<string, string> = { default: '39', black: '30', red: '31', green: '32', yellow: '33', orange: '38;5;208', blue: '34', magenta: '35', cyan: '36', white: '37', gray: '90' };
+export function ansiColor(color: string, background = false): string {
+  const code = ANSI_COLORS[color] ?? '39';
+  if (!background) return code;
+  if (code === '39') return '49';
+  if (code.startsWith('38;')) return code.replace(/^38;/, '48;');
+  return String(Number(code) + 10);
+}
 export function normalizeTableFields(value: unknown): TableField[] {
   const fields = Array.isArray(value)
     ? [...new Set(value.filter((field): field is TableField => TABLE_FIELDS.includes(field)))]
@@ -32,6 +54,8 @@ export class Settings {
   levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.update': 3, 'tool.result': 2, 'agent.plan': 3 };
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   compactToolCalls = false;
+  colors: Record<ColorSetting, string> = { ...DEFAULT_COLORS };
+  color(key: ColorSetting): string { return COLOR_OPTIONS.includes(this.colors[key] as typeof COLOR_OPTIONS[number]) ? this.colors[key] : DEFAULT_COLORS[key]; }
   tracked(type: string): boolean { return !this.excluded.has(type); }
   level(type: string, subtype?: string): Level {
     const key = subtype ? `${type}:${subtype}` : type;
@@ -53,6 +77,16 @@ export class Settings {
       settings.tableFields = normalizeTableFields(data.tableFields);
       if (data.compactToolCalls !== undefined && typeof data.compactToolCalls !== 'boolean') throw new Error('Invalid compactToolCalls setting');
       settings.compactToolCalls = data.compactToolCalls ?? false;
+      if (data.colors !== undefined) {
+        if (!data.colors || typeof data.colors !== 'object' || Array.isArray(data.colors)) throw new Error('Invalid colors setting');
+        for (const key of Object.keys(DEFAULT_COLORS) as ColorSetting[]) {
+          const color = data.colors[key];
+          if (color !== undefined) {
+            if (!COLOR_OPTIONS.includes(color)) throw new Error(`Invalid color for ${key}`);
+            settings.colors[key] = color;
+          }
+        }
+      }
       settings.levels = {};
       for (const [type, level] of Object.entries(data.levels)) {
         if (![1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
@@ -66,7 +100,7 @@ export class Settings {
   async save(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields, compactToolCalls: this.compactToolCalls }, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors }, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   }
 }

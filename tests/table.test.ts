@@ -48,6 +48,16 @@ test('Event keeps priority with long metadata; metadata caps leave room on wide 
   expect(noEvent.widths).toEqual([7, 8]); // Do not stretch short metadata just to fill a screen.
 });
 
+test('selected tree row styling ends before the event summary', () => {
+  const table = renderTable(rows, latest, ['name', 'status', 'event'], 100, new Map(), { selectionFg: 'white', selectionBg: 'blue' }, 0);
+  const selected = table.items[0]!;
+  const eventStart = selected.indexOf('Reading files');
+  expect(selected).toContain('\x1b[37;44m');
+  expect(eventStart).toBeGreaterThan(selected.indexOf('\x1b[0m'));
+  expect(selected.slice(eventStart)).not.toContain('\x1b[37;44m');
+  expect(table.items[1]).not.toContain('\x1b[37;44m');
+});
+
 test('reordered Event preserves styles, alignment and first-column tree indentation', () => {
   const table = renderTable(rows, latest, ['event', 'harness', 'name'], 80);
   const [eventWidth, harnessWidth] = table.widths;

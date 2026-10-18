@@ -21,12 +21,16 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     settings.levels['plugin.custom'] = 4;
     expect(settings.compactToolCalls).toBe(false);
     settings.compactToolCalls = true;
+    settings.colors.selectionBg = 'white';
+    settings.colors.selectionFg = 'black';
+    settings.colors.toolCall = 'magenta';
     await settings.save(path);
     const loaded = await Settings.load(path);
     expect(loaded.tracked('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
     expect(loaded.tableFields).toEqual(['error', 'name', 'status']);
     expect(loaded.compactToolCalls).toBe(true);
+    expect(loaded.colors).toMatchObject({ selectionBg: 'white', selectionFg: 'black', toolCall: 'magenta' });
     expect(JSON.parse(await readFile(path, 'utf8')).levels['plugin.custom']).toBe(4);
     for (const tableFields of [undefined, null, [], ['unknown', 3], ['harness', 'harness', null, 'event', 'unknown']]) {
       await writeFile(path, JSON.stringify({ excluded: [], levels: {}, tableFields }));

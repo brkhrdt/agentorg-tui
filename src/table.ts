@@ -1,7 +1,7 @@
 import stringWidth from 'string-width';
 import type { ServerEvent, EventRendering } from './protocol.js';
 import { cell, clean, renderTreeEvent, styledCell } from './render.js';
-import type { TableField } from './settings.js';
+import { ansiColor, type ColorSetting, type TableField } from './settings.js';
 import type { TreeRow } from './store.js';
 
 const TABLE_LABELS: Record<TableField, string> = {
@@ -31,7 +31,7 @@ function value({ agent }: TreeRow, field: TableField): string {
 }
 
 /** Width includes only usable list cells (the caller reserves the scrollbar). */
-export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, fields: readonly TableField[], width: number, renderings: Map<number, EventRendering> = new Map()) {
+export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, fields: readonly TableField[], width: number, renderings: Map<number, EventRendering> = new Map(), colors: Partial<Record<ColorSetting, string>> = {}, selectedIndex = -1) {
   width = Math.max(0, Math.floor(width));
   if (!fields.length) return { header: '', items: rows.map(() => ''), widths: [] as number[] };
   const gap = fields.length < 2 ? 0 : Math.max(0, Math.min(2, Math.floor((width - fields.length) / (fields.length - 1))));
@@ -70,13 +70,22 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
   return {
     widths,
     header: fields.map((field, index) => cell(TABLE_LABELS[field], widths[index]!)).join(separator),
-    items: rows.map((row, r) => fields.map((field, index) => {
-      const size = widths[index]!;
-      const prefix = index === 0 ? indent(row.depth) : '';
-      if (field !== 'event') return cell(prefix + values[r]![index]!, size);
-      const event = latest.get(row.agent.id);
-      const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq)) : '—';
-      return styledCell(prefix + preview, size);
-    }).join(separator)),
+    items: rows.map((row, r) => {
+      const cells = fields.map((field, index) => {
+        const size = widths[index]!;
+        const prefix = index === 0 ? indent(row.depth) : '';
+        if (field !== 'event') return cell(prefix + values[r]![index]!, size);
+        const event = latest.get(row.agent.id);
+        const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq), colors) : '—';
+        return styledCell(prefix + preview, size);
+      });
+      const eventIndex = fields.indexOf('event');
+      const end = eventIndex < 0 ? cells.length : eventIndex;
+      const rowText = cells.join(separator);
+      if (r !== selectedIndex || end === 0) return rowText;
+      const prefixText = cells.slice(0, end).join(separator) + (eventIndex > 0 ? separator : '');
+      const codes = `${ansiColor(colors.selectionFg ?? 'white')};${ansiColor(colors.selectionBg ?? 'blue', true)}`;
+      return `\x1b[${codes}m${prefixText}\x1b[0m${rowText.slice(prefixText.length)}`;
+    }),
   };
 }
