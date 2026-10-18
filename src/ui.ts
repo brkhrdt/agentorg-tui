@@ -221,7 +221,7 @@ export class UI {
     // filter tail during the navigation -> input transition.
     this.input.on('keypress', (ch, key) => {
       const input = this.input as typeof this.input & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
-      if (this.view === 'structured-filter' && !input.__listener) input._listener(ch, key);
+      if (['structured-filter', 'agent-skills-filter'].includes(this.view) && !input.__listener) input._listener(ch, key);
     });
     for (const input of [this.editorInput, this.composer]) {
       input.on('submit', (value: string) => { void this.submit(value); });

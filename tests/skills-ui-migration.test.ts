@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
+import { agent, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 import type { ServerSettingsCatalog, ServerSettingsGroup } from '../src/protocol.js';
 
@@ -21,7 +21,7 @@ const repositoryGroup = (repositories: Array<{ name: string; gitUrl: string }> =
   defaults: { repositories: [] }, values: { repositories }, effective: { repositories }, overridden: [], restartRequired: [],
 });
 
-async function fixture({ withSettings = false, skillCatalog = skills, repositories = [] }: { withSettings?: boolean; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }> } = {}) {
+async function fixture({ withSettings = false, skillCatalog = skills, repositories = [], modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }>; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
   const root = agent('root', null, { name: 'worker', revision: 8, settings: {
     harness: 'fixture', model: 'test', extensions: { managed: { alpha: 'installed' }, sibling: { retained: true } },
   } });
@@ -48,12 +48,17 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
     }
     else if (request.method === 'agent.modify') {
       changes.push(request.params);
-      respond(socket, request.id, { ...operation('completed'), id: 'modify', type: 'agent.modify', agentId: 'root' });
+      if (modifyOutcome === 'conflict') send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'CONFLICT', message: 'revision conflict in fixture' } });
+      else if (modifyOutcome === 'failed') respond(socket, request.id, { ...operation('failed'), id: 'modify', type: 'agent.modify', agentId: 'root', error: { code: 'FAILED', message: 'fixture operation failed' } });
+      else respond(socket, request.id, { ...operation(modifyOutcome === 'disconnect' ? 'running' : 'completed'), id: 'modify', type: 'agent.modify', agentId: 'root' });
     }
-    else if (request.method === 'operation.wait') respond(socket, request.id, { ...operation('completed'), id: 'modify', type: 'agent.modify', agentId: 'root', result: root });
+    else if (request.method === 'operation.wait') {
+      if (modifyOutcome === 'disconnect') setTimeout(() => { for (const socket of mock.sockets) socket.destroy(); }, 0);
+      else respond(socket, request.id, { ...operation('completed'), id: 'modify', type: 'agent.modify', agentId: 'root', result: root });
+    }
     else respond(socket, request.id, { seq: 0, liveOnly: true });
   });
-  const ui = terminalClient(mock.path, mock.directory);
+  const ui = terminalClient(mock.path, mock.directory, { cols });
   return { mock, ui, root, requests, changes, group };
 }
 
@@ -130,7 +135,7 @@ test('skills picker filters without losing its input, scrolls, and explains empt
     keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Alpha instructions');
     keys('\x1b[B'.repeat(40)); await visible('skill-38');
     expect(screen()).not.toContain('skill-00');
-    keys('/'); await visible('Filter skills'); keys('skill-31\r');
+    keys('/skill-31\r');
     await visible('skill-31');
     expect(screen()).not.toContain('skill-00');
   } finally { await f.ui.close(); await f.mock.close(); }
@@ -143,6 +148,37 @@ test('skills picker filters without losing its input, scrolls, and explains empt
     await visible('No catalog skills yet. Open server settings');
   } finally { await empty.ui.close(); await empty.mock.close(); }
 }, 20_000);
+
+test('conflicts, failed operations and disconnects retain the staged skills draft without retry', async () => {
+  for (const [outcome, message] of [
+    ['conflict', 'revision conflict in fixture'],
+    ['failed', 'fixture operation failed'],
+    ['disconnect', 'outcome unknown'],
+  ] as const) {
+    const f = await fixture({ modifyOutcome: outcome });
+    try {
+      const { keys, visible, screen } = f.ui;
+      await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
+      keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Beta instructions');
+      keys('\x1b[B'); keys('a'); keys('S'); await visible('2 selected');
+      expect(f.changes).toHaveLength(0);
+      keys('S'); await visible(message);
+      await visible('2 selected');
+      expect(f.changes).toHaveLength(1);
+      expect(screen()).toContain('Skills:');
+    } finally { await f.ui.close(); await f.mock.close(); }
+  }
+}, 30_000);
+
+test('skills descriptions fit narrow terminal rows', async () => {
+  const f = await fixture({ cols: 42, skillCatalog: [{ name: 'alpha', description: 'A deliberately long skill description that must be clipped to the narrow terminal width', gitUrl: 'https://github.com/org/alpha' }] });
+  try {
+    const { keys, visible, screen } = f.ui;
+    await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
+    keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('alpha');
+    expect(screen().split('\n').every(line => line.length <= 42)).toBe(true);
+  } finally { await f.ui.close(); await f.mock.close(); }
+});
 
 test('server repository record edits, deletes and cancellation stage locally; confirmed save shows restart effect', async () => {
   const initial = [

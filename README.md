@@ -103,7 +103,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | f / l | Event filters / rendering levels directly |
 | n | Create a root in an empty organization, otherwise a child of the selected agent |
 | e | Modify the selected agent |
-| s | Edit skills when the server advertises the skills plugin |
+| Skills field | In the ordinary `n` create / `e` modify form when the server advertises the skills plugin |
 | v, then s | Organization / plugin server settings (when supported) |
 | v, then t | Configure TUI colors (client only) |
 | v, then b | Choose and reorder table fields (client only) |
