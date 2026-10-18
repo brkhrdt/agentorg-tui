@@ -329,13 +329,13 @@ editor kinds are ignored; old servers retain the structured extensions editor.
 Podman keeps its specialized image-scope confirmation and avoids duplicate grant
 fields. See the [server contract](../agentorg/EXTENSIONS.md#reusable-client-settings-editors).
 
-### Skills: `s` (optional plugin)
+### Skills field (optional plugin)
 
-The client discovers the plugin-owned descriptor in `organization.snapshot.capabilities.plugins.skills` (advertised endpoints and settings namespace); older or disabled servers show no skills action and receive no skills requests. Select an agent and press `s` to see the catalog, descriptions and its selection. ↑/↓ selects a skill; Space cycles states; `i` installs, `a` makes available for delegation, and `u` marks unavailable. **Enter saves the complete replacement** with the revision captured when the editor opened; Escape discards the draft. Active targets may restart. On revision conflict, Escape and reopen to refresh instead of overwriting another client's changes.
+When `organization.snapshot.capabilities.plugins.skills` advertises a supported catalog endpoint and settings namespace, the ordinary `n` create and `e` modify forms include a **Skills** field. Open it with ↑/↓ and Enter; use ↑/↓ to browse, `/` to filter names/descriptions, `a` to mark a skill available, `i` to install it for this agent, `d` to remove it, and `S` to stage the selection back in the form. Save the agent form once to send the complete replacement under the advertised namespace, fenced by the captured revision; Escape cancels the nested or outer draft without a mutation. Older/disabled servers hide the field and receive no skills catalog requests.
 
-Press `+` in the skills editor to add a catalog skill using JSON, e.g. `{"name":"alpha","gitUrl":"https://github.com/org/alpha"}`. The root `SKILL.md` must declare that same name. Catalog additions can take a minute; disconnect/timeouts have unknown outcomes and are never retried automatically. Inspect the catalog before retrying.
+**Installed** selects the skill for this agent's runtime (the harness loads its managed files); **available** grants the skill for delegation to a direct child without installing it for this agent. Removed/unavailable skills are omitted from the replacement map. A saved installed selection does not guarantee filesystem readiness: inspect operation errors and `skills.error` events. Active targets may restart. On revision conflict, discard/reopen to refresh rather than overwriting another client's changes.
 
-Public-client installed/available grants add availability to ancestors without installing there. Removal/downgrade retains earlier grants and preserved working copies. Selected `installed` is not a guarantee of filesystem readiness: inspect operation errors and `skills.error` events. Selections live in `settings.extensions` under the discovered namespace. Legacy `settings.skills` migrates on servers with the plugin enabled; raw records are retained when disabled. See [the plugin-owned API contract](../agentorg-plugin-skills/README.md) for plugin-owned skill behavior.
+Configure repository seeds through `v` → `s` (server settings); add/edit/delete entries in the existing record-list form and confirm the revision-fenced save. Repository changes take effect after server restart. They are not per-agent selections. The old global `s` Skills screen and JSON catalog-add prompt are removed. See [the plugin-owned API contract](../agentorg-plugin-skills/README.md) for catalog and delegation behavior.
 
 ### TUI colors: `v t`
 

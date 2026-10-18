@@ -115,7 +115,7 @@ test('late discovery cannot overwrite newer skills metadata and malformed catalo
   waiting[0]!({ skills: [{ name: 'alpha', description: 'Alpha' }] });
   await older;
   expect(session.skillsNamespace).toBe('new.namespace');
-  expect(session.skills.map(skill => skill.name)).toEqual(['beta']);
+  expect(session.skillCatalog.map(skill => skill.name)).toEqual(['beta']);
   expect(session.skillsEnabled).toBe(true);
 
   const notices: string[] = [];
@@ -123,7 +123,7 @@ test('late discovery cannot overwrite newer skills metadata and malformed catalo
   const malformed = (session as any).loadSkills(client, snapshot('new.namespace', 'new.list'));
   waiting[2]!(null);
   await malformed;
-  expect(session.skills).toEqual([]);
+  expect(session.skillCatalog).toEqual([]);
   expect(notices.some(message => message.includes('Skills catalog response was invalid'))).toBe(true);
   session.close();
 });

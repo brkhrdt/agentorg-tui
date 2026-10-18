@@ -930,9 +930,10 @@ export class UI {
     if (!editor || this.sending) return;
     this.skillPicker = { editor, states: editor.skillStates(), choices: editor.skillChoices(), returnIndex: this.menuIndex, filter: '' };
     this.menuIndex = 0; this.setView('agent-skills');
-    this.showNotice(this.skillPicker.choices.length ? '' : 'No catalog skills yet. Open server settings (v) to add repository seeds, then restart the server.');
+    this.showNotice(this.hasCatalogSkills() ? 'Installed loads the skill for this agent; available permits delegation to a direct child without installing it here.' : 'No catalog skills yet. Open server settings (v) to add repository seeds, then restart the server.');
     this.draw();
   }
+  private hasCatalogSkills(): boolean { return this.skillPicker?.choices.some(choice => !choice.retainedUnknown) ?? false; }
   private pickerChoices(): SkillChoice[] {
     const picker = this.skillPicker;
     if (!picker) return [];
@@ -1298,7 +1299,7 @@ export class UI {
       const choices = this.pickerChoices();
       this.updating = true;
       this.menu.setItems(choices.length ? choices.map(choice => clip(`${cell(this.pickerState(choice.name), 11)}  ${cell(choice.name, 24)} ${choice.retainedUnknown ? '[not in catalog] ' : ''}${choice.description}`, width - 1)) :
-        [this.skillPicker?.choices.length ? 'No skills match this filter.' : 'No catalog skills. Use v to open server settings and add repository seeds, then restart.']);
+        [this.hasCatalogSkills() ? 'No skills match this filter.' : 'No catalog skills. Use v to open server settings and add repository seeds, then restart.']);
       this.menu.select(Math.max(0, this.menuIndex)); this.updating = false;
       this.footer.setContent(choices.length ? ' ↑↓ select  a available  i installed  d remove  Space cycle  / filter  S stage in form  Esc cancel' : ' v server settings  / filter  S stage  Esc cancel · changes are not saved until the agent form is saved');
     } else if (this.view === 'agent-skills-filter') {

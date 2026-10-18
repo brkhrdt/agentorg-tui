@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type SkillStates, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
 import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
@@ -15,8 +15,7 @@ export class Session extends EventEmitter {
   readonly store = new Store();
   status = 'connecting';
   skillsEnabled = false;
-  skills: Skill[] = [];
-  get skillCatalog(): Skill[] { return this.skills; }
+  skillCatalog: Skill[] = [];
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
   private agentProfileEndpoints = new Map<string, string>();
@@ -139,12 +138,7 @@ export class Session extends EventEmitter {
     return result.models.map(model => ({ value: model.id, label: model.name && model.name !== model.id ? `${model.id} · ${model.name}` : model.id }));
   }
   skillsNamespace = 'skills';
-  private skillsList = '';
-  private skillsAdd = '';
   private skillsRequest = 0;
-  skillStates(agentId: string): SkillStates {
-    return (this.store.agents.get(agentId)?.settings.extensions?.[this.skillsNamespace] ?? {}) as SkillStates;
-  }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
     const skillsRequest = ++this.skillsRequest;
     this.settingsFields = pluginFields(snapshot.capabilities?.settingsEditors);
@@ -180,13 +174,13 @@ export class Session extends EventEmitter {
     this.podmanImages = podman?.endpoints?.images ?? '';
     this.podmanDefaults = podman?.endpoints?.defaults ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
-    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown } } | undefined;
     const namespace = capability?.settingsNamespace;
     const list = capability?.endpoints?.list;
     const supported = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
     if (!supported) {
       if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillsList = ''; this.skillsAdd = ''; this.skills = [];
+        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = [];
       }
       return;
     }
@@ -195,8 +189,8 @@ export class Session extends EventEmitter {
     try { catalog = await client.request<{ skills?: unknown }>(endpoint, {}); }
     catch (error) {
       if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-        this.skillsEnabled = true; this.skillsNamespace = namespace as string; this.skillsList = endpoint;
-        this.skillsAdd = typeof capability!.endpoints!.add === 'string' ? capability!.endpoints!.add as string : ''; this.skills = [];
+        this.skillsEnabled = true; this.skillsNamespace = namespace as string;
+        this.skillCatalog = [];
         this.emit('notice', `Skills catalog unavailable: ${(error as Error).message}`);
       }
       return;
@@ -207,9 +201,8 @@ export class Session extends EventEmitter {
     const entries = catalogSkills?.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
       typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
       typeof (skill as Skill).description === 'string') ?? [];
-    this.skillsEnabled = true; this.skillsNamespace = namespace as string; this.skillsList = endpoint;
-    this.skillsAdd = typeof capability!.endpoints!.add === 'string' ? capability!.endpoints!.add as string : '';
-    this.skills = entries;
+    this.skillsEnabled = true; this.skillsNamespace = namespace as string;
+    this.skillCatalog = entries;
     if (malformedCatalog || entries.length !== catalogSkills!.length)
       this.emit('notice', 'Skills catalog response was invalid; malformed entries were ignored.');
   }
@@ -340,23 +333,6 @@ export class Session extends EventEmitter {
     this.store.putOperation(operation);
     this.emit('notice', `Prompt accepted · ${operation.id}`);
     void this.watch(client, operation).catch(error => this.emit('notice', error.message));
-  }
-  async addSkill(name: string, gitUrl: string): Promise<void> {
-    const client = this.client;
-    if (!client || !this.status.startsWith('connected') || !this.skillsEnabled || !this.skillsAdd) throw new Error('Skills catalog add endpoint is not available');
-    await client.request(this.skillsAdd, { name, gitUrl }, 75_000);
-    this.scheduleRefresh();
-    this.emit('notice', `Added skill ${name}`);
-  }
-  async setSkills(agentId: string, expectedRevision: number, skills: SkillStates): Promise<void> {
-    const client = this.client;
-    if (!client || !this.status.startsWith('connected') || !this.skillsEnabled) throw new Error('Skills plugin is not connected');
-    const accepted = await client.request<Operation>('agent.modify', { agentId, expectedRevision, settings: { extensions: { [this.skillsNamespace]: skills } } });
-    this.store.putOperation(accepted);
-    const operation = await this.watch(client, accepted);
-    this.scheduleRefresh();
-    if (!done(operation)) throw new Error('Connection lost; skill mutation outcome unknown. Not retried.');
-    if (operation.status !== 'completed') throw new Error(operation.error?.message ?? `Skill mutation ${operation.status}`);
   }
   async modifyPodman(params: Record<string, unknown>, imageScope: ImageScope): Promise<void> {
     const client = this.client;
