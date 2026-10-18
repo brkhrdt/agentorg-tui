@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { Agent, AgentProfile, ContainerProfile, Skill, SkillStates } from './protocol.js';
 import { SkillSelectionDraft } from './skill-selection.js';
 import { StructuredEditor, collection, parseTyped, valueText, type PluginField, type FieldSpec } from './structured-editor.js';
@@ -40,7 +41,8 @@ export class AgentEditor {
     }
     this.skillNamespace = options?.skills?.namespace;
     if (options?.skills) {
-      const extension = agent?.settings.extensions?.[options.skills.namespace];
+      const extensions = agent?.settings.extensions;
+      const extension = extensions && Object.hasOwn(extensions, options.skills.namespace) ? extensions[options.skills.namespace] : undefined;
       const existing = extension && typeof extension === 'object' && !Array.isArray(extension) ? extension as SkillStates : {};
       this.skillDraft = new SkillSelectionDraft(options.skills.catalog, existing);
     }
@@ -101,7 +103,8 @@ export class AgentEditor {
   skillChoices() { return this.skillDraft?.choices() ?? []; }
   setSkillState(name: string, state: 'available' | 'installed'): void {
     if (!this.skillDraft) throw new Error('Skills plugin is not available');
-    if (this.skillDraft.states[name] !== state) this.skillsExplicit = true;
+    const states = this.skillDraft.states;
+    if (!Object.hasOwn(states, name) || states[name] !== state) this.skillsExplicit = true;
     this.skillDraft.setState(name, state);
   }
   removeSkill(name: string): void {
@@ -212,7 +215,8 @@ export class AgentEditor {
     const originalExtensions = JSON.parse(this.original.extensions) as Record<string, unknown>;
     const rawExtensions = JSON.parse(this.values.extensions) as Record<string, unknown>;
     if (this.skillDraft && (this.skillDraft.dirty || (!this.agentId && this.skillsExplicit))) {
-      if (this.values.extensions !== this.original.extensions && Object.hasOwn(rawExtensions, this.skillNamespace!))
+      if (this.values.extensions !== this.original.extensions && Object.hasOwn(rawExtensions, this.skillNamespace!) &&
+          !isDeepStrictEqual(rawExtensions[this.skillNamespace!], originalExtensions[this.skillNamespace!]))
         throw new Error(`Edit Skills or extensions.${this.skillNamespace}, not both`);
       const extensions = (settings.extensions ?? rawExtensions) as Record<string, unknown>;
       settings.extensions = { ...extensions, [this.skillNamespace!]: this.skillDraft.states };

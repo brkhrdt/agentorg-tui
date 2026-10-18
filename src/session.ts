@@ -183,20 +183,35 @@ export class Session extends EventEmitter {
     const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
     const namespace = capability?.settingsNamespace;
     const list = capability?.endpoints?.list;
-    this.skillsEnabled = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
-    if (!this.skillsEnabled) {
-      if (skillsRequest === this.skillsRequest) { this.skills = []; this.skillsAdd = ''; }
+    const supported = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
+    if (!supported) {
+      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
+        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillsList = ''; this.skillsAdd = ''; this.skills = [];
+      }
       return;
     }
-    this.skillsNamespace = namespace as string;
-    this.skillsList = list as string;
-    this.skillsAdd = typeof capability!.endpoints!.add === 'string' ? capability!.endpoints!.add as string : '';
-    const catalog = await client.request<{ skills?: unknown }>(this.skillsList, {});
-    if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-      this.skills = Array.isArray(catalog.skills) ? catalog.skills.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
-        typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
-        typeof (skill as Skill).description === 'string') : [];
+    const endpoint = list as string;
+    let catalog: { skills?: unknown };
+    try { catalog = await client.request<{ skills?: unknown }>(endpoint, {}); }
+    catch (error) {
+      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
+        this.skillsEnabled = true; this.skillsNamespace = namespace as string; this.skillsList = endpoint;
+        this.skillsAdd = typeof capability!.endpoints!.add === 'string' ? capability!.endpoints!.add as string : ''; this.skills = [];
+        this.emit('notice', `Skills catalog unavailable: ${(error as Error).message}`);
+      }
+      return;
     }
+    if (client !== this.client || this.stopped || skillsRequest !== this.skillsRequest) return;
+    const catalogSkills = catalog && typeof catalog === 'object' && Array.isArray(catalog.skills) ? catalog.skills as unknown[] : undefined;
+    const malformedCatalog = catalogSkills === undefined;
+    const entries = catalogSkills?.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
+      typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
+      typeof (skill as Skill).description === 'string') ?? [];
+    this.skillsEnabled = true; this.skillsNamespace = namespace as string; this.skillsList = endpoint;
+    this.skillsAdd = typeof capability!.endpoints!.add === 'string' ? capability!.endpoints!.add as string : '';
+    this.skills = entries;
+    if (malformedCatalog || entries.length !== catalogSkills!.length)
+      this.emit('notice', 'Skills catalog response was invalid; malformed entries were ignored.');
   }
   private client?: RpcClient;
   private stopped = false;

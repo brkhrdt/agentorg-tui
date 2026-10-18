@@ -23,7 +23,7 @@ export class SkillSelectionDraft {
   choices(): SkillChoice[] {
     const known = new Set(this.catalog.map(skill => skill.name));
     return [
-      ...this.catalog.map(skill => ({ ...skill, state: this.current[skill.name] ?? 'unavailable' as SkillState })),
+      ...this.catalog.map(skill => ({ ...skill, state: Object.hasOwn(this.current, skill.name) ? this.current[skill.name]! : 'unavailable' as SkillState })),
       ...Object.entries(this.current).filter(([name]) => !known.has(name)).map(([name, state]) => ({
         name, gitUrl: '', description: 'Not present in the current catalog; retained until explicitly removed.', state, retainedUnknown: true,
       })),
