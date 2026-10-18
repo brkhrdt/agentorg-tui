@@ -343,6 +343,8 @@ export class UI {
     } else if (this.view === 'agent-edit') {
       if (this.menuIndex === fields.length) void this.saveAgent();
       else if (fields[this.menuIndex] === 'container') void this.openProfileChoices();
+      else if (fields[this.menuIndex] === 'harness' && this.session.agentProfilesEnabled) void this.openAgentProfileChoices();
+      else if (fields[this.menuIndex] === 'thinking') this.openThinkingChoices();
       else if (['harness', 'provider', 'model'].includes(fields[this.menuIndex] ?? '')) void this.openAgentOptions();
       else this.openField();
     } else if (this.view === 'image-scope') void this.saveAgent((['node', 'inherited', 'all'] as const)[this.menuIndex]);
@@ -489,6 +491,22 @@ export class UI {
       editor.selectProfile(profile, catalog.revision); back();
       this.showNotice('Container selected; review cwd and grants before saving.');
     } });
+  }
+  private async openAgentProfileChoices(): Promise<void> {
+    const editor = this.editor!, index = this.menuIndex;
+    const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
+    let profiles: Awaited<ReturnType<Session['listAgentProfiles']>> = [];
+    await this.openChoices('Agent', async () => {
+      profiles = await this.session.listAgentProfiles();
+      return profiles.map((profile, i) => ({ value: String(i), label: `${profile.harness} — ${profile.name}${profile.model ? ` · ${profile.provider ?? ''}/${profile.model}` : ''}` }));
+    }, { back, choose: value => { const profile = profiles[Number(value)]; if (profile && this.editor === editor) { editor.selectAgentProfile(profile); back(); } } });
+  }
+  private openThinkingChoices(): void {
+    const editor = this.editor!, index = this.menuIndex;
+    const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
+    void this.openChoices('Thinking level', async () => [...(!editor.agentId ? [''] : []), 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(value => ({ value, label: value || 'Use profile/default' })), {
+      back, choose: value => { editor.stage('thinking', value); back(); },
+    });
   }
   private openRecord(add: boolean, choice?: SettingsChoice): void {
     const records = this.records; if (!records) return;
@@ -669,7 +687,7 @@ export class UI {
   private async openEditor(modify: boolean, target = this.selected()): Promise<void> {
     if (this.sending || (modify && !target)) return;
     if (!modify && !this.session.harnesses.length) {
-      this.showNotice('No harnesses are enabled on this server.');
+      this.showNotice('No agents are enabled on this server.');
       return;
     }
     const parent = modify ? this.session.store.agents.get(target!.parentId ?? '') : this.createParent(target);
@@ -686,11 +704,19 @@ export class UI {
       if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
     }
     this.pathBase = String(parent?.settings.cwd ?? this.session.serverCwd);
-    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled, this.session.podmanProfilesEnabled);
+    let agentProfiles;
+    if (!modify && !parent && this.session.agentProfilesEnabled) {
+      try { agentProfiles = await this.session.listAgentProfiles(this.session.harnesses[0]); }
+      catch (error) { if (!this.closing && request === this.editorRequest && this.view === view) this.showNotice((error as Error).message); return; }
+      if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
+    }
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled, this.session.podmanProfilesEnabled, this.session.agentProfilesEnabled);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
       this.editor.values.provider = String(parent?.settings.provider ?? '');
+      if (parent && this.session.agentProfilesEnabled && parent.settings.harness === 'pi') this.editor.inheritAgent(parent);
+      else if (agentProfiles?.[0]) this.editor.selectAgentProfile(agentProfiles[0]);
       this.editor.values.cwd = this.pathBase ? `${this.pathBase.replace(/\/$/, '')}/` : '';
       if (defaults) for (const key of PODMAN_FIELDS) this.editor.values[key] = JSON.stringify(defaults[key]);
       const defaultProfile = containerCatalog?.profiles.find(profile => profile.id === 'default');
@@ -1122,7 +1148,7 @@ export class UI {
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
       this.view === 'agent-field' ? `Edit ${this.editor?.label(this.editField!)} · ${this.editor?.spec(this.editField!).editor}` :
-      this.view === 'harness-options' ? `Select ${this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
+      this.view === 'harness-options' ? `Select ${this.optionField === 'harness' ? 'Agent' : this.optionField}${this.optionField === 'model' ? ` · ${this.editor?.values.provider}` : ''}` :
       this.view === 'image-scope' ? 'Image change · choose which agents to update' :
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
       this.view === 'table-fields' ? 'Table fields / order · client preferences · changes saved automatically' :
@@ -1199,7 +1225,7 @@ export class UI {
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...this.editor!.fields.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.values[field] || '(omitted)'}`, width - 1)), 'Save changes']);
+        [...this.editor!.fields.map(field => clip(`${cell(this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.display(field) || '(omitted)'}`, width - 1)), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :
@@ -1231,10 +1257,10 @@ export class UI {
         this.menu.setItems(catalog ? Object.entries(catalog.facts).map(([key, value]) => clip(`${key}: ${Array.isArray(value) ? value.join(', ') || '(none)' : value}`, width - 1)) : ['Server facts unavailable']);
       } else if (this.view === 'server-confirm') {
         const params = editor?.params();
-        this.menu.setItems(['Cancel — keep draft', 'Save — changes configuration for every connected client', ...(editor?.group.fields.filter(f => Object.hasOwn(params!.patch, f.key) || params!.reset.includes(f.key)).map(f => `${f.label}: ${previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${f.effect}`) ?? [])]);
+        this.menu.setItems(['Cancel — keep draft', 'Save — changes configuration for every connected client', ...(editor?.group.fields.filter(f => Object.hasOwn(params!.patch, f.key) || params!.reset.includes(f.key)).map(f => `${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${f.effect}`) ?? [])]);
       } else if (editor) {
         const current = catalog?.groups.find(g => g.namespace === editor.group.namespace);
-        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${editor.group.restartRequired.includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
+        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${editor.group.restartRequired.includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
         if (!this.recordEditing && current && current.revision !== editor.group.revision && !this.notice.getContent().includes('draft retained')) this.notice.setContent('Server settings changed in another client · draft is stale; r discards and reloads');
       }
       this.menu.select(this.menuIndex); this.updating = false;

@@ -237,7 +237,7 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     expect(screen()).not.toContain('Start / restart agent');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('n'); await visible('Create agent · root');
-    await field('coordinator'); down(1); keys('\r'); await visible('Select harness'); keys('\r'); await visible('Create agent · root');
+    await field('coordinator'); down(1); keys('\r'); await visible('Select Agent'); keys('\r'); await visible('Create agent · root');
     down(2); keys('\r'); await visible('Select a provider before choosing a model.');
     keys('\x1b[A'); keys('\r'); await visible('Select provider'); await visible('provider-b');
     keys('\x1b'); await visible('Create agent · root'); // Escape keeps the provider unset.

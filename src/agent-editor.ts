@@ -1,9 +1,9 @@
-import type { Agent, ContainerProfile } from './protocol.js';
+import type { Agent, AgentProfile, ContainerProfile } from './protocol.js';
 import { StructuredEditor, collection, parseTyped, valueText, type PluginField, type FieldSpec } from './structured-editor.js';
 
 export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
 export const PODMAN_FIELDS = ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const;
-export type AgentField = 'container' | typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
+export type AgentField = 'thinking' | 'container' | typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
 export type ImageScope = 'node' | 'inherited' | 'all';
 const maps = new Set<AgentField>(['metadata', 'env', 'options', 'extensions']);
 
@@ -13,13 +13,20 @@ export class AgentEditor {
   private readonly original: Record<AgentField, string>;
   readonly agentId?: string;
   readonly revision?: number;
-  readonly fields: readonly AgentField[];
+  private readonly baseFields: readonly AgentField[];
+  get fields(): readonly AgentField[] {
+    const pi = this.agentProfilesEnabled && this.values.harness === 'pi';
+    return this.baseFields.filter(field => field === 'thinking' ? pi : field !== 'options' || !pi || !!this.agentId);
+  }
   private selectedProfile?: { profile: ContainerProfile; revision: number };
+  private selectedAgentProfile?: AgentProfile;
+  private agentBase?: { provider?: string; model?: string; options: Record<string, unknown> };
+  private agentLabel = '';
   private readonly podmanEnabled: boolean;
   private readonly volumesEnabled: boolean;
   private readonly pluginSpecs = new Map<AgentField, PluginField>();
   private readonly explicit = new Set<AgentField>();
-  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false) {
+  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false, private readonly agentProfilesEnabled = false) {
     this.podmanEnabled = podmanEnabled || !!agent?.settings.extensions?.podman;
     const grants = agent?.settings.extensions?.podman as Record<string, unknown> | undefined;
     this.volumesEnabled = volumesEnabled || !!grants?.readOnlyVolumes || !!grants?.readWriteVolumes;
@@ -27,7 +34,7 @@ export class AgentEditor {
       if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'].includes(spec.key)) continue;
       this.pluginSpecs.set(`plugin:${spec.namespace}:${spec.key}`, { ...spec });
     }
-    this.fields = [...AGENT_FIELDS, ...(this.podmanEnabled && profilesEnabled ? ['container' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
+    this.baseFields = [...AGENT_FIELDS.flatMap(field => field === 'model' && agentProfilesEnabled ? [field, 'thinking' as const] : [field]), ...(this.podmanEnabled && profilesEnabled ? ['container' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
@@ -35,6 +42,9 @@ export class AgentEditor {
       return [field, maps.has(field) ? JSON.stringify(value ?? {}) : String(value ?? '')];
     })) as Record<AgentField, string>;
     const podman = agent?.settings.extensions?.podman as { image?: string | null; profile?: { id?: string; name?: string }; readOnlyDirs?: string[]; readWriteDirs?: string[]; readOnlyVolumes?: string[]; readWriteVolumes?: string[] } | undefined;
+    this.values.thinking = String((agent?.settings.options as Record<string, unknown> | undefined)?.thinking ?? '');
+    const piProfile = (agent?.settings.extensions?.pi as { profile?: { name?: string } } | undefined)?.profile;
+    if (piProfile) this.agentLabel = `${agent?.settings.harness} — ${piProfile.name ?? 'Default'}`;
     this.values.container = podman?.profile?.name ?? (podman?.image ? 'Custom / legacy' : this.parentId ? 'Inherited' : 'Default');
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
@@ -48,6 +58,28 @@ export class AgentEditor {
     }
     this.original = { ...this.values };
   }
+  selectAgentProfile(profile: AgentProfile): void {
+    this.selectedAgentProfile = structuredClone(profile);
+    this.agentBase = structuredClone(profile);
+    this.agentLabel = `${profile.harness} — ${profile.name}`;
+    this.values.harness = profile.harness;
+    this.values.provider = profile.provider ?? '';
+    this.values.model = profile.model ?? '';
+    this.values.options = JSON.stringify(profile.options);
+    this.values.thinking = String(profile.options.thinking ?? '');
+  }
+  inheritAgent(parent: Agent): void {
+    const options = structuredClone((parent.settings.options ?? {}) as Record<string, unknown>);
+    this.agentBase = { provider: parent.settings.provider as string | undefined, model: parent.settings.model, options };
+    this.values.harness = parent.settings.harness;
+    this.values.provider = String(parent.settings.provider ?? '');
+    this.values.model = parent.settings.model ?? '';
+    this.values.options = JSON.stringify(options);
+    this.values.thinking = String(options.thinking ?? '');
+    const pi = parent.settings.extensions?.pi as { profile?: { name?: string } } | undefined;
+    this.agentLabel = `${parent.settings.harness} — ${pi?.profile?.name ?? 'Default'} (inherited)`;
+  }
+  display(field: AgentField): string { return field === 'harness' ? this.agentLabel || this.values.harness : this.values[field]; }
   selectProfile(profile: ContainerProfile, revision: number): void {
     this.selectedProfile = { profile: structuredClone(profile), revision };
     this.values.container = profile.name;
@@ -59,10 +91,20 @@ export class AgentEditor {
   }
   label(field: AgentField): string {
     const spec = this.pluginSpecs.get(field);
-    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'container' ? 'Container' : field;
+    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'harness' ? 'Agent' : field === 'thinking' ? 'Thinking' : field === 'container' ? 'Container' : field;
   }
   stage(field: AgentField, text: string): void {
     const spec = this.pluginSpecs.get(field);
+    if (field === 'thinking') {
+      if (text && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(text)) throw new Error('Invalid thinking level');
+      const options = JSON.parse(this.values.options);
+      if (text) options.thinking = text;
+      else if (this.agentBase?.options.thinking !== undefined) options.thinking = this.agentBase.options.thinking;
+      else delete options.thinking;
+      this.values.options = JSON.stringify(options);
+      text = String(options.thinking ?? '');
+    }
+    if (field === 'options') this.values.thinking = String(JSON.parse(text).thinking ?? '');
     if (spec && ['number', 'boolean'].includes(spec.editor)) parseTyped(text, spec.editor as 'number' | 'boolean');
     this.values[field] = text;
     if (spec) this.explicit.add(field);
@@ -78,7 +120,10 @@ export class AgentEditor {
   select(field: 'harness' | 'provider' | 'model', value: string): void {
     if (this.values[field] === value) return;
     this.values[field] = value;
-    if (field === 'harness') this.values.provider = '';
+    if (field === 'harness') {
+      this.values.provider = ''; this.agentLabel = ''; this.selectedAgentProfile = undefined; this.agentBase = undefined;
+      this.values.thinking = ''; this.values.options = '{}';
+    }
     if (field !== 'model') this.values.model = '';
   }
   get imageChanged(): boolean {
@@ -92,7 +137,8 @@ export class AgentEditor {
     const params: Record<string, unknown> = this.agentId ? { agentId: this.agentId, expectedRevision: this.revision } : { parentId: this.parentId };
     const settings: Record<string, unknown> = {};
     for (const field of AGENT_FIELDS) {
-      if (this.agentId && this.values[field] === this.original[field]) continue;
+      if (this.agentId && this.values[field] === this.original[field] && !(this.selectedAgentProfile && ['harness', 'provider', 'model', 'options'].includes(field))) continue;
+      if (this.agentBase && (field === 'provider' || field === 'model') && this.values[field] === (this.agentBase[field] ?? '')) continue;
       const text = this.values[field].trim();
       if (!maps.has(field) && !text) {
         if (field === 'name' || field === 'harness' || this.agentId) throw new Error(`${field} cannot be blank (the API cannot unset scalar settings)`);
@@ -103,6 +149,10 @@ export class AgentEditor {
         try { value = JSON.parse(text); } catch { throw new Error(`${field} must be a JSON object`); }
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be a JSON object`);
         if (field === 'env' && Object.values(value).some(v => typeof v !== 'string')) throw new Error('env values must be strings');
+      }
+      if (field === 'options' && this.agentBase) {
+        value = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key, entry]) =>
+          JSON.stringify(entry) !== JSON.stringify(this.agentBase!.options[key])));
       }
       if (field === 'name' || field === 'metadata') params[field] = value;
       else settings[field] = value;
@@ -146,6 +196,12 @@ export class AgentEditor {
       const namespace = { ...(Object.hasOwn(extensions, spec.namespace) ? extensions[spec.namespace] : prior ?? {}) as Record<string, unknown> };
       Object.defineProperty(namespace, spec.key, { value, enumerable: true, configurable: true, writable: true });
       settings.extensions = { ...extensions, [spec.namespace]: namespace };
+    }
+    if (this.selectedAgentProfile) {
+      const extensions = (settings.extensions ?? JSON.parse(this.values.extensions)) as Record<string, unknown>;
+      if (this.selectedAgentProfile.harness === 'pi' && this.values.extensions !== this.original.extensions && Object.hasOwn(JSON.parse(this.values.extensions), 'pi')) throw new Error('Select an Agent profile or edit extensions.pi, not both');
+      if (this.selectedAgentProfile.harness === 'pi') settings.extensions = { ...extensions,
+        pi: { profile: { id: this.selectedAgentProfile.id, ...(this.selectedAgentProfile.revision !== undefined && { revision: this.selectedAgentProfile.revision }) }, snapshot: false } };
     }
     if (!this.agentId || Object.keys(settings).length) params.settings = settings;
     if (this.agentId && Object.keys(params).length === 2) throw new Error('No changes to save');

@@ -7,9 +7,14 @@ export class ServerSettingsEditor {
   readonly values: Record<string, string>;
   private patch = new Set<string>();
   private resets = new Set<string>();
+  private inherited = new Set<string>();
   constructor(group: ServerSettingsGroup) {
     this.group = structuredClone(group);
-    this.values = Object.fromEntries(group.fields.map(field => [field.key, valueText(group.values[field.key])]));
+    this.values = Object.fromEntries(group.fields.map(field => {
+      const value = group.values[field.key];
+      if (value === undefined && field.optional) this.inherited.add(field.key);
+      return [field.key, valueText(value ?? (field.editor === 'list' ? [] : field.editor.endsWith('-map') ? {} : field.editor === 'select' ? field.choices![0] : field.editor === 'number' ? 0 : field.editor === 'boolean' ? false : ''))];
+    }));
   }
   get fields(): ServerSettingsField[] { return this.group.fields.filter(field => !field.deprecated); }
   private parse(field: ServerSettingsField, text: string): unknown {
@@ -23,15 +28,19 @@ export class ServerSettingsEditor {
   }
   stage(field: ServerSettingsField, text: string) {
     this.values[field.key] = valueText(this.parse(field, text));
+    this.inherited.delete(field.key);
     this.patch.add(field.key); this.resets.delete(field.key);
   }
   reset(field: ServerSettingsField) {
-    this.values[field.key] = valueText(this.group.defaults[field.key]);
+    const value = this.group.defaults[field.key];
+    if (value === undefined && field.optional) this.inherited.add(field.key);
+    else { this.inherited.delete(field.key); this.values[field.key] = valueText(value); }
     this.patch.delete(field.key); this.resets.add(field.key);
   }
-  valuesObject(): Record<string, unknown> { return Object.fromEntries(this.group.fields.map(f => [f.key, this.parse(f, this.values[f.key]!)])); }
+  valuesObject(): Record<string, unknown> { return Object.fromEntries(this.group.fields.filter(f => !this.inherited.has(f.key)).map(f => [f.key, this.parse(f, this.values[f.key]!)])); }
+  inherits(key: string): boolean { return this.inherited.has(key); }
   get dirty() { return this.patch.size > 0 || this.resets.size > 0; }
-  state(key: string) { return this.resets.has(key) ? 'reset draft' : this.patch.has(key) ? 'edited draft' : this.group.overridden.includes(key) ? 'saved override' : 'default'; }
+  state(key: string) { return this.inherited.has(key) ? 'inherited (reset to omit)' : this.resets.has(key) ? 'reset draft' : this.patch.has(key) ? 'edited draft' : this.group.overridden.includes(key) ? 'saved override' : 'default'; }
   params() {
     return { namespace: this.group.namespace, expectedRevision: this.group.revision,
       patch: Object.fromEntries(this.group.fields.filter(f => this.patch.has(f.key)).map(f => [f.key, this.parse(f, this.values[f.key]!)])), reset: [...this.resets] };

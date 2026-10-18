@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type Skill, type SkillStates, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type SkillStates, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
 import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
@@ -18,6 +18,21 @@ export class Session extends EventEmitter {
   skills: Skill[] = [];
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
+  private agentProfileEndpoints = new Map<string, string>();
+  get agentProfilesEnabled(): boolean { return this.agentProfileEndpoints.size > 0; }
+  async listAgentProfiles(harness?: string): Promise<AgentProfile[]> {
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    const catalogs = await Promise.all((harness ? [harness] : this.harnesses).map(async name => {
+      const endpoint = this.agentProfileEndpoints.get(name);
+      if (!endpoint) return [{ id: 'default', name: 'Default', harness: name, options: {} }];
+      const result = await client.request<{ profiles: AgentProfile[] }>(endpoint, {});
+      if (!Array.isArray(result.profiles) || result.profiles.some(p => p.harness !== name || typeof p.id !== 'string' || typeof p.name !== 'string' || !p.options || typeof p.options !== 'object' || Array.isArray(p.options))) throw new Error('Invalid agent profiles');
+      return result.profiles;
+    }));
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected; reload agent profiles');
+    return catalogs.flat();
+  }
   serverCwd = '';
   pathCompletion = false;
   podmanEnabled = false;
@@ -148,6 +163,11 @@ export class Session extends EventEmitter {
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
     this.harnesses = [...new Set((snapshot.capabilities?.harnesses ?? []).filter((name): name is string => typeof name === 'string' && name.length > 0))].sort();
     this.modelDiscovery = snapshot.capabilities?.modelDiscovery ?? [];
+    this.agentProfileEndpoints.clear();
+    for (const name of this.harnesses) {
+      const plugin = snapshot.capabilities?.plugins?.[name] as { endpoints?: { profiles?: unknown } } | undefined;
+      if (typeof plugin?.endpoints?.profiles === 'string') this.agentProfileEndpoints.set(name, plugin.endpoints.profiles);
+    }
     const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string; configureVolume?: string; profiles?: string; images?: string; defaults?: string }; modelDiscovery?: boolean } | undefined;
     this.podmanEnabled = typeof podman?.endpoints?.modify === 'string';
     this.podmanModify = podman?.endpoints?.modify ?? '';

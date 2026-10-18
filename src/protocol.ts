@@ -42,7 +42,7 @@ export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
 export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
 export interface ServerSettingsField {
-  key: string; label: string; description?: string; deprecated?: boolean;
+  key: string; label: string; description?: string; deprecated?: boolean; optional?: boolean;
   editor: 'text' | 'number' | 'boolean' | 'select' | 'list' | 'string-map' | 'object-map';
   effect: 'immediate' | 'future-launch' | 'restart'; choices?: string[]; min?: number; max?: number;
   choicesEndpoint?: string; itemFields?: ServerSettingsField[]; itemDefaults?: Record<string, unknown>; itemDefaultsFrom?: Record<string, string>; itemIdKey?: string; itemLabelKey?: string;
@@ -53,6 +53,9 @@ export interface SettingsChoice {
   defaults?: Record<string, unknown>;
   /** Explicit client-only setup needed before this resource can be selected. */
   setup?: { endpoint: string; params: Record<string, unknown>; inputKey: string; label: string };
+}
+export interface AgentProfile {
+  id: string; name: string; harness: string; revision?: number; provider?: string; model?: string; options: Record<string, unknown>;
 }
 export interface ContainerGrantDefaults { readOnlyDirs: string[]; readWriteDirs: string[]; readOnlyVolumes: string[]; readWriteVolumes: string[] }
 export interface ContainerProfile {

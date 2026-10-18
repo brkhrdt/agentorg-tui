@@ -193,8 +193,11 @@ field/collection edit or the whole group draft, depending on the current view.
 
 ### Agent lifecycle: `a`, `n`, `e`
 
-The editor has fields for name, harness, provider, model, working directory,
-metadata, environment, harness options, and plugin extensions. Use ↑/↓ and
+The editor has fields for name, **Agent** (the API's harness/profile), provider,
+model, working directory, metadata, environment, and plugin extensions. On servers
+with Pi profiles, creation also has a **Thinking** picker; tools and appended
+prompts belong to server defaults/profiles instead of extra creation fields.
+Legacy servers retain the structured harness-options field. Use ↑/↓ and
 Enter to edit a field; Enter stages its value, Ctrl+U clears it, and Escape
 discards that field edit.
 Press **S**, or choose **Save changes**, to apply the draft, or Escape from the editor to discard
@@ -242,8 +245,15 @@ overrides). These scopes propagate images, not configuration snapshots. The
 client-only `podman.modify` endpoint reports partial failures; refresh rather than
 blindly retrying. See the [Podman plugin](../agentorg-plugin-podman/README.md).
 
-Creation starts the agent immediately. Harness choices come from the server's
-loaded plugins. For discovery-capable harnesses, Enter on provider opens its
+Creation starts the agent immediately. **Agent** choices come from the server's
+loaded plugins and their profile catalogs. With the Pi plugin this offers
+`pi — Default` and `pi — <profile name>`. Configure defaults and sparse named
+profiles under **Server settings → Pi agent → Agent profiles**. Each profile
+inherits omitted fields; `z` resets a profile field to inherit, while staging an
+empty tool list/prompt is an explicit override. Resolved settings are captured at
+creation; editing/deleting profiles or defaults never changes existing agents,
+even on restart. Provider/model and Thinking can be changed just for this agent.
+Profile selection resets these draft overrides to the newly selected profile. For discovery-capable harnesses, Enter on provider opens its
 available providers; select a provider before opening the model picker. The
 model picker lists only that provider's models and saves their exact IDs.
 Changing harness clears provider/model; changing provider clears model.
@@ -254,8 +264,12 @@ choices also support `1`, `2`, and `3`. Model is
 optional on creation (omit it to use the harness default).
 Press `n` with an agent selected to create its child; if selection is momentarily
 missing while agents exist, the root is used as the parent rather than submitting
-a duplicate root. Child drafts copy the parent's harness/model/provider; other
-settings are not inherited, except cwd's browsing default.
+a duplicate root. With Pi profiles, children inherit the parent's resolved
+profile, model/provider and thinking/options (including one-off overrides), even
+if its catalog profile has been deleted. Explicitly selecting another profile,
+including Default, uses that profile with current server defaults instead.
+Legacy servers copy harness/model/provider only; cwd provides the browsing default.
+Container configuration inheritance remains independent.
 
 On servers advertising path completion, cwd starts at the parent's cwd for a
 child, or the server startup cwd for a root. Editing cwd raises the input and
