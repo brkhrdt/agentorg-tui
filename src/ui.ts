@@ -1,5 +1,6 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
+import wrapAnsi from 'wrap-ansi';
 import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
@@ -959,18 +960,8 @@ export class UI {
     if (this.view !== 'prompt') return;
     const width = Math.max(1, Number(this.screen.width));
     const value = this.input.getValue();
-    let rows = 0;
-    for (const line of value.split('\n')) {
-      let lineRows = 1, column = 0;
-      for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(line)) {
-        const cells = stringWidth(segment);
-        if (cells && column > 0 && column + cells > width) { lineRows++; column = 0; }
-        column += cells;
-        if (column > width) { lineRows += Math.ceil(column / width) - 1; column %= width; }
-      }
-      rows += lineRows;
-    }
-    rows = Math.max(1, Math.min(rows, Math.max(1, Number(this.screen.height) - 7)));
+    const wrappedRows = wrapAnsi(value, width, { hard: true, trim: false }).split('\n').length;
+    const rows = Math.max(1, Math.min(wrappedRows, Math.max(1, Number(this.screen.height) - 7)));
     if (Number(this.input.height) === rows) return;
     this.input.height = rows;
     this.promptTop.bottom = rows + 3;
