@@ -40,6 +40,16 @@ test('server Markdown controls content, client controls styles/cell limits and r
   expect(renderEvent(raw, 3, 80, hostile)).not.toContain('\x1b]0;');
 });
 
+test('extended output truncates wrapped overflow with an ellipsis after two terminal rows', () => {
+  const e = event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ignored' } });
+  const longSecondRow = 'second '.repeat(10);
+  const presentation: EventRendering = { rendererId: 'fixture', summary: 'short', extended: `short\n${longSecondRow}`, full: 'short' };
+  const rendered = stripAnsi(renderEvent(e, 2, 20, presentation));
+  expect(rendered.split('\n')).toHaveLength(2);
+  expect(rendered).toEndWith('…');
+  for (const row of rendered.split('\n')) expect(stringWidth(row)).toBeLessThanOrEqual(20);
+});
+
 test('tool updates show the latest output row in extended and five rows in full', () => {
   const update = event(1, 'tool.update', { title: 'bash', status: 'in_progress', rawInput: { command: 'long-running' }, rawOutput: { content: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive\nsix' }], details: {} } });
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ long-running', extended: '$ long-running\nsix', full: '$ long-running\n\n```\none\ntwo\nthree\nfour\nfive\nsix\n```' };
