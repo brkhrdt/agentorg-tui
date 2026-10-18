@@ -1,4 +1,5 @@
 import blessed from 'blessed';
+import stringWidth from 'string-width';
 import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
@@ -24,22 +25,22 @@ export class UI {
     smartCSR: true, fullUnicode: true, title: 'Agent Organization',
     ignoreLocked: ['C-c'], warnings: false,
   });
-  private title = blessed.box({ parent: this.screen, top: 0, height: 2, tags: false, style: { fg: 'cyan', bold: true } });
-  private columns = blessed.box({ parent: this.screen, top: 2, height: 1, style: { fg: 'gray' } });
+  private title = blessed.box({ parent: this.screen, top: 0, height: 1, tags: false, style: { fg: 'cyan', bold: true } });
+  private columns = blessed.box({ parent: this.screen, top: 1, height: 1, style: { fg: 'gray' } });
   private tree = blessed.list({
-    parent: this.screen, top: 3, bottom: 2, keys: true, vi: false, mouse: true,
+    parent: this.screen, top: 2, bottom: 2, keys: true, vi: false, mouse: true,
     // Keep the selection background, but preserve locally generated event colors.
     invertSelected: false,
     tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } },
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
   private details = blessed.box({
-    parent: this.screen, top: 2, bottom: 2, hidden: true, scrollable: true,
+    parent: this.screen, top: 1, bottom: 2, hidden: true, scrollable: true,
     alwaysScroll: true, keys: true, mouse: true, tags: false,
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
   private chat = blessed.box({
-    parent: this.screen, top: 2, bottom: 5, hidden: true, scrollable: true,
+    parent: this.screen, top: 1, bottom: 5, hidden: true, scrollable: true,
     alwaysScroll: true, tags: false, mouse: true,
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
@@ -60,14 +61,14 @@ export class UI {
   private pathRequest = 0;
   private pathTimer?: ReturnType<typeof setTimeout>;
   private menu = blessed.list({
-    parent: this.screen, top: 3, bottom: 2, hidden: true,
+    parent: this.screen, top: 2, bottom: 2, hidden: true,
     keys: true, vi: false, mouse: true, tags: false,
     style: { selected: { bg: 'blue', fg: 'white', bold: true } },
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
-  private preview = blessed.box({ parent: this.screen, top: 3, bottom: 2, right: 0, width: '50%', hidden: true, tags: false, border: 'line', label: ' Renderer examples ', style: { border: { fg: 'cyan' } } });
+  private preview = blessed.box({ parent: this.screen, top: 2, bottom: 2, right: 0, width: '50%', hidden: true, tags: false, border: 'line', label: ' Renderer examples ', style: { border: { fg: 'cyan' } } });
   private previewIndex = 0;
-  private form = blessed.box({ parent: this.screen, top: 3, height: 5, hidden: true, tags: false, border: 'line', label: ' Entry draft ', style: { border: { fg: 'cyan' } } });
+  private form = blessed.box({ parent: this.screen, top: 2, height: 5, hidden: true, tags: false, border: 'line', label: ' Entry draft ', style: { border: { fg: 'cyan' } } });
   private structured?: StructuredEditor;
   private structuredField?: AgentField;
   private structuredIndex = 0;
@@ -1078,6 +1079,9 @@ export class UI {
     if (this.closing) return;
     this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
+    const promptLabel = ' > ';
+    this.promptTop.setContent(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`);
+    this.promptBottom.setContent('─'.repeat(width));
     this.menu.width = '100%';
     this.preview.hide();
     const store = this.session.store;
@@ -1113,7 +1117,9 @@ export class UI {
       this.view === 'server-field' ? `${this.serverField?.label}${this.serverField?.choices ? ` · choices: ${this.serverField.choices.join(', ')}` : ''} · ${this.serverField?.description ?? this.serverField?.editor}` :
       this.view === 'server-confirm' ? 'Confirm server-wide settings · affects all clients and agents' :
       this.view === 'view' ? 'View settings · server configuration / client preferences' : 'Agent Organization';
-    this.title.setContent(`${clip(heading, width)}\n${clip(`${this.session.status} · ${this.session.socketPath}`, width)}`);
+    const state = clip(this.session.status, width);
+    const titleText = clip(heading, Math.max(0, width - stringWidth(state) - 1));
+    this.title.setContent(`${titleText}${' '.repeat(Math.max(1, width - stringWidth(titleText) - stringWidth(state)))}${state}`);
     if (['structured', 'structured-filter'].includes(this.view)) {
       const entries = this.structured?.entries() ?? [];
       this.menuIndex = Math.max(0, Math.min(this.menuIndex, entries.length - 1));
@@ -1251,7 +1257,7 @@ export class UI {
         this.menu.width = side ? '50%' : '100%';
         this.menu.bottom = side ? 2 : 11;
         this.preview.width = side ? '50%' : '100%';
-        this.preview.top = side ? 3 : height - 11;
+        this.preview.top = side ? 2 : height - 11;
         this.preview.show();
         this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 5 : 9) - 2)));
       } else this.menu.bottom = 2;

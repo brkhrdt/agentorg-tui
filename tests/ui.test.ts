@@ -60,7 +60,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
   };
   try {
     await visible('Initial worker answer');
-    const eventColumn = terminal.buffer.active.getLine(2)!.translateToString(true).indexOf('LATEST TRACKED EVENT');
+    const eventColumn = terminal.buffer.active.getLine(1)!.translateToString(true).indexOf('LATEST TRACKED EVENT');
     await visible(clip(initialText.replace(/\*\*/g, '') + '.', 99 - eventColumn));
     expect(screen()).not.toContain('assistant:');
     expect(screen()).not.toContain('**Initial worker answer**');
@@ -68,7 +68,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     expect(terminal.buffer.active.getLine(4)?.getCell(eventColumn + 22)?.isBold()).toBeFalsy();
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
-    expect(screen().split('\n')[4]).toStartWith('└ worker');
+    expect(screen().split('\n')[3]).toStartWith('└ worker');
     const selectedBg = (row: number) => terminal.buffer.active.getLine(row)?.getCell(0)?.getBgColor();
     expect(selectedBg(3)).not.toBe(selectedBg(4));
     keys('\x1b[B');

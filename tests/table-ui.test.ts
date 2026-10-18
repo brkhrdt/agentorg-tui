@@ -38,12 +38,12 @@ test('terminal table field visibility, ordering, help, reset and persisted prefe
     await client.visible('Reset table fields to defaults');
     client.keys('\x1b'); await client.visible('Table fields / order · client preferences');
     client.keys('\x1b'); await client.visible('LATEST TRACKED EVENT');
-    expect(client.screen().split('\n')[2]).toStartWith('HARNESS');
-    expect(client.screen().split('\n')[4]).toStartWith('└ pi');
+    expect(client.screen().split('\n')[1]).toStartWith('HARNESS');
+    expect(client.screen().split('\n')[3]).toStartWith('└ pi');
     await client.close();
     client = terminalClient(mock.path, mock.directory);
     await client.visible('LATEST TRACKED EVENT');
-    expect(client.screen().split('\n')[2]).toStartWith('HARNESS');
+    expect(client.screen().split('\n')[1]).toStartWith('HARNESS');
     client.keys('vt'); await client.visible('TUI colors · client preferences');
     client.keys('\x1b[C'); await client.visible('Selection background: magenta');
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -57,6 +57,6 @@ test('terminal table field visibility, ordering, help, reset and persisted prefe
     client.keys('z'); await client.visible('[ ]     harness');
     await saved(['name', 'status', 'model', 'event']);
     client.keys('\x1b'); await client.visible('LATEST TRACKED EVENT');
-    expect(client.screen().split('\n')[2]).toStartWith('AGENT');
+    expect(client.screen().split('\n')[1]).toStartWith('AGENT');
   } finally { await client.close(); await mock.close(); }
 }, 15_000);
