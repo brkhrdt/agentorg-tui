@@ -37,6 +37,27 @@ test('prompt composer reserves tree rows, keeps the selected agent visible and r
   } finally { await tui.close(); await mock.close(); }
 });
 
+test('long prompt expands the composer and keeps its full wrapped draft visible', async () => {
+  const agents = [agent('root'), agent('worker', 'root')];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory);
+  try {
+    await tui.visible('worker');
+    tui.keys('\x1b[B\r'); await tui.visible('Interrupting prompt · worker');
+    const draft = 'This prompt should wrap and remain visible. '.repeat(5);
+    for (const char of draft) tui.keys(char);
+    await waitFor(() => tui.screen().split('\n').filter(line => line.includes('This prompt')).length >= 2);
+    const lines = tui.screen().split('\n');
+    expect(lines[24]).toStartWith('─ >');
+    expect(lines[27]).toBe('─'.repeat(120));
+    expect(lines.join('\n')).toContain('remain visible.');
+    expect(lines.slice(2, 24).some(line => line.includes('worker'))).toBe(true);
+  } finally { await tui.close(); await mock.close(); }
+});
+
 test('live removal while composing cannot redirect an interrupting prompt to another agent', async () => {
   const prompts: any[] = [];
   const agents = [agent('root'), agent('worker', 'root')];
