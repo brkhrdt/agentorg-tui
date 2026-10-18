@@ -28,7 +28,9 @@ test('server Markdown controls content, client controls styles/cell limits and r
   const extended = stripAnsi(renderEvent(raw, 2, 80, rendering));
   expect(extended.split('\n')).toHaveLength(2);
   expect(extended).toContain('2 lines');
-  expect(renderEvent(raw, 2, 10, rendering).split('\n').length).toBeGreaterThan(2); // Logical lines may wrap.
+  const narrowExtended = renderEvent(raw, 2, 10, rendering);
+  expect(narrowExtended.split('\n')).toHaveLength(2);
+  expect(narrowExtended).toEndWith('…');
   const full = stripAnsi(renderEvent(raw, 3, 80, rendering));
   expect(full).toContain('Custom read complete'); expect(full).toContain('const answer = 42;');
   expect(JSON.parse(renderEvent(raw, 4, 10000, rendering))).toEqual(raw);
@@ -79,7 +81,7 @@ test('rolling output is bounded after wrapping, stays literal and fits narrow Un
       // Wrapped header, one clipped metadata row, then the bounded output viewport.
       const header = stripAnsi(renderEvent(update, 1, 1000));
       const expectedHeaderRows = Math.ceil(stringWidth(header) / width);
-      expect(lines.length).toBeLessThanOrEqual(expectedHeaderRows + 1 + maxRows);
+      expect(lines.length).toBeLessThanOrEqual(level === 2 ? 2 : expectedHeaderRows + 1 + maxRows);
       for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(width);
       expect(rendered).not.toContain('OLD OUTPUT');
       if (width >= 12) expect(rendered).toContain('LATEST');

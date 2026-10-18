@@ -167,6 +167,27 @@ function clipStyled(value: string, width: number): string {
   }
   return result + '\x1b[0m…';
 }
+function ellipsisStyled(value: string, width: number): string {
+  if (width <= 0) return '';
+  let remaining = width - 1, result = '';
+  for (const part of value.split(/(\x1b\[[\d;]*m)/)) {
+    if (part.startsWith('\x1b[')) { result += part; continue; }
+    for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(part)) {
+      const cells = stringWidth(segment);
+      if (cells > remaining) return `${result}\x1b[0m…`;
+      result += segment;
+      remaining -= cells;
+    }
+  }
+  return `${result}\x1b[0m…`;
+}
+function extendedRows(lines: string[], width: number, maxRows = 2): string {
+  const rows = lines.flatMap(line => wrapAnsi(line, width, { hard: true, trim: false }).split('\n'));
+  if (rows.length <= maxRows) return rows.join('\n');
+  const visible = rows.slice(0, maxRows);
+  visible[maxRows - 1] = ellipsisStyled(visible[maxRows - 1]!, width);
+  return visible.join('\n');
+}
 /** Pad locally generated styles without stripping them or leaking into the next cell. */
 export function styledCell(value: string, width: number): string {
   const text = clipStyled(value, width);
@@ -211,9 +232,15 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       const lineCount = lines.length;
       const maxRows = level === 2 ? 1 : 5;
       const tail = terminalOutputTail(lines, width, maxRows, colors);
-      const heading = wrapAnsi(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors), width, { hard: true, trim: false });
+      const heading = clipStyled(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors), width);
       const count = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received${tail.hidden ? ` · showing last ${maxRows} ${maxRows === 1 ? 'row' : 'rows'}` : ''}`;
-      return heading + '\n' + paint(clip(count, width), '38;5;250', colors) + (tail.text ? '\n' + tail.text : '');
+      const countLine = paint(clip(count, width), '38;5;250', colors);
+      if (level === 2) {
+        const combined = `${countLine}${tail.text ? ` ${tail.text}` : ''}`;
+        const details = tail.text && stringWidth(stripAnsi(combined)) > width ? tail.text : combined;
+        return extendedRows([heading, details], width);
+      }
+      return heading + '\n' + countLine + (tail.text ? '\n' + tail.text : '');
     }
     if (level === 1) return renderTreeEvent(event, width, rendering, colors);
     if (level === 2) {
@@ -223,12 +250,13 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
         const before = clean(diff.before).replace(/\s+/g, ' '), after = clean(diff.after).replace(/\s+/g, ' ');
         const first = toolHeader(prefix, event, rendering.subtype, colors) + ' ' + paint(before, 'diffRemove', colors);
         const second = ' '.repeat((stringWidth(prefix) + 1) % width) + paint(after, 'diffAdd', colors);
-        return [first, second].map(line => wrapAnsi(line, width, { hard: true, trim: false })).join('\n');
+        return extendedRows([first, second], width);
       }
-      return logicalLines(rendering.extended).slice(0, 2).map((line, index) => {
+      const lines = logicalLines(rendering.extended).map((line, index) => {
         const text = markdown(line, width, true, colors);
-        return wrapAnsi(isTool(event) && index === 0 ? toolHeader(text, event, rendering.subtype, colors) : text, width, { hard: true, trim: false });
-      }).join('\n');
+        return isTool(event) && index === 0 ? toolHeader(text, event, rendering.subtype, colors) : text;
+      });
+      return extendedRows(lines, width);
     }
     if (isTool(event)) {
       const [heading, ...body] = logicalLines(rendering.full);
