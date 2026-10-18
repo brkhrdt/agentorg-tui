@@ -24,7 +24,7 @@ test('agent info: direct/contextual access, JSON, scrolling, live identity and b
     for (const socket of mock.sockets) send(socket, event(++seq, 'agent.modified', root));
   };
   try {
-    await client.visible('└ worker');
+    await client.visible('  worker');
     client.keys('\x1b[B'); await waitFor(() => client.cell(4, 0)?.getBgColor() === 4);
     client.keys('i'); await client.visible('Agent info · worker');
     await client.visible('Session ID: worker-session');

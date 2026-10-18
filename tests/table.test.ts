@@ -20,12 +20,12 @@ test('metadata follows content and Event gets remaining space', () => {
   expect(table.widths.slice(0, 4)).toEqual([11, 6, 7, 10]);
   expect(table.widths[4]).toBe(77);
   expect(table.widths[4]).toBeGreaterThan(table.widths[2]! * 5);
-  expect(table.items[1]).toStartWith('└ worker');
+  expect(table.items[1]).toStartWith('  worker');
   expect(stripAnsi(table.items[0]!)).toContain('Reading files and reviewing the changes');
   expect(table.items[0]).toContain('\x1b[1mReading files');
 });
 
-test('tree connectors sit beneath parent names without wasting two leading cells', () => {
+test('tree hierarchy uses whitespace indentation', () => {
   const nested = [
     { agent: agent('root'), depth: 0 },
     { agent: agent('worker', 'root'), depth: 1 },
@@ -33,8 +33,8 @@ test('tree connectors sit beneath parent names without wasting two leading cells
   ];
   const table = renderTable(nested, new Map(), ['name', 'event'], 60);
   expect(table.items[0]).toStartWith('root');
-  expect(table.items[1]).toStartWith('└ worker');
-  expect(table.items[2]).toStartWith('  └ task');
+  expect(table.items[1]).toStartWith('  worker');
+  expect(table.items[2]).toStartWith('    task');
   expect(table.widths).toEqual([8, 50]);
 });
 
@@ -64,12 +64,12 @@ test('reordered Event preserves styles, alignment and first-column tree indentat
   const table = renderTable(rows, latest, ['event', 'harness', 'name'], 80);
   const [eventWidth, harnessWidth] = table.widths;
   const text = stripAnsi(table.items[1]!);
-  expect(text).toStartWith('└ Reading files');
+  expect(text).toStartWith('  Reading files');
   expect(text.slice(eventWidth! + 2, eventWidth! + 2 + harnessWidth!)).toBe('pi     ');
-  expect(text).not.toContain('└ worker');
+  expect(text.slice(0, eventWidth!)).not.toContain('worker');
   expect(table.items[1]).toContain('\x1b[0m');
   expect(table.header.indexOf('HARNESS')).toBe(eventWidth! + 2);
-  expect(renderTable(rows, new Map(), ['event', 'name'], 80).items[1]).toStartWith('└ —');
+  expect(renderTable(rows, new Map(), ['event', 'name'], 80).items[1]).toStartWith('  —');
 });
 
 test('headers and Unicode rows fit even very narrow terminals, with no control injection', () => {

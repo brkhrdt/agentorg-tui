@@ -39,7 +39,7 @@ test('terminal table field visibility, ordering, help, reset and persisted prefe
     client.keys('\x1b'); await client.visible('Table fields / order · client preferences');
     client.keys('\x1b'); await client.visible('LATEST TRACKED EVENT');
     expect(client.screen().split('\n')[1]).toStartWith('HARNESS');
-    expect(client.screen().split('\n')[3]).toStartWith('└ pi');
+    expect(client.screen().split('\n')[3]).toStartWith('  pi');
     await client.close();
     client = terminalClient(mock.path, mock.directory);
     await client.visible('LATEST TRACKED EVENT');
