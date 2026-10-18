@@ -583,7 +583,8 @@ export class UI {
     }
     if (field.editor === 'boolean') { editor.stage(field, editor.values[field.key] === 'true' ? 'false' : 'true'); this.draw(); return; }
     if (['list', 'string-map', 'object-map'].includes(field.editor)) {
-      this.structured = new StructuredEditor({ editor: field.editor as 'list' | 'string-map' | 'object-map', label: field.label, genericList: field.editor === 'list' && !field.choicesEndpoint }, editor.values[field.key]!);
+      const directoryList = ['readOnlyDirs', 'readWriteDirs'].includes(field.key);
+      this.structured = new StructuredEditor({ editor: directoryList ? 'directories' : field.editor as 'list' | 'string-map' | 'object-map', label: field.label, genericList: field.editor === 'list' && !field.choicesEndpoint && !directoryList }, editor.values[field.key]!);
       this.structuredServer = true; this.structuredField = undefined;
       this.structuredIndex = this.menuIndex; this.setView('structured');
     } else { this.input.setValue(editor.values[field.key]!); this.setView('server-field'); }
