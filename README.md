@@ -93,7 +93,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 
 | Key | Action |
 | --- | --- |
-| ↑ / ↓ | Select an agent (highlighted blue) |
+| ↑ / ↓ | Select an agent (metadata highlighted; configurable colors) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
 | a | Key-labelled agent info, editing and lifecycle actions |
@@ -105,13 +105,14 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | e | Modify the selected agent |
 | s | Edit skills when the server advertises the skills plugin |
 | v, then s | Organization / plugin server settings (when supported) |
-| v, then t | Choose and reorder table fields (client only) |
+| v, then t | Configure TUI colors (client only) |
+| v, then b | Choose and reorder table fields (client only) |
 | v, then f | Configure tracked events (client only) |
 | v, then l | Configure rendering levels |
 | q / Ctrl+C | Quit the client, leaving server work running |
 
 Rows default to **name, status, model, latest tracked event**. Use `v`, then
-`t` to choose visible table fields: Space toggles a field, Left/Right moves it,
+`b` to choose visible table fields: Space toggles a field, Left/Right moves it,
 `1`–`9` / `0` assigns its position (`0` = 10), and `z` restores defaults. At least
 one field must remain visible. Changes are saved in the client config. The first
 shown field always carries the tree indentation. Available fields include status,
@@ -119,8 +120,9 @@ launch settings, error, session number, and revision. Metadata columns fit their
 contents up to sensible caps; **Event gets the remaining width** and priority
 when space is tight. Short values such as harness `pi` only need a compact column
 wide enough for the header. Columns recalculate on resize and live updates.
-Child connectors sit directly beneath their parent's name; names are indented
-by two cells per hierarchy level. Archived agents are hidden.
+Hierarchy uses two spaces per level, without connector glyphs. Archived agents
+are hidden. Selection highlights metadata on either side of Event without
+recoloring event previews; an Event-only table uses a small `▸` marker.
 Latest events always use the summary strategy, regardless of chat levels.
 Compatible message chunks are combined per agent, so the preview shows the
 message rather than only its last streamed chunk. Assistant previews omit the
@@ -321,6 +323,15 @@ Press `+` in the skills editor to add a catalog skill using JSON, e.g. `{"name":
 
 Public-client installed/available grants add availability to ancestors without installing there. Removal/downgrade retains earlier grants and preserved working copies. Selected `installed` is not a guarantee of filesystem readiness: inspect operation errors and `skills.error` events. Selections live in `settings.extensions` under the discovered namespace. Legacy `settings.skills` migrates on servers with the plugin enabled; raw records are retained when disabled. See [the plugin-owned API contract](../agentorg-plugin-skills/README.md) for plugin-owned skill behavior.
 
+### TUI colors: `v t`
+
+Use ↑/↓ to select a component, then Space, Enter or → to cycle colors; ← cycles
+backward. `z` restores defaults and Escape returns to the tree. Preferences cover
+selection, headers, borders, notices, footer, Markdown, tool phases and diffs.
+`default` uses the terminal's own foreground/background; orange uses xterm color
+208. Changes are saved automatically in the client config and never affect the
+server. Renderer examples use the same palette as tree and chat.
+
 ### Event filters: `v f`
 
 Use ↑ / ↓ to select a type and Space to toggle it. Checked types are displayed
@@ -383,7 +394,8 @@ appears when earlier rows
 are hidden. As new update events arrive, the excerpt advances to the latest output.
 Updates without output retain their renderer's normal details. Other output bodies
 keep their own Markdown/code colors.
-Selected tree rows preserve these colors and the blue selection background.
+Selected tree rows preserve event colors and keep the selection background
+confined to metadata (blue by default).
 
 Sparse tool updates/results recover their command/path from retained call context
 on the server, including older adapter history, without changing raw envelopes.
@@ -410,7 +422,7 @@ presentations may stay cached until history is reloaded. Changing an agent's
 harness may also change historical rendering; events store no historical harness
 identity. No tools are rerun. See [the server contract](../agentorg/EXTENSIONS.md#event-renderers-presentation-contract-v1).
 
-Filters and levels are saved automatically to
+Colors, table fields, filters and levels are saved automatically to
 `$XDG_CONFIG_HOME/org-tui/settings.json`, or `~/.config/org-tui/settings.json`
 when XDG_CONFIG_HOME is unset. `--config` overrides the path. Only presentation
 settings are saved, not prompts, agent settings, or transcript data.
@@ -427,7 +439,12 @@ is unchanged. Thinking and user chunks are labeled
 separately. Generation changes and intervening events prevent chunk merging.
 Prompt result text is not appended again as an assistant response.
 
-At the bottom, **`>`** is a single-line message input:
+The chat header shows the agent's ancestry, separated by `/`. Opening an
+interrupting prompt from the tree keeps the tree visible above the composer;
+its target stays fixed even if live updates change the tree selection.
+
+At the bottom, horizontal rules surround the single-line message input, with
+**`>`** in the upper rule. Input starts at the terminal's left edge:
 
 - **Enter** sends the message. Every send explicitly uses `queue: false`: it
   cancels queued prompts and interrupts active work before the new prompt runs.

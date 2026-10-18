@@ -1,7 +1,7 @@
 import stringWidth from 'string-width';
 import type { ServerEvent, EventRendering } from './protocol.js';
 import { cell, clean, renderTreeEvent, styledCell } from './render.js';
-import { ansiColor, type ColorSetting, type TableField } from './settings.js';
+import { ansiColor, resolveColor, type ColorSetting, type TableField } from './settings.js';
 import type { TreeRow } from './store.js';
 
 const TABLE_LABELS: Record<TableField, string> = {
@@ -35,7 +35,10 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
   width = Math.max(0, Math.floor(width));
   if (!fields.length) return { header: '', items: rows.map(() => ''), widths: [] as number[] };
   const gap = fields.length < 2 ? 0 : Math.max(0, Math.min(2, Math.floor((width - fields.length) / (fields.length - 1))));
-  const budget = width - gap * (fields.length - 1);
+  // With no metadata to highlight, reserve a small selection marker instead
+  // of recoloring the event preview or making selection invisible.
+  const markerWidth = fields.length === 1 && fields[0] === 'event' ? Math.min(2, width) : 0;
+  const budget = width - markerWidth - gap * (fields.length - 1);
   const values = rows.map(row => fields.map(field => value(row, field)));
   const eventIndex = fields.indexOf('event');
   const widths = fields.map((field, index) => {
@@ -67,9 +70,14 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
   shrink(() => 0);
   if (eventIndex >= 0) widths[eventIndex] = widths[eventIndex]! + budget - used;
   const separator = ' '.repeat(gap);
+  const codes = `${ansiColor(resolveColor(colors, 'selectionFg'))};${ansiColor(resolveColor(colors, 'selectionBg'), true)}`;
+  const highlight = (text: string) => {
+    const visible = text.trimEnd();
+    return visible ? `\x1b[${codes}m${visible}\x1b[0m${text.slice(visible.length)}` : text;
+  };
   return {
     widths,
-    header: fields.map((field, index) => cell(TABLE_LABELS[field], widths[index]!)).join(separator),
+    header: ' '.repeat(markerWidth) + fields.map((field, index) => cell(TABLE_LABELS[field], widths[index]!)).join(separator),
     items: rows.map((row, r) => {
       const cells = fields.map((field, index) => {
         const size = widths[index]!;
@@ -79,13 +87,18 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
         const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq), colors) : '—';
         return styledCell(prefix + preview, size);
       });
-      const eventIndex = fields.indexOf('event');
-      const end = eventIndex < 0 ? cells.length : eventIndex;
       const rowText = cells.join(separator);
-      if (r !== selectedIndex || end === 0) return rowText;
-      const prefixText = cells.slice(0, end).join(separator).trimEnd();
-      const codes = `${ansiColor(colors.selectionFg ?? 'white')};${ansiColor(colors.selectionBg ?? 'blue', true)}`;
-      return `\x1b[${codes}m${prefixText}\x1b[0m${rowText.slice(prefixText.length)}`;
+      if (markerWidth) {
+        const marker = r === selectedIndex ? `\x1b[${codes}m${cell('▸', markerWidth)}\x1b[0m` : ' '.repeat(markerWidth);
+        return marker + rowText;
+      }
+      if (r !== selectedIndex) return rowText;
+      if (eventIndex < 0) return highlight(rowText);
+      const parts: string[] = [];
+      if (eventIndex > 0) parts.push(highlight(cells.slice(0, eventIndex).join(separator)));
+      parts.push(cells[eventIndex]!);
+      if (eventIndex < cells.length - 1) parts.push(highlight(cells.slice(eventIndex + 1).join(separator)));
+      return parts.join(separator);
     }),
   };
 }

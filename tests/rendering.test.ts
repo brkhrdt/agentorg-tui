@@ -332,7 +332,7 @@ test('terminal compact controls toggle via selection or shortcut with either set
     try {
       await tui.visible('connected');
       tui.keys('v'); await tui.visible('Compact tool phases in chat: off');
-      tui.keys('\x1b[B'.repeat(serverSettings ? 4 : 3) + '\r');
+      tui.keys('\x1b[B'.repeat(serverSettings ? 5 : 4) + '\r');
       await tui.visible('Compact tool phases in chat: on');
       await waitFor(saved(true));
       tui.keys('?'); await tui.visible('Toggle compact tool phases');
@@ -418,20 +418,20 @@ test('terminal changes only symbol colors across phases and independently colors
     await tui.visible('$ echo ready');
     await waitFor(() => fg('$ echo ready') === 3).catch(() => { throw new Error(`Expected yellow header; fg=${fg('$ echo ready')}\n${tui.screen()}`); });
     expect(tui.screen()).not.toContain('tool.call:'); expect(tui.screen()).not.toContain('pending');
-    expect(fg('echo ready')).toBe(7); // Plain selected-row text, not lifecycle yellow.
+    expect(fg('echo ready')).toBe(-1); // Event text keeps the terminal default, not selection/lifecycle colors.
     live({ ...call, seq: 2, type: 'tool.update', data: { ...call.data as object, status: 'in_progress' } }, bash);
     await waitFor(() => fg('$ echo ready') === 208);
-    expect(fg('echo ready')).toBe(7);
+    expect(fg('echo ready')).toBe(-1);
     live({ ...call, seq: 3, type: 'tool.result', data: { ...call.data as object, status: 'completed' } }, bash);
     await waitFor(() => fg('$ echo ready') === 2);
-    expect(fg('echo ready')).toBe(7);
+    expect(fg('echo ready')).toBe(-1);
     live({ ...call, seq: 4, type: 'tool.result', data: { ...call.data as object, status: 'failed' } }, { ...bash, extended: '$ echo ready\nexit 2' });
     await waitFor(() => fg('$ echo ready') === 1);
-    expect(fg('echo ready')).toBe(7);
+    expect(fg('echo ready')).toBe(-1);
     const edit = event(5, 'tool.result', { title: 'edit', status: 'completed', rawInput: { path: 'file.ts' } });
     const delta: EventRendering = { rendererId: 'pi/edit', subtype: 'edit', summary: 'Δ file.ts · +1 / -1', extended: 'Δ file.ts old text\n  new text', extendedDiff: { prefix: 'Δ file.ts', before: 'old text', after: 'new text' }, full: 'Δ file.ts · +1 / -1\n\n```diff\n@@ -1 +1 @@\n-old text\n+new text\n```' };
     live(edit, delta); await tui.visible('Δ file.ts');
-    expect(fg('file.ts')).toBe(7); expect(fg('+1')).toBe(2); expect(fg('-1')).toBe(1);
+    expect(fg('file.ts')).toBe(-1); expect(fg('+1')).toBe(2); expect(fg('-1')).toBe(1);
     tui.keys('c'); await tui.visible('Chat · root');
     await tui.visible('-old text'); await tui.visible('+new text');
     expect(fg('Δ file.ts')).toBe(2); expect(fg('-old text')).toBe(1); expect(fg('+new text')).toBe(2);

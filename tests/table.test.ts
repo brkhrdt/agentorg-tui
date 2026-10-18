@@ -60,6 +60,19 @@ test('selected tree row styling ends before the event summary', () => {
   expect(table.items[1]).not.toContain('\x1b[37;44m');
 });
 
+test('selection highlights metadata on either side of Event and marks Event-only rows', () => {
+  for (const fields of [['event', 'name'], ['name', 'event', 'status'], ['name', 'status'], ['event']] as const) {
+    const plain = renderTable(rows, latest, fields, 80);
+    const selected = renderTable(rows, latest, fields, 80, new Map(), {}, 0);
+    expect(stripAnsi(selected.items[0]!)).toBe(fields.length === 1
+      ? '▸' + stripAnsi(plain.items[0]!).slice(1) : stripAnsi(plain.items[0]!));
+    expect(selected.items[0]).toContain('\x1b[37;44m');
+    expect(selected.items[1]).not.toContain('\x1b[37;44m');
+    expect(selected.items[0]).not.toContain('\x1b[37;44m\x1b[1mReading');
+    expect(stringWidth(selected.items[0]!)).toBeLessThanOrEqual(80);
+  }
+});
+
 test('reordered Event preserves styles, alignment and first-column tree indentation', () => {
   const table = renderTable(rows, latest, ['event', 'harness', 'name'], 80);
   const [eventWidth, harnessWidth] = table.widths;
@@ -76,7 +89,7 @@ test('headers and Unicode rows fit even very narrow terminals, with no control i
   const unicodeRows = [{ agent: agent('👩‍💻界e\u0301\x1b[2J\x07\nname'), depth: 5 }];
   for (const fields of [TABLE_FIELDS, [...TABLE_FIELDS].reverse(), ['event'] as const, DEFAULT_TABLE_FIELDS]) {
     for (let width = 0; width <= 160; width++) {
-      const table = renderTable(unicodeRows, latest, fields, width);
+      const table = renderTable(unicodeRows, latest, fields, width, new Map(), {}, 0);
       for (const line of [table.header, ...table.items]) {
         expect(stringWidth(line)).toBeLessThanOrEqual(width);
         expect(line).not.toContain('\n');

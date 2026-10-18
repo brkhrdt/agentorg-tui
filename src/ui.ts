@@ -39,7 +39,7 @@ export class UI {
   private columns = blessed.box({ parent: this.screen, top: 1, height: 1, style: { fg: 'gray' } });
   private tree = blessed.list({
     parent: this.screen, top: 2, bottom: 2, keys: true, vi: false, mouse: true,
-    // Keep the selection background, but preserve locally generated event colors.
+    // renderTable highlights metadata only, preserving event preview colors.
     invertSelected: false,
     tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } },
     scrollbar: { ch: '│', style: { bg: 'gray' } },
@@ -1249,7 +1249,7 @@ export class UI {
       const keys = Object.keys(COLOR_SETTINGS) as ColorSetting[];
       this.menu.setItems(keys.map(key => `${COLOR_SETTINGS[key]}: ${this.settings.color(key)}`));
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(' ↑↓ component  Space / Enter / → next color  ← previous  z defaults  Esc settings');
+      this.footer.setContent(' ↑↓ component  Space / Enter / → next color  ← previous  z defaults  Esc tree');
     } else if (this.view === 'table-fields') {
       this.updating = true;
       this.menu.setItems(TABLE_FIELDS.map(field => {
