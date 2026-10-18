@@ -64,15 +64,15 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await visible(clip(initialText.replace(/\*\*/g, '') + '.', 99 - eventColumn));
     expect(screen()).not.toContain('assistant:');
     expect(screen()).not.toContain('**Initial worker answer**');
-    expect(terminal.buffer.active.getLine(4)?.getCell(eventColumn)?.isBold()).toBeTruthy();
-    expect(terminal.buffer.active.getLine(4)?.getCell(eventColumn + 22)?.isBold()).toBeFalsy();
+    expect(terminal.buffer.active.getLine(3)?.getCell(eventColumn)?.isBold()).toBeTruthy();
+    expect(terminal.buffer.active.getLine(3)?.getCell(eventColumn + 22)?.isBold()).toBeFalsy();
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
     expect(screen().split('\n')[3]).toStartWith('  worker');
     const selectedBg = (row: number) => terminal.buffer.active.getLine(row)?.getCell(0)?.getBgColor();
-    expect(selectedBg(3)).not.toBe(selectedBg(4));
+    expect(selectedBg(2)).not.toBe(selectedBg(3));
     keys('\x1b[B');
-    await waitFor(() => selectedBg(4) === 4); // Selected agent is highlighted in blue.
+    await waitFor(() => selectedBg(3) === 4); // Selected agent is highlighted in blue.
     keys('?'); await visible('Keys · tree');
     await visible('Restart subtree');
     keys('c'); await visible('Chat · coordinator / worker');
@@ -126,6 +126,8 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     keys('chat message\r');
     await waitFor(() => prompts.length === 2);
     expect(prompts[1]).toEqual({ agentId: 'worker', text: 'chat message', queue: false });
+    await waitFor(() => screen().split('\n').slice(1, 25).some(line => line.includes('chat message')) &&
+      screen().split('\n')[26]?.trim() === '' && screen().includes('Prompt completed'));
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('s'); await visible('Skills · worker');
     await visible('unavailable  alpha');
@@ -266,7 +268,9 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
     expect(mutations[0].params).toMatchObject({ parentId: null, name: 'coordinator', settings: { harness: 'fixture', provider: 'provider-a', model: 'gpt-6-luna' } });
     keys('n'); await visible('Create agent · child');
     expect(screen()).toContain('/server/project/src/nested/');
-    await field('worker'); down(AGENT_FIELD_COUNT); keys('\r'); await visible('  worker');
+    await field('worker'); down(AGENT_FIELD_COUNT); keys('\r');
+    await visible('LATEST TRACKED EVENT'); await visible('  worker');
+    await waitFor(() => mutations.length === 2);
     expect(mutations[1].params.parentId).toBe('root');
     keys('\x1b[A'); // Back to the root after the child was selected on creation.
     keys('e'); await visible('Modify agent · revision 1');

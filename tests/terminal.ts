@@ -3,14 +3,14 @@ import { join, resolve } from 'node:path';
 import xterm from '@xterm/headless';
 import { waitFor } from './helpers.js';
 
-export function terminalClient(socket: string, directory: string) {
-  const terminal = new xterm.Terminal({ cols: 120, rows: 30, allowProposedApi: true });
+export function terminalClient(socket: string, directory: string, { cols = 120, rows = 30 } = {}) {
+  const terminal = new xterm.Terminal({ cols, rows, allowProposedApi: true });
   const command = process.env.ORG_TUI_BINARY ? `'${resolve(process.env.ORG_TUI_BINARY)}'` : 'bun src/main.ts';
-  const child = spawn('script', ['-qefc', `stty cols 120 rows 30; exec ${command} --socket '${socket}' --config '${join(directory, 'config.json')}'`, '/dev/null'], {
+  const child = spawn('script', ['-qefc', `stty cols ${cols} rows ${rows}; exec ${command} --socket '${socket}' --config '${join(directory, 'config.json')}'`, '/dev/null'], {
     cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdout.on('data', data => terminal.write(data));
-  const screen = () => Array.from({ length: 30 }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
+  const screen = () => Array.from({ length: rows }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
   const keys = (text: string) => child.stdin.write(text);
   return {
     keys, screen,

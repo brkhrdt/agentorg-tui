@@ -118,6 +118,7 @@ export class UI {
   private skillNames: string[] = [];
   private skillRevision = 0;
   private chatAgent?: string;
+  private promptAgent?: string;
   private rows: TreeRow[] = [];
   private menuTypes: string[] = [];
   private menuIndex = 0;
@@ -902,7 +903,9 @@ export class UI {
     this.setView('chat');
   }
   private openPrompt(): void {
-    if (this.sending || !this.selected()) return;
+    const agent = this.selected();
+    if (this.sending || !agent) return;
+    this.promptAgent = agent.id;
     this.input.setValue('');
     this.setView('prompt');
   }
@@ -916,13 +919,21 @@ export class UI {
     this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.input.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     const composer = view === 'chat' || view === 'prompt';
-    this.input.border = composer ? null as any : { type: 'line', left: true, right: true, top: true, bottom: true } as any;
+    // Blessed's typings omit removable borders and their runtime side flags.
+    this.input.border = (composer ? undefined : { type: 'line', left: true, right: true, top: true, bottom: true }) as unknown as blessed.Widgets.Border;
+    this.input.height = composer ? 1 : 3;
     this.input.bottom = composer ? 3 : this.isPathInput() || this.isVolumeInput() ? 7 : 2;
+    this.tree.bottom = view === 'prompt' ? 5 : 2;
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree' || view === 'prompt') {
       this.tree.show(); this.columns.show();
       if (view === 'tree') this.tree.focus();
-      else { this.input.show(); this.input.focus(); if (!this.sending) this.input.readInput(); }
+      else {
+        // Reselecting the same row is a no-op in Blessed; explicitly reveal it
+        // after reducing the viewport to make room for the composer.
+        this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
+        this.input.show(); this.input.focus(); if (!this.sending) this.input.readInput();
+      }
     } else if (view === 'agent-info') {
       this.details.show(); this.details.focus();
     } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
@@ -1066,7 +1077,7 @@ export class UI {
       return;
     }
     const view = this.view;
-    const agentId = view === 'chat' ? this.chatAgent : this.selectedAgent;
+    const agentId = view === 'chat' ? this.chatAgent : this.promptAgent;
     if (!agentId || !value.trim()) { this.input.focus(); this.input.readInput(); return; }
     this.sending = true;
     this.draw();
@@ -1090,13 +1101,14 @@ export class UI {
     this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
     const promptLabel = ' > ';
-    this.promptTop.setContent(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`);
+    this.promptTop.setContent(clip(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`, width));
     this.promptBottom.setContent('─'.repeat(width));
     this.menu.width = '100%';
     this.preview.hide();
     const store = this.session.store;
     const agent = this.view === 'agent-info' ? store.agents.get(this.infoAgentId ?? '') :
-      this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') : this.selected();
+      this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') :
+      this.view === 'prompt' ? store.agents.get(this.promptAgent ?? '') : this.selected();
     const structuredLabel = this.structuredServer ? this.serverField?.label : this.structuredField ? this.editor?.label(this.structuredField) : '';
     const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; ${this.structuredServer ? 'server' : 'agent'} Save applies` :
       this.view === 'volume-destination' ? `Container destination · ${this.pendingVolume?.name} · e.g. /home/pi/.pi` :
@@ -1105,7 +1117,7 @@ export class UI {
       this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${structuredLabel} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
       this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agentHierarchy(agent, store.agents) || this.chatAgent}` :
       this.view === 'agent-info' ? `Agent info · ${agent?.name ?? this.infoAgentId} · ${this.infoRaw ? 'JSON' : 'read-only'}` :
-      this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
+      this.view === 'prompt' ? `Interrupting prompt · ${agent?.name ?? this.promptAgent}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
       this.view === 'agent-field' ? `Edit ${this.editor?.label(this.editField!)} · ${this.editor?.spec(this.editField!).editor}` :
@@ -1129,7 +1141,7 @@ export class UI {
       this.view === 'view' ? 'View settings · server configuration / client preferences' : 'Agent Organization';
     const state = clip(this.session.status, width);
     const titleText = clip(heading, Math.max(0, width - stringWidth(state) - 1));
-    this.title.setContent(`${titleText}${' '.repeat(Math.max(1, width - stringWidth(titleText) - stringWidth(state)))}${state}`);
+    this.title.setContent(`${titleText}${' '.repeat(Math.max(0, width - stringWidth(titleText) - stringWidth(state)))}${state}`);
     if (['structured', 'structured-filter'].includes(this.view)) {
       const entries = this.structured?.entries() ?? [];
       this.menuIndex = Math.max(0, Math.min(this.menuIndex, entries.length - 1));
@@ -1269,7 +1281,7 @@ export class UI {
         this.preview.width = side ? '50%' : '100%';
         this.preview.top = side ? 2 : height - 11;
         this.preview.show();
-        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 5 : 9) - 2), this.settings.colors));
+        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 4 : 9) - 2), this.settings.colors));
       } else this.menu.bottom = 2;
       this.updating = true;
       this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?

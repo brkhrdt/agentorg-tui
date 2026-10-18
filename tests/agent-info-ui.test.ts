@@ -25,12 +25,12 @@ test('agent info: direct/contextual access, JSON, scrolling, live identity and b
   };
   try {
     await client.visible('  worker');
-    client.keys('\x1b[B'); await waitFor(() => client.cell(4, 0)?.getBgColor() === 4);
+    client.keys('\x1b[B'); await waitFor(() => client.cell(3, 0)?.getBgColor() === 4);
     client.keys('i'); await client.visible('Agent info · worker');
     await client.visible('Session ID: worker-session');
     expect(client.screen()).not.toContain('root-session');
     client.keys('\x1b'); await client.visible('LATEST TRACKED EVENT');
-    client.keys('\x1b[A'); await waitFor(() => client.cell(3, 0)?.getBgColor() === 4);
+    client.keys('\x1b[A'); await waitFor(() => client.cell(2, 0)?.getBgColor() === 4);
     client.keys('a'); await client.visible('Agent actions · coordinator');
     await client.visible('i  View all agent info');
     client.keys('i'); await client.visible('Agent info · coordinator');
