@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { AgentEditor } from '../src/agent-editor.js';
+import { Session } from '../src/session.js';
 import { UI } from '../src/ui.js';
 import { agent } from './helpers.js';
 
@@ -48,15 +49,33 @@ test('unsupported optional capability hides the Skills field', async () => {
 test('skill draft stages a complete map under the advertised namespace and preserves sibling namespaces', () => {
   const record = agent('worker', 'root', { revision: 12, settings: {
     harness: 'fixture', model: 'test',
-    extensions: { managed: { alpha: 'installed', retained: 'available' }, sibling: { keep: true } },
+    extensions: { managed: { alpha: 'installed', retained: 'available', legacy: 'available' }, sibling: { keep: true } },
   } });
   const draft = withSkills('root', record);
   draft.setSkillState('beta', 'available');
   draft.removeSkill('alpha');
   expect(draft.params()).toEqual({
     agentId: 'worker', expectedRevision: 12,
-    settings: { extensions: { managed: { retained: 'available', beta: 'available' }, sibling: { keep: true } } },
+    settings: { extensions: { managed: { retained: 'available', legacy: 'available', beta: 'available' }, sibling: { keep: true } } },
   });
+  expect(draft.skillChoices().find(skill => skill.name === 'legacy')).toMatchObject({ retainedUnknown: true, state: 'available' });
+});
+
+test('catalog discovery works without add endpoint and late responses cannot overwrite newer catalogs', async () => {
+  const session = new Session('/unused');
+  const waiting: Array<(value: { skills: any[] }) => void> = [];
+  const client = { request: async () => new Promise(resolve => waiting.push(resolve)), close() {} } as any;
+  (session as any).client = client;
+  const snapshot = { seq: 0, agents: [], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', endpoints: { list: 'catalog.list' } } } } } as any;
+  const older = (session as any).loadSkills(client, snapshot);
+  const newer = (session as any).loadSkills(client, snapshot);
+  expect(session.skillsEnabled).toBe(true);
+  waiting[1]!({ skills: [{ name: 'beta', description: 'Beta' }] });
+  await newer;
+  waiting[0]!({ skills: [{ name: 'alpha', description: 'Alpha' }] });
+  await older;
+  expect(session.skillCatalog.map(skill => skill.name)).toEqual(['beta']);
+  session.close();
 });
 
 test('removing the last selection explicitly clears the map; unedited modify omits it and cancel stays local', () => {

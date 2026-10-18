@@ -723,7 +723,8 @@ export class UI {
       catch (error) { if (!this.closing && request === this.editorRequest && this.view === view) this.showNotice((error as Error).message); return; }
       if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
     }
-    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled, this.session.podmanProfilesEnabled, this.session.agentProfilesEnabled);
+    this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled, this.session.podmanProfilesEnabled, this.session.agentProfilesEnabled,
+      this.session.skillsEnabled ? { skills: { namespace: this.session.skillsNamespace, catalog: this.session.skillCatalog } } : undefined);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';

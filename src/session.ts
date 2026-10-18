@@ -16,6 +16,7 @@ export class Session extends EventEmitter {
   status = 'connecting';
   skillsEnabled = false;
   skills: Skill[] = [];
+  get skillCatalog(): Skill[] { return this.skills; }
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
   private agentProfileEndpoints = new Map<string, string>();
@@ -137,13 +138,15 @@ export class Session extends EventEmitter {
     const result = await client.request<{ models: { id: string; name?: string }[] }>('organization.models', params);
     return result.models.map(model => ({ value: model.id, label: model.name && model.name !== model.id ? `${model.id} · ${model.name}` : model.id }));
   }
-  private skillsNamespace = 'skills';
+  skillsNamespace = 'skills';
   private skillsList = '';
   private skillsAdd = '';
+  private skillsRequest = 0;
   skillStates(agentId: string): SkillStates {
     return (this.store.agents.get(agentId)?.settings.extensions?.[this.skillsNamespace] ?? {}) as SkillStates;
   }
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
+    const skillsRequest = ++this.skillsRequest;
     this.settingsFields = pluginFields(snapshot.capabilities?.settingsEditors);
     const rendering = snapshot.capabilities?.rendering;
     this.renderingCapability = rendering?.version === 1 && typeof rendering.catalog === 'string' ? rendering : undefined;
@@ -177,14 +180,23 @@ export class Session extends EventEmitter {
     this.podmanImages = podman?.endpoints?.images ?? '';
     this.podmanDefaults = podman?.endpoints?.defaults ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
-    const capability = snapshot.capabilities?.plugins?.skills as { settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
-    this.skillsEnabled = typeof capability?.settingsNamespace === 'string' && typeof capability?.endpoints?.list === 'string' && typeof capability?.endpoints?.add === 'string';
-    if (!this.skillsEnabled) { this.skills = []; return; }
-    this.skillsNamespace = capability!.settingsNamespace as string;
-    this.skillsList = capability!.endpoints!.list as string;
-    this.skillsAdd = capability!.endpoints!.add as string;
-    const catalog = await client.request<{ skills: Skill[] }>(this.skillsList);
-    if (client === this.client && !this.stopped) this.skills = catalog.skills;
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; add?: unknown } } | undefined;
+    const namespace = capability?.settingsNamespace;
+    const list = capability?.endpoints?.list;
+    this.skillsEnabled = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
+    if (!this.skillsEnabled) {
+      if (skillsRequest === this.skillsRequest) { this.skills = []; this.skillsAdd = ''; }
+      return;
+    }
+    this.skillsNamespace = namespace as string;
+    this.skillsList = list as string;
+    this.skillsAdd = typeof capability!.endpoints!.add === 'string' ? capability!.endpoints!.add as string : '';
+    const catalog = await client.request<{ skills?: unknown }>(this.skillsList, {});
+    if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
+      this.skills = Array.isArray(catalog.skills) ? catalog.skills.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
+        typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
+        typeof (skill as Skill).description === 'string') : [];
+    }
   }
   private client?: RpcClient;
   private stopped = false;
@@ -316,7 +328,7 @@ export class Session extends EventEmitter {
   }
   async addSkill(name: string, gitUrl: string): Promise<void> {
     const client = this.client;
-    if (!client || !this.status.startsWith('connected') || !this.skillsEnabled) throw new Error('Skills plugin is not connected');
+    if (!client || !this.status.startsWith('connected') || !this.skillsEnabled || !this.skillsAdd) throw new Error('Skills catalog add endpoint is not available');
     await client.request(this.skillsAdd, { name, gitUrl }, 75_000);
     this.scheduleRefresh();
     this.emit('notice', `Added skill ${name}`);

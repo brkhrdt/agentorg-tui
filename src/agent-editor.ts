@@ -1,9 +1,10 @@
-import type { Agent, AgentProfile, ContainerProfile } from './protocol.js';
+import type { Agent, AgentProfile, ContainerProfile, Skill, SkillStates } from './protocol.js';
+import { SkillSelectionDraft } from './skill-selection.js';
 import { StructuredEditor, collection, parseTyped, valueText, type PluginField, type FieldSpec } from './structured-editor.js';
 
 export const AGENT_FIELDS = ['name', 'harness', 'provider', 'model', 'cwd', 'metadata', 'env', 'options', 'extensions'] as const;
 export const PODMAN_FIELDS = ['readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'] as const;
-export type AgentField = 'thinking' | 'container' | typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
+export type AgentField = 'thinking' | 'container' | 'skills' | typeof AGENT_FIELDS[number] | typeof PODMAN_FIELDS[number] | `plugin:${string}:${string}`;
 export type ImageScope = 'node' | 'inherited' | 'all';
 const maps = new Set<AgentField>(['metadata', 'env', 'options', 'extensions']);
 
@@ -22,11 +23,14 @@ export class AgentEditor {
   private selectedAgentProfile?: AgentProfile;
   private agentBase?: { provider?: string; model?: string; options: Record<string, unknown> };
   private agentLabel = '';
+  private skillNamespace?: string;
+  private skillDraft?: SkillSelectionDraft;
+  private skillsExplicit = false;
   private readonly podmanEnabled: boolean;
   private readonly volumesEnabled: boolean;
   private readonly pluginSpecs = new Map<AgentField, PluginField>();
   private readonly explicit = new Set<AgentField>();
-  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false, private readonly agentProfilesEnabled = false) {
+  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false, private readonly agentProfilesEnabled = false, options?: { skills?: { namespace: string; catalog: Skill[] } }) {
     this.podmanEnabled = podmanEnabled || !!agent?.settings.extensions?.podman;
     const grants = agent?.settings.extensions?.podman as Record<string, unknown> | undefined;
     this.volumesEnabled = volumesEnabled || !!grants?.readOnlyVolumes || !!grants?.readWriteVolumes;
@@ -34,13 +38,20 @@ export class AgentEditor {
       if (this.podmanEnabled && spec.namespace === 'podman' && ['image', 'readOnlyDirs', 'readWriteDirs', 'readOnlyVolumes', 'readWriteVolumes'].includes(spec.key)) continue;
       this.pluginSpecs.set(`plugin:${spec.namespace}:${spec.key}`, { ...spec });
     }
-    this.baseFields = [...AGENT_FIELDS.flatMap(field => field === 'model' && agentProfilesEnabled ? [field, 'thinking' as const] : [field]), ...(this.podmanEnabled && profilesEnabled ? ['container' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
+    this.skillNamespace = options?.skills?.namespace;
+    if (options?.skills) {
+      const extension = agent?.settings.extensions?.[options.skills.namespace];
+      const existing = extension && typeof extension === 'object' && !Array.isArray(extension) ? extension as SkillStates : {};
+      this.skillDraft = new SkillSelectionDraft(options.skills.catalog, existing);
+    }
+    this.baseFields = [...AGENT_FIELDS.flatMap(field => field === 'model' && agentProfilesEnabled ? [field, 'thinking' as const] : [field]), ...(this.skillDraft ? ['skills' as const] : []), ...(this.podmanEnabled && profilesEnabled ? ['container' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
       const value = field === 'name' ? agent?.name ?? 'agent' : field === 'metadata' ? agent?.metadata : agent?.settings[field];
       return [field, maps.has(field) ? JSON.stringify(value ?? {}) : String(value ?? '')];
     })) as Record<AgentField, string>;
+    if (this.skillDraft) this.values.skills = this.display('skills');
     const podman = agent?.settings.extensions?.podman as { image?: string | null; profile?: { id?: string; name?: string }; readOnlyDirs?: string[]; readWriteDirs?: string[]; readOnlyVolumes?: string[]; readWriteVolumes?: string[] } | undefined;
     this.values.thinking = String((agent?.settings.options as Record<string, unknown> | undefined)?.thinking ?? '');
     const piProfile = (agent?.settings.extensions?.pi as { profile?: { name?: string } } | undefined)?.profile;
@@ -79,7 +90,25 @@ export class AgentEditor {
     const pi = parent.settings.extensions?.pi as { profile?: { name?: string } } | undefined;
     this.agentLabel = `${parent.settings.harness} — ${pi?.profile?.name ?? 'Default'} (inherited)`;
   }
-  display(field: AgentField): string { return field === 'harness' ? this.agentLabel || this.values.harness : this.values[field]; }
+  display(field: AgentField): string {
+    if (field === 'harness') return this.agentLabel || this.values.harness;
+    if (field === 'skills') {
+      const count = Object.values(this.skillDraft?.states ?? {}).filter(state => state !== 'unavailable').length;
+      return count ? `${count} selected` : 'None selected';
+    }
+    return this.values[field];
+  }
+  skillChoices() { return this.skillDraft?.choices() ?? []; }
+  setSkillState(name: string, state: 'available' | 'installed'): void {
+    if (!this.skillDraft) throw new Error('Skills plugin is not available');
+    if (this.skillDraft.states[name] !== state) this.skillsExplicit = true;
+    this.skillDraft.setState(name, state);
+  }
+  removeSkill(name: string): void {
+    if (!this.skillDraft) throw new Error('Skills plugin is not available');
+    if (Object.hasOwn(this.skillDraft.states, name)) this.skillsExplicit = true;
+    this.skillDraft.remove(name);
+  }
   selectProfile(profile: ContainerProfile, revision: number): void {
     this.selectedProfile = { profile: structuredClone(profile), revision };
     this.values.container = profile.name;
@@ -90,6 +119,7 @@ export class AgentEditor {
     return spec.editor.endsWith('-map') ? '{}' : collection(spec.editor) ? '[]' : spec.editor === 'number' ? '0' : spec.editor === 'boolean' ? 'false' : '';
   }
   label(field: AgentField): string {
+    if (field === 'skills') return 'Skills';
     const spec = this.pluginSpecs.get(field);
     return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'harness' ? 'Agent' : field === 'thinking' ? 'Thinking' : field === 'container' ? 'Container' : field;
   }
@@ -110,6 +140,7 @@ export class AgentEditor {
     if (spec) this.explicit.add(field);
   }
   spec(field: AgentField): FieldSpec {
+    if (field === 'skills') return { editor: 'text' };
     if (this.pluginSpecs.has(field)) return this.pluginSpecs.get(field)!;
     if (field === 'env') return { editor: 'string-map', sensitive: true };
     if (maps.has(field)) return { editor: 'object-map' };
@@ -180,6 +211,12 @@ export class AgentEditor {
     }
     const originalExtensions = JSON.parse(this.original.extensions) as Record<string, unknown>;
     const rawExtensions = JSON.parse(this.values.extensions) as Record<string, unknown>;
+    if (this.skillDraft && (this.skillDraft.dirty || (!this.agentId && this.skillsExplicit))) {
+      if (this.values.extensions !== this.original.extensions && Object.hasOwn(rawExtensions, this.skillNamespace!))
+        throw new Error(`Edit Skills or extensions.${this.skillNamespace}, not both`);
+      const extensions = (settings.extensions ?? rawExtensions) as Record<string, unknown>;
+      settings.extensions = { ...extensions, [this.skillNamespace!]: this.skillDraft.states };
+    }
     for (const [field, spec] of this.pluginSpecs) {
       const prior = Object.hasOwn(originalExtensions, spec.namespace) ? originalExtensions[spec.namespace] : undefined;
       const present = prior && typeof prior === 'object' && !Array.isArray(prior) && Object.hasOwn(prior, spec.key);
