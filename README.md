@@ -457,14 +457,18 @@ The chat header shows the agent's ancestry, separated by `/`. Opening an
 interrupting prompt from the tree keeps the tree visible above the composer;
 its target stays fixed even if live updates change the tree selection.
 
-At the bottom, horizontal rules surround the single-line message input, with
-**`>`** in the upper rule. Input starts at the terminal's left edge:
+At the bottom, horizontal rules surround the message input, with **`>`** in the
+upper rule. In both chat and tree prompts, input starts at the terminal's left
+edge, wraps, and grows to keep the draft visible. Once the available terminal
+height is filled, it scrolls vertically to follow the draft's end; sending still
+includes the entire prompt. Resizing the terminal rewraps the draft.
 
 - **Enter** sends the message. Every send explicitly uses `queue: false`: it
   cancels queued prompts and interrupts active work before the new prompt runs.
 - **Page Up / Page Down** scroll history and pause auto-follow.
 - **Ctrl+Home** jumps to the top; **Ctrl+End** jumps to the bottom and resumes
   auto-follow.
+- **Ctrl+U** clears the draft and collapses the input back to one row.
 - **Escape** returns to the tree without sending the input.
 
 Direct API failures and asynchronous prompt failures are shown in the status

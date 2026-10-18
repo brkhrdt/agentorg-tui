@@ -1,6 +1,6 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
-import wrapAnsi from 'wrap-ansi';
+import { PromptInput } from './prompt-input.js';
 import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
@@ -57,9 +57,15 @@ export class UI {
   });
   private promptTop = blessed.box({ parent: this.screen, bottom: 4, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private promptBottom = blessed.box({ parent: this.screen, bottom: 2, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
-  private input = blessed.textbox({
+  private editorInput = blessed.textbox({
+    parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
+  });
+  private composer = new PromptInput({
     parent: this.screen, bottom: 3, height: 1, hidden: true, keys: true, tags: false,
   });
+  private get input(): blessed.Widgets.TextareaElement {
+    return this.view === 'chat' || this.view === 'prompt' ? this.composer : this.editorInput;
+  }
   private paths = blessed.list({
     parent: this.screen, bottom: 2, height: 5, hidden: true, tags: false,
     style: { selected: { bg: 'blue', fg: 'white' } },
@@ -134,20 +140,7 @@ export class UI {
   private renderedEvents = new Map<number, { signature: string; text: string }>();
 
   constructor(private session: Session, private settings: Settings, private configPath: string) {
-    const input = this.input as blessed.Widgets.TextboxElement & { _value?: string; _updateCursor(): void };
-    const setInputValue = input.setValue.bind(input);
-    input.setValue = (value?: string) => {
-      const next = value ?? input.value;
-      if (this.view !== 'prompt') { setInputValue(next); return; }
-      if (input._value === next) return;
-      input.value = next;
-      input._value = next;
-      input.setContent(next);
-      input._updateCursor();
-    };
-    this.input.on('keypress', () => {
-      if (this.view === 'prompt') queueMicrotask(() => this.resizePrompt());
-    });
+    this.screen.on('prerender', () => this.resizeComposer());
     // Rows are already cell-clipped. Blessed otherwise word-wraps an exactly
     // full styled row just because trailing ANSI resets increase string.length.
     this.tree.on('adopt', (item: blessed.Widgets.BoxElement & { wrap: boolean }) => { item.wrap = false; });
@@ -176,7 +169,7 @@ export class UI {
       this.input.setValue(ch); this.structured!.filter = ch;
       this.setView('structured-filter');
     });
-    enablePathKeys(this.input, {
+    enablePathKeys(this.editorInput, {
       active: () => this.view === 'structured-filter', acceptSpace: false,
       move: delta => {
         const count = this.structured?.entries().length ?? 0;
@@ -185,7 +178,7 @@ export class UI {
       complete: () => {},
       changed: () => { this.structured!.filter = this.input.getValue(); this.menuIndex = 0; this.draw(); },
     });
-    enablePathKeys(this.input, {
+    enablePathKeys(this.editorInput, {
       active: () => this.isPathInput(),
       move: delta => {
         if (!this.pathCandidates.length) return;
@@ -200,7 +193,7 @@ export class UI {
       },
       changed: () => this.refreshPaths(),
     });
-    enablePathKeys(this.input, {
+    enablePathKeys(this.editorInput, {
       active: () => this.isVolumeInput(), acceptSpace: false,
       move: delta => {
         if (!this.pathCandidates.length) return;
@@ -213,13 +206,12 @@ export class UI {
       },
       changed: () => this.refreshVolumes(),
     });
-    this.input.key('C-u', () => {
+    for (const input of [this.editorInput, this.composer]) input.key('C-u', () => {
       if (!this.sending) {
         this.input.setValue('');
         if (this.isPathInput()) this.refreshPaths();
         if (this.isVolumeInput()) this.refreshVolumes();
         if (this.view === 'structured-filter') { this.structured!.filter = ''; this.menuIndex = 0; this.draw(); }
-        if (this.view === 'prompt') this.resizePrompt();
         this.screen.render();
       }
     });
@@ -229,12 +221,14 @@ export class UI {
       const input = this.input as typeof this.input & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
       if (this.view === 'structured-filter' && !input.__listener) input._listener(ch, key);
     });
-    this.input.on('submit', (value: string) => { void this.submit(value); });
-    this.input.on('cancel', () => {
-      if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
-      else this.setView(this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
-    });
-    this.input.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
+    for (const input of [this.editorInput, this.composer]) {
+      input.on('submit', (value: string) => { void this.submit(value); });
+      input.on('cancel', () => {
+        if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
+        else this.setView(this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
+      });
+    }
+    this.composer.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
       if (key.full === 'C-end') { this.follow = true; this.chat.setScrollPerc(100); }
       else if (key.full === 'C-home') { this.follow = false; this.chat.setScroll(0); }
@@ -247,7 +241,6 @@ export class UI {
     this.screen.key('C-c', () => this.close());
     this.screen.on('resize', () => {
       this.lastTreeItems = []; this.lastChat = ''; this.renderedEvents.clear();
-      if (this.view === 'prompt') this.resizePrompt();
       this.scheduleDraw();
     });
     this.session.store.on('change', () => this.scheduleDraw());
@@ -946,28 +939,27 @@ export class UI {
     const agent = this.selected();
     if (!agent) return;
     this.chatAgent = agent.id; this.follow = true; this.lastChat = ''; this.renderedEvents.clear();
-    this.input.setValue('');
+    this.composer.setValue('');
     this.setView('chat');
   }
   private openPrompt(): void {
     const agent = this.selected();
     if (this.sending || !agent) return;
     this.promptAgent = agent.id;
-    this.input.setValue('');
+    this.composer.setValue('');
     this.setView('prompt');
   }
-  private resizePrompt(): void {
-    if (this.view !== 'prompt') return;
-    const width = Math.max(1, Number(this.screen.width));
-    const value = this.input.getValue();
-    const wrappedRows = wrapAnsi(value, width, { hard: true, trim: false }).split('\n').length;
-    const rows = Math.max(1, Math.min(wrappedRows, Math.max(1, Number(this.screen.height) - 7)));
-    if (Number(this.input.height) === rows) return;
-    this.input.height = rows;
+  private resizeComposer(): void {
+    if (this.view !== 'prompt' && this.view !== 'chat') return;
+    const previous = Number(this.composer.height);
+    const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - 7));
     this.promptTop.bottom = rows + 3;
     this.tree.bottom = rows + 4;
-    this.draw();
-    (this.input as blessed.Widgets.TextboxElement & { _updateCursor(): void })._updateCursor();
+    this.chat.bottom = rows + 4;
+    if (rows !== previous) {
+      if (this.view === 'prompt') this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
+      else if (this.follow) this.chat.setScrollPerc(100);
+    }
   }
   private setView(view: View): void {
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
@@ -976,7 +968,7 @@ export class UI {
     this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.input.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     const composer = view === 'chat' || view === 'prompt';
     // Blessed's typings omit removable borders and their runtime side flags.

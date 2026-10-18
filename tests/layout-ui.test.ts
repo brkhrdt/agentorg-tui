@@ -24,6 +24,13 @@ test('prompt composer reserves tree rows, keeps the selected agent visible and r
     expect(lines[25]).toStartWith('─ > ─');
     expect(lines[26]).toBe('draft at column zero');
     expect(lines[27]).toBe('─'.repeat(120));
+    tui.keys('a'.repeat(400));
+    await waitFor(() => tui.screen().split('\n')[22]?.startsWith('─ >') === true);
+    const expanded = tui.screen().split('\n');
+    const expandedSelection = expanded.findIndex(line => line.includes('worker29') && !line.includes('Interrupting'));
+    expect(expandedSelection).toBeGreaterThanOrEqual(2);
+    expect(expandedSelection).toBeLessThan(22);
+    expect(tui.cell(expandedSelection, 0)?.getBgColor()).toBe(4);
     tui.keys('\x1b'); await tui.visible('↑↓ select');
     expect(tui.screen()).not.toContain('draft at column zero');
     expect(tui.screen()).not.toContain('─ > ─');

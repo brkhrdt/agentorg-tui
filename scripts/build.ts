@@ -10,7 +10,7 @@ const blessedStandalone: BunPlugin = {
   setup(build) {
     build.onLoad({ filter: /[/\\]blessed[/\\]lib[/\\]widget\.js$/ }, () => ({
       loader: 'js',
-      contents: ['screen', 'box', 'list', 'textbox'].map(name =>
+      contents: ['screen', 'box', 'list', 'textbox', 'textarea'].map(name =>
         `exports.${name} = exports.${name[0].toUpperCase() + name.slice(1)} = require('./widgets/${name}');`
       ).join('\n'),
     }));
