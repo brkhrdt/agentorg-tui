@@ -1,5 +1,5 @@
 import type { RendererMetadata, ServerEvent } from './protocol.js';
-import { clean, clip, eventText, renderEvent, styledCell } from './render.js';
+import { clean, clip, eventText, renderEvent, styledCell, type RenderColors } from './render.js';
 import { LEVEL_NAMES, type Level } from './settings.js';
 
 /** Local fallback previews also work with older servers without renderer discovery. */
@@ -14,7 +14,7 @@ export function genericPreview(type: string): RendererMetadata {
 }
 
 /** A bounded excerpt, not the renderer's full output; raw remains the synthetic envelope. */
-export function rendererPreview(renderer: RendererMetadata, type: string, selected: Level, width: number, height: number): string {
+export function rendererPreview(renderer: RendererMetadata, type: string, selected: Level, width: number, height: number, colors: RenderColors = {}): string {
   const example = renderer.examples.find(example => example.type === type) ?? renderer.examples[0];
   const title = `${renderer.name} · ${renderer.id}`;
   if (!example) return clip(`${title}\nNo examples available`, width);
@@ -27,7 +27,7 @@ export function rendererPreview(renderer: RendererMetadata, type: string, select
   const lines = [clip(title, width), clip('Synthetic examples · preview excerpts', width)];
   for (const level of levels) {
     lines.push(clip(`${level === selected ? '●' : '○'} ${level} ${LEVEL_NAMES[level - 1]}`, width));
-    const rendered = renderEvent(event, level, Math.max(1, width), renderer.id === 'client.generic' ? undefined : rendering).split('\n');
+    const rendered = renderEvent(event, level, Math.max(1, width), renderer.id === 'client.generic' ? undefined : rendering, colors).split('\n');
     lines.push(...rendered.slice(0, budget).map(line => styledCell(line, width).trimEnd()));
     if (rendered.length > budget) lines[lines.length - 1] = clip(`${clean(lines.at(-1)!)} …`, width);
   }

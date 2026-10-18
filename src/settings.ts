@@ -29,6 +29,11 @@ export function ansiColor(color: string, background = false): string {
   if (code.startsWith('38;')) return code.replace(/^38;/, '48;');
   return String(Number(code) + 10);
 }
+/** Use the same validated palette for widget styles and ANSI-rendered content. */
+export function resolveColor(colors: Partial<Record<ColorSetting, string>>, key: ColorSetting): string {
+  const color = colors[key];
+  return COLOR_OPTIONS.includes(color as typeof COLOR_OPTIONS[number]) ? color! : DEFAULT_COLORS[key];
+}
 export function normalizeTableFields(value: unknown): TableField[] {
   const fields = Array.isArray(value)
     ? [...new Set(value.filter((field): field is TableField => TABLE_FIELDS.includes(field)))]
@@ -55,7 +60,7 @@ export class Settings {
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   compactToolCalls = false;
   colors: Record<ColorSetting, string> = { ...DEFAULT_COLORS };
-  color(key: ColorSetting): string { return COLOR_OPTIONS.includes(this.colors[key] as typeof COLOR_OPTIONS[number]) ? this.colors[key] : DEFAULT_COLORS[key]; }
+  color(key: ColorSetting): string { return resolveColor(this.colors, key); }
   tracked(type: string): boolean { return !this.excluded.has(type); }
   level(type: string, subtype?: string): Level {
     const key = subtype ? `${type}:${subtype}` : type;

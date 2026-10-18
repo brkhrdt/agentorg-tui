@@ -257,7 +257,7 @@ export class UI {
     this.saveSettings(); this.renderColors(); this.draw();
   }
   private renderColors(): void {
-    const c = (key: ColorSetting) => this.settings.color(key) === 'orange' ? 'yellow' : this.settings.color(key);
+    const c = (key: ColorSetting) => this.settings.color(key) === 'orange' ? 208 : this.settings.color(key);
     this.title.style.fg = c('title'); this.columns.style.fg = c('headings');
     this.tree.style.selected = {};
     this.menu.style.selected = { bg: c('selectionBg'), fg: c('selectionFg'), bold: true };
@@ -1269,7 +1269,7 @@ export class UI {
         this.preview.width = side ? '50%' : '100%';
         this.preview.top = side ? 2 : height - 11;
         this.preview.show();
-        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 5 : 9) - 2)));
+        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 5 : 9) - 2), this.settings.colors));
       } else this.menu.bottom = 2;
       this.updating = true;
       this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?

@@ -4,7 +4,7 @@ import stringWidth from 'string-width';
 import stripAnsi from 'strip-ansi';
 import wrapAnsi from 'wrap-ansi';
 import type { ServerEvent, EventRendering } from './protocol.js';
-import { ANSI_COLORS, DEFAULT_COLORS, type ColorSetting, type Level } from './settings.js';
+import { DEFAULT_COLORS, ansiColor, resolveColor, type ColorSetting, type Level, type Settings } from './settings.js';
 import { appendMessageChunk, object, truncated } from './store.js';
 
 /** Never let remote text send terminal commands or blessed markup. */
@@ -29,19 +29,20 @@ export function cell(value: string, width: number): string {
 }
 const pretty = (value: unknown) => JSON.stringify(value, null, 2) ?? String(value);
 const isTool = (event: ServerEvent) => ['tool.call', 'tool.update', 'tool.result'].includes(event.type);
-type RenderColors = Partial<Record<ColorSetting, string>>;
-const paint = (text: string, color: string, colors: RenderColors = {}) => {
-  const code = ANSI_COLORS[color] ?? ANSI_COLORS[colors[color as ColorSetting] ?? DEFAULT_COLORS[color as ColorSetting]] ?? color;
+export type RenderColors = Partial<Record<ColorSetting, string>>;
+const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: RenderColors = {}) => {
+  const code = color === '38;5;250' ? color
+    : ansiColor(color in DEFAULT_COLORS ? resolveColor(colors, color as ColorSetting) : color);
   return `\x1b[${code}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${code}m`)}\x1b[0m`;
 };
-function toolColor(event: ServerEvent, tool?: string): ColorSetting {
+function toolColor(event: ServerEvent, tool?: string): ColorSetting | 'gray' {
   if (event.type === 'tool.call') return 'toolCall';
   if (event.type === 'tool.update') return 'toolUpdate';
   const data = object(event.data), result = object(data.rawOutput);
   const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
     ((tool ?? data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/\bexit(?:ed)?(?: with)? (?:code|status):?\s*(-?\d+)/i)?.[1] : undefined);
   if (['failed', 'cancelled', 'canceled'].includes(data.status) || result.isError === true || (exit !== undefined && Number(exit) !== 0)) return 'toolFailure';
-  return data.status === 'completed' ? 'toolSuccess' : 'toolUpdate';
+  return data.status === 'completed' ? 'toolSuccess' : 'gray';
 }
 /** Only the symbol carries lifecycle color; edit's signed counts have independent diff colors. */
 function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}): string {
@@ -67,7 +68,7 @@ function terminalOutputTail(lines: string[], width: number, maxRows: number, col
   const available = width - stringWidth(gutter);
   const rows = lines.slice(-maxRows).flatMap(line => wrapAnsi(line, available, { hard: true, trim: false }).split('\n'));
   return {
-    text: rows.slice(-maxRows).map(line => paint(gutter, 'gray', colors) + clip(line, available)).join('\n'),
+    text: rows.slice(-maxRows).map(line => paint(gutter, '38;5;250', colors) + clip(line, available)).join('\n'),
     hidden: lines.length > maxRows || rows.length > maxRows,
   };
 }
@@ -114,26 +115,29 @@ export function eventText(event: ServerEvent): string {
   }
 }
 
-const markdownCache = new Map<number | 'summary', Marked>();
+const markdownCache = new Map<string, Marked>();
 function markdown(text: string, width: number, summary = false, colors: RenderColors = {}): string {
-  const key = `${summary ? 'summary' : width}:${JSON.stringify(colors)}`;
+  // Cached renderers must not close over mutable client preferences.
+  const palette = Object.fromEntries((['eventHeading', 'eventCode', 'eventLink', 'diffAdd', 'diffRemove'] as const)
+    .map(key => [key, resolveColor(colors, key)]));
+  const key = JSON.stringify([width, summary, palette]);
   let parser = markdownCache.get(key);
   if (!parser) {
     const style = (codes: string) => (value: string) => `\x1b[${codes}m${value}\x1b[0m`;
     parser = new Marked(markedTerminal({
       width, reflowText: !summary, emoji: false,
-      heading: style(`1;${ANSI_COLORS[colors.eventHeading ?? DEFAULT_COLORS.eventHeading]}`), firstHeading: style(`1;${ANSI_COLORS[colors.eventHeading ?? DEFAULT_COLORS.eventHeading]}`), strong: style('1'),
-      em: style('3'), codespan: style(ANSI_COLORS[colors.eventCode ?? DEFAULT_COLORS.eventCode]), blockquote: style('90'),
-      link: style(ANSI_COLORS[colors.eventLink ?? DEFAULT_COLORS.eventLink]), href: style(`4;${ANSI_COLORS[colors.eventLink ?? DEFAULT_COLORS.eventLink]}`),
+      heading: style(`1;${ansiColor(palette.eventHeading!)}`), firstHeading: style(`1;${ansiColor(palette.eventHeading!)}`), strong: style('1'),
+      em: style('3'), codespan: style(ansiColor(palette.eventCode!)), blockquote: style('90'),
+      link: style(ansiColor(palette.eventLink!)), href: style(`4;${ansiColor(palette.eventLink!)}`),
     }) as unknown as MarkedExtension);
     // Semantic diff colors are local and deterministic, even without FORCE_COLOR/TTY.
     parser.use({ renderer: { code({ text, lang }) {
       if (lang?.split(/\s/)[0] !== 'diff') return false;
       let inHunk = false;
       return '\n' + text.split('\n').map(line => {
-        if (line.startsWith('@@')) { inHunk = true; return paint(line, 'eventHeading', colors); }
-        if (!inHunk && /^(--- |\+\+\+ |diff --git)/.test(line)) return paint(line, 'gray', colors);
-        return line.startsWith('-') ? paint(line, 'diffRemove', colors) : line.startsWith('+') ? paint(line, 'diffAdd', colors) : line;
+        if (line.startsWith('@@')) { inHunk = true; return paint(line, 'eventHeading', palette); }
+        if (!inHunk && /^(--- |\+\+\+ |diff --git)/.test(line)) return paint(line, 'gray');
+        return line.startsWith('-') ? paint(line, 'diffRemove', palette) : line.startsWith('+') ? paint(line, 'diffAdd', palette) : line;
       }).join('\n') + '\n\n';
     } } });
     if (markdownCache.size > 8) markdownCache.clear();
@@ -209,7 +213,7 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       const tail = terminalOutputTail(lines, width, maxRows, colors);
       const heading = wrapAnsi(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors), width, { hard: true, trim: false });
       const count = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received${tail.hidden ? ` · showing last ${maxRows} ${maxRows === 1 ? 'row' : 'rows'}` : ''}`;
-      return heading + '\n' + paint(clip(count, width), 'gray', colors) + (tail.text ? '\n' + tail.text : '');
+      return heading + '\n' + paint(clip(count, width), '38;5;250', colors) + (tail.text ? '\n' + tail.text : '');
     }
     if (level === 1) return renderTreeEvent(event, width, rendering, colors);
     if (level === 2) {
