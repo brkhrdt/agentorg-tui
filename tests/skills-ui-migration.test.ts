@@ -28,6 +28,7 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
   const group = repositoryGroup(repositories);
   const serverSettings: ServerSettingsCatalog = { groups: [group], facts: { cwd: '/work', dataDir: '/data', socketPath: '/socket', harnesses: ['fixture'], plugins: ['skills'] } };
   const requests: any[] = [], changes: any[] = [];
+  let connections = 0;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: {
@@ -57,9 +58,9 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
       else respond(socket, request.id, { ...operation('completed'), id: 'modify', type: 'agent.modify', agentId: 'root', result: root });
     }
     else respond(socket, request.id, { seq: 0, liveOnly: true });
-  });
+  }, () => { connections++; });
   const ui = terminalClient(mock.path, mock.directory, { cols });
-  return { mock, ui, root, requests, changes, group };
+  return { mock, ui, root, requests, changes, group, connections: () => connections };
 }
 
 test('tree shortcut, action menu, help and footer no longer expose the legacy global Skills screen', async () => {
@@ -136,8 +137,11 @@ test('skills picker filters without losing its input, scrolls, and explains empt
     keys('\x1b[B'.repeat(40)); await visible('skill-38');
     expect(screen()).not.toContain('skill-00');
     keys('/skill-31\r');
-    await visible('skill-31');
-    expect(screen()).not.toContain('skill-00');
+    await waitFor(() => {
+      const filtered = screen();
+      return filtered.includes('Skills: worker') && filtered.includes('a available') && filtered.includes('skill-31') &&
+        !filtered.includes('Filter skills') && !filtered.includes('skill-30') && !filtered.includes('skill-32');
+    });
   } finally { await f.ui.close(); await f.mock.close(); }
 
   const empty = await fixture({ skillCatalog: [] });
@@ -164,6 +168,10 @@ test('conflicts, failed operations and disconnects retain the staged skills draf
       expect(f.changes).toHaveLength(0);
       keys('S'); await visible(message);
       await visible('2 selected');
+      if (outcome === 'disconnect') {
+        await waitFor(() => f.connections() >= 2 && f.requests.filter(request => request.method === 'organization.snapshot').length >= 2);
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
       expect(f.changes).toHaveLength(1);
       expect(screen()).toContain('Skills:');
     } finally { await f.ui.close(); await f.mock.close(); }
@@ -176,7 +184,11 @@ test('skills descriptions fit narrow terminal rows', async () => {
     const { keys, visible, screen } = f.ui;
     await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
     keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('alpha');
-    expect(screen().split('\n').every(line => line.length <= 42)).toBe(true);
+    const rendered = screen(), rows = rendered.split('\n');
+    const skillRow = rows.find(row => row.includes('alpha') && row.includes('A …'));
+    expect(skillRow).toBeDefined();
+    expect(skillRow!.length).toBeLessThanOrEqual(42);
+    expect(rendered).not.toContain('narrow terminal width');
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
