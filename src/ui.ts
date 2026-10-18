@@ -133,6 +133,20 @@ export class UI {
   private renderedEvents = new Map<number, { signature: string; text: string }>();
 
   constructor(private session: Session, private settings: Settings, private configPath: string) {
+    const input = this.input as blessed.Widgets.TextboxElement & { _value?: string; _updateCursor(): void };
+    const setInputValue = input.setValue.bind(input);
+    input.setValue = (value?: string) => {
+      const next = value ?? input.value;
+      if (this.view !== 'prompt') { setInputValue(next); return; }
+      if (input._value === next) return;
+      input.value = next;
+      input._value = next;
+      input.setContent(next);
+      input._updateCursor();
+    };
+    this.input.on('keypress', () => {
+      if (this.view === 'prompt') queueMicrotask(() => this.resizePrompt());
+    });
     // Rows are already cell-clipped. Blessed otherwise word-wraps an exactly
     // full styled row just because trailing ANSI resets increase string.length.
     this.tree.on('adopt', (item: blessed.Widgets.BoxElement & { wrap: boolean }) => { item.wrap = false; });
@@ -204,6 +218,7 @@ export class UI {
         if (this.isPathInput()) this.refreshPaths();
         if (this.isVolumeInput()) this.refreshVolumes();
         if (this.view === 'structured-filter') { this.structured!.filter = ''; this.menuIndex = 0; this.draw(); }
+        if (this.view === 'prompt') this.resizePrompt();
         this.screen.render();
       }
     });
@@ -229,7 +244,11 @@ export class UI {
       this.screen.render();
     });
     this.screen.key('C-c', () => this.close());
-    this.screen.on('resize', () => { this.lastTreeItems = []; this.lastChat = ''; this.renderedEvents.clear(); this.scheduleDraw(); });
+    this.screen.on('resize', () => {
+      this.lastTreeItems = []; this.lastChat = ''; this.renderedEvents.clear();
+      if (this.view === 'prompt') this.resizePrompt();
+      this.scheduleDraw();
+    });
     this.session.store.on('change', () => this.scheduleDraw());
     this.session.on('status', () => this.scheduleDraw());
     this.session.on('notice', (message: string) => this.showNotice(message));
@@ -936,6 +955,29 @@ export class UI {
     this.input.setValue('');
     this.setView('prompt');
   }
+  private resizePrompt(): void {
+    if (this.view !== 'prompt') return;
+    const width = Math.max(1, Number(this.screen.width));
+    const value = this.input.getValue();
+    let rows = 0;
+    for (const line of value.split('\n')) {
+      let lineRows = 1, column = 0;
+      for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(line)) {
+        const cells = stringWidth(segment);
+        if (cells && column > 0 && column + cells > width) { lineRows++; column = 0; }
+        column += cells;
+        if (column > width) { lineRows += Math.ceil(column / width) - 1; column %= width; }
+      }
+      rows += lineRows;
+    }
+    rows = Math.max(1, Math.min(rows, Math.max(1, Number(this.screen.height) - 7)));
+    if (Number(this.input.height) === rows) return;
+    this.input.height = rows;
+    this.promptTop.bottom = rows + 3;
+    this.tree.bottom = rows + 4;
+    this.draw();
+    (this.input as blessed.Widgets.TextboxElement & { _updateCursor(): void })._updateCursor();
+  }
   private setView(view: View): void {
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     this.view = view;
@@ -950,6 +992,7 @@ export class UI {
     this.input.border = (composer ? undefined : { type: 'line', left: true, right: true, top: true, bottom: true }) as unknown as blessed.Widgets.Border;
     this.input.height = composer ? 1 : 3;
     this.input.bottom = composer ? 3 : this.isPathInput() || this.isVolumeInput() ? 7 : 2;
+    this.promptTop.bottom = 4;
     this.tree.bottom = view === 'prompt' ? 5 : 2;
     if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
     if (view === 'tree' || view === 'prompt') {

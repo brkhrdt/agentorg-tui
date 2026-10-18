@@ -83,10 +83,13 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     keys('\r');
     await visible('Interrupting prompt · worker');
     expect(screen()).toContain('  worker');
-    keys('tree interruption\r');
+    const longPrompt = 'x'.repeat(125);
+    for (const char of longPrompt) keys(char);
+    await waitFor(() => screen().split('\n').filter(row => /x{20,}/.test(row)).length >= 2);
+    keys('\r');
     await waitFor(() => prompts.length === 1);
     await visible('LATEST TRACKED EVENT');
-    expect(prompts[0]).toEqual({ agentId: 'worker', text: 'tree interruption', queue: false });
+    expect(prompts[0]).toEqual({ agentId: 'worker', text: longPrompt, queue: false });
     keys('c'); await visible('Chat · coordinator / worker');
     for (const text of ['\n\n# A heading\n\n**Bold streamed** ', 'answer']) {
       for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }));
