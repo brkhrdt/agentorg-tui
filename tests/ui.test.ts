@@ -75,7 +75,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await waitFor(() => selectedBg(4) === 4); // Selected agent is highlighted in blue.
     keys('?'); await visible('Keys · tree');
     await visible('Restart subtree');
-    keys('c'); await visible('Chat · worker');
+    keys('c'); await visible('Chat · coordinator / worker');
     keys('q?e'); // Navigation shortcuts must be ordinary text in chat.
     await visible('q?e');
     expect(exited).toBe(false);
@@ -87,7 +87,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await waitFor(() => prompts.length === 1);
     await visible('LATEST TRACKED EVENT');
     expect(prompts[0]).toEqual({ agentId: 'worker', text: 'tree interruption', queue: false });
-    keys('c'); await visible('Chat · worker');
+    keys('c'); await visible('Chat · coordinator / worker');
     for (const text of ['\n\n# A heading\n\n**Bold streamed** ', 'answer']) {
       for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }));
     }
@@ -120,7 +120,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     keys('v'); await visible('View settings'); keys('l'); await visible('Event rendering levels');
     keys('\x1b[B\x1b[B4'); await visible('4 raw');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
-    keys('c'); await visible('Chat · worker');
+    keys('c'); await visible('Chat · coordinator / worker');
     await visible('"sessionUpdate": "agent_message_chunk"');
     await visible('"text": "Live worker answer"');
     keys('chat message\r');

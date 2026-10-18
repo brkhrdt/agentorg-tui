@@ -20,6 +20,16 @@ type AgentAction = { key: string; label: string } & (
 );
 type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'skills' | 'skill-add' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
+function agentHierarchy(agent: Agent | undefined, agents: Map<string, Agent>): string {
+  const names: string[] = [], seen = new Set<string>();
+  let current = agent;
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id); names.unshift(current.name);
+    current = current.parentId ? agents.get(current.parentId) : undefined;
+  }
+  return names.join(' / ');
+}
+
 export class UI {
   readonly screen = blessed.screen({
     smartCSR: true, fullUnicode: true, title: 'Agent Organization',
@@ -1093,7 +1103,7 @@ export class UI {
       this.view === 'structured-raw' ? `Edit ${structuredLabel} · advanced JSON` :
       this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
       this.view === 'entry-key' || this.view === 'entry-value' ? `Edit ${structuredLabel} · ${this.view === 'entry-key' ? 'name' : `value (${this.entry.type})`}` :
-      this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agent?.name ?? this.chatAgent}` :
+      this.view === 'keys' ? `Keys · ${this.keyContext?.view} · press a shown key` : this.view === 'chat' ? `Chat · ${agentHierarchy(agent, store.agents) || this.chatAgent}` :
       this.view === 'agent-info' ? `Agent info · ${agent?.name ?? this.infoAgentId} · ${this.infoRaw ? 'JSON' : 'read-only'}` :
       this.view === 'prompt' ? `Interrupting prompt · ${agent?.name}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
