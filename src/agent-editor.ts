@@ -100,7 +100,8 @@ export class AgentEditor {
     }
     return this.values[field];
   }
-  skillChoices() { return this.skillDraft?.choices() ?? []; }
+  skillChoices(catalog?: readonly Skill[], states?: SkillStates) { return this.skillDraft?.choices(catalog, states) ?? []; }
+  staleSkills(catalog: readonly Skill[]): string[] { return this.skillDraft?.staleSelections(catalog) ?? []; }
   skillStates(): SkillStates { return this.skillDraft?.states ?? {}; }
   stageSkillStates(states: SkillStates): void {
     if (!this.skillDraft) throw new Error('Skills plugin is not available');

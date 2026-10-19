@@ -1,7 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
-import type { Agent, SkillStates, SkillState, ServerSettingsField, ContainerProfile, SettingsChoice } from './protocol.js';
+import type { Agent, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
@@ -458,7 +458,9 @@ export class UI {
       action('S', 'Stage entries in server draft', () => this.finishRecords(true)), action('escape', 'Discard collection edits', () => this.finishRecords(false))];
     if (this.view === 'server-settings') return [action('enter', 'Open settings / facts', choose), action('r', 'Refresh server settings', () => { void this.openServerSettings(); }), action('escape', 'Back to settings', () => this.setView('view'))];
     if (this.view === 'server-facts') return [action('escape', 'Back to server settings', () => this.setView('server-settings'))];
-    if (this.view === 'server-group') return [action('enter', 'Edit field / review save', choose), action('S', this.recordEditing ? 'Stage entry in collection' : 'Review server-wide save', () => { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }), action('z', 'Reset selected field to startup default (draft)', () => {
+    if (this.view === 'server-group') return [action('enter', 'Edit field / review save', choose), action('S', this.recordEditing ? 'Stage entry in collection' : 'Review server-wide save', () => { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }),
+      ...(!this.recordEditing && this.serverEditor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? [action('R', 'Retry skills reconciliation without saving settings', () => { void this.retrySkills(); })] : []),
+      action('z', 'Reset selected field to startup default (draft)', () => {
       const field = this.serverEditor?.fields[this.menuIndex];
       if (field) { this.serverEditor!.reset(field); this.draw(); }
     }), ...(!this.recordEditing ? [action('r', 'Discard draft and reload current settings', () => { void this.reloadServerGroup(); })] : []), action('escape', 'Discard draft / back', () => { if (this.recordEditing) { this.serverEditor = this.records!.parent; this.recordEditing = false; this.setView('settings-records'); } else this.setView('server-settings'); })];
@@ -609,6 +611,7 @@ export class UI {
     this.serverEditor = new ServerSettingsEditor(group);
     this.records = undefined; this.recordEditing = false;
     this.setView('server-group');
+    if (group.namespace === 'skills' && this.session.skillReconciliation?.state === 'error') this.showNotice('Repository reconciliation has errors; press R to retry without saving settings.');
   }
   private openServerField(): void {
     const editor = this.serverEditor, field = editor?.fields[this.menuIndex];
@@ -635,16 +638,28 @@ export class UI {
       this.structuredIndex = this.menuIndex; this.setView('structured');
     } else { this.input.setValue(editor.values[field.key]!); this.setView('server-field'); }
   }
+  private effectiveRestartRequired(group: ServerSettingsGroup): string[] {
+    return group.restartRequired.filter(key => !(group.namespace === 'skills' && key === 'repositories' && group.fields.find(field => field.key === key)?.effect === 'immediate'));
+  }
+  private async retrySkills(): Promise<void> {
+    try { await this.session.reconcileSkills(); this.showNotice('Skills reconciliation retry accepted; settings were not changed.'); }
+    catch (error) { this.showNotice(`Skills retry failed: ${(error as Error).message}`); }
+    this.draw();
+  }
   private async saveServerSettings(): Promise<void> {
     const editor = this.serverEditor;
     if (!editor || this.sending) return;
     this.sending = true; this.draw();
     try {
       const group = await this.session.updateServerSettings(editor.params());
+      if (group.namespace === 'skills') await this.session.refreshSkills().catch(() => {});
       if (!this.closing && this.serverEditor === editor) {
         this.serverEditor = new ServerSettingsEditor(group);
         if (this.view === 'server-confirm') this.setView('server-group');
-        this.showNotice(group.restartRequired.length ? `Saved on server · restart required: ${group.restartRequired.join(', ')}` : 'Saved on server · no agents restarted');
+        const restart = this.effectiveRestartRequired(group);
+        const reconciliation = group.reconciliation ?? this.session.skillReconciliation;
+        const preparing = group.namespace === 'skills' && (reconciliation?.state === 'pending' || reconciliation?.state === 'running');
+        this.showNotice(preparing ? `Saved on server · preparing repositories${restart.length ? ` · restart required: ${restart.join(', ')}` : '; no agents restarted'}` : restart.length ? `Saved on server · restart required: ${restart.join(', ')}` : 'Saved on server · no agents restarted');
       }
     } catch (error) {
       if (!this.closing && this.serverEditor === editor) {
@@ -897,6 +912,8 @@ export class UI {
   private async saveAgent(imageScope?: ImageScope): Promise<void> {
     const editor = this.editor;
     if (this.sending || !editor) return;
+    const staleSkills = editor.staleSkills(this.session.skillCatalog);
+    if (staleSkills.length) { this.showNotice(`Staged skills are stale (${staleSkills.join(', ')}); reopen Skills and explicitly remove or reselect them.`); return; }
     let params: Record<string, unknown>;
     try { params = editor.params(); } catch (error) { this.showNotice((error as Error).message); return; }
     if (editor.agentId && editor.imageChanged && this.session.podmanEnabled && !imageScope) { this.setView('image-scope'); return; }
@@ -925,12 +942,21 @@ export class UI {
     } catch (error) { this.showNotice((error as Error).message); }
     finally { this.sending = false; this.draw(); }
   }
+  private skillChoicesFor(editor: AgentEditor, states: SkillStates) {
+    const choices = editor.skillChoices(this.session.skillCatalog, states);
+    for (const choice of choices) if (choice.retainedUnknown) {
+      const retained = this.session.retainedSkills.find(item => item.name === choice.name);
+      if (retained) choice.description = `Retained selection · ${retained.status ?? 'repository removed'}${retained.error ? ` · ${retained.error}` : ''}`;
+    }
+    return choices;
+  }
   private openAgentSkills(): void {
     const editor = this.editor;
     if (!editor || this.sending) return;
-    this.skillPicker = { editor, states: editor.skillStates(), choices: editor.skillChoices(), returnIndex: this.menuIndex, filter: '' };
+    this.skillPicker = { editor, states: editor.skillStates(), choices: this.skillChoicesFor(editor, editor.skillStates()), returnIndex: this.menuIndex, filter: '' };
     this.menuIndex = 0; this.setView('agent-skills');
-    this.showNotice(this.hasCatalogSkills() ? 'Installed loads the skill for this agent; available permits delegation to a direct child without installing it here.' : 'No catalog skills yet. Open server settings (v) to add repository seeds, then restart the server.');
+    const state = this.session.skillReconciliation?.state;
+    this.showNotice(state === 'pending' || state === 'running' ? 'Repository preparation is in progress; only ready catalog entries can be selected.' : state === 'error' ? 'Some repositories failed; retry from server settings (v) without resaving.' : this.hasCatalogSkills() ? 'Installed loads the skill for this agent; available permits delegation to a direct child without installing it here.' : 'No catalog skills yet. Open server settings (v) to configure repositories; prepared skills appear automatically.');
     this.draw();
   }
   private hasCatalogSkills(): boolean { return this.skillPicker?.choices.some(choice => !choice.retainedUnknown) ?? false; }
@@ -948,7 +974,7 @@ export class UI {
   private setPickerSkill(state: 'available' | 'installed'): void {
     const choice = this.pickerChoices()[this.selectedMenuIndex()], picker = this.skillPicker;
     if (!choice || !picker || this.sending) return;
-    if (choice.retainedUnknown) { this.showNotice(`${choice.name} is unavailable in the catalog; remove it or keep its existing state.`); return; }
+    if (choice.retainedUnknown || choice.stale) { this.showNotice(`${choice.name} is not currently grantable; remove the stale selection or wait for it to become ready.`); return; }
     picker.states = { ...picker.states, [choice.name]: state };
     this.draw();
   }
@@ -1296,10 +1322,12 @@ export class UI {
         ['harness-options', 'image-scope'].includes(this.view) ? ' ↑↓ select   Enter choose   Esc back' :
         this.view === 'agent-edit' ? ' ↑↓ field   Enter edit / choose / save   Esc discard · launch changes restart active agents' : this.view === 'actions' ? ` ↑↓ action   Enter open   n create${this.actionAgent ? '   i agent info   e edit' : ''}   Esc tree` : ' ↑↓ action   Enter open   Esc tree');
     } else if (this.view === 'agent-skills') {
+      const picker = this.skillPicker;
+      if (picker) picker.choices = this.skillChoicesFor(picker.editor, picker.states);
       const choices = this.pickerChoices();
       this.updating = true;
-      this.menu.setItems(choices.length ? choices.map(choice => clip(`${cell(this.pickerState(choice.name), 11)}  ${cell(choice.name, 24)} ${choice.retainedUnknown ? '[not in catalog] ' : ''}${choice.description}`, width - 1)) :
-        [this.hasCatalogSkills() ? 'No skills match this filter.' : 'No catalog skills. Use v to open server settings and add repository seeds, then restart.']);
+      this.menu.setItems(choices.length ? choices.map(choice => clip(`${cell(this.pickerState(choice.name), 11)}  ${cell(choice.name, 24)} ${choice.stale ? '[stale] [not in catalog] ' : choice.retainedUnknown ? '[not in catalog] [retained] ' : ''}${choice.description}`, width - 1)) :
+        [this.hasCatalogSkills() ? 'No skills match this filter.' : 'No catalog skills. Open server settings (v) to add repositories.']);
       this.menu.select(Math.max(0, this.menuIndex)); this.updating = false;
       this.footer.setContent(choices.length ? ' ↑↓ select  a available  i installed  d remove  Space cycle  / filter  S stage in form  Esc cancel' : ' v server settings  / filter  S stage  Esc cancel · changes are not saved until the agent form is saved');
     } else if (this.view === 'agent-skills-filter') {
@@ -1317,7 +1345,7 @@ export class UI {
       this.updating = true;
       if (this.view === 'server-settings') {
         const declared = new Set(catalog?.groups.map(g => g.plugin ?? g.namespace));
-        this.menu.setItems(['Organization facts (read-only)', ...(catalog?.groups.map(g => `${g.title} · shared server settings${g.restartRequired.length ? ' · RESTART REQUIRED' : ''}`) ?? []), ...(catalog?.facts.plugins.filter(p => !declared.has(p)).map(p => `${p} · no server settings declared (read-only)`) ?? [])]);
+        this.menu.setItems(['Organization facts (read-only)', ...(catalog?.groups.map(g => `${g.title} · shared server settings${this.effectiveRestartRequired(g).length ? ' · RESTART REQUIRED' : ''}${g.namespace === 'skills' && this.session.skillReconciliation ? ` · ${this.session.skillReconciliation.state}` : ''}`) ?? []), ...(catalog?.facts.plugins.filter(p => !declared.has(p)).map(p => `${p} · no server settings declared (read-only)`) ?? [])]);
       } else if (this.view === 'server-facts') {
         this.menu.setItems(catalog ? Object.entries(catalog.facts).map(([key, value]) => clip(`${key}: ${Array.isArray(value) ? value.join(', ') || '(none)' : value}`, width - 1)) : ['Server facts unavailable']);
       } else if (this.view === 'server-confirm') {
@@ -1325,11 +1353,11 @@ export class UI {
         this.menu.setItems(['Cancel — keep draft', 'Save — changes configuration for every connected client', ...(editor?.group.fields.filter(f => Object.hasOwn(params!.patch, f.key) || params!.reset.includes(f.key)).map(f => `${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${f.effect}`) ?? [])]);
       } else if (editor) {
         const current = catalog?.groups.find(g => g.namespace === editor.group.namespace);
-        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${editor.group.restartRequired.includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
+        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${this.effectiveRestartRequired(editor.group).includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
         if (!this.recordEditing && current && current.revision !== editor.group.revision && !this.notice.getContent().includes('draft retained')) this.notice.setContent('Server settings changed in another client · draft is stale; r discards and reloads');
       }
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ' ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload  Esc discard') : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
+      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry repositories' : ''}  Esc discard`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
       this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`]);

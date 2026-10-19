@@ -3,6 +3,7 @@ import type { Skill, SkillState, SkillStates } from './protocol.js';
 export interface SkillChoice extends Skill {
   state: SkillState;
   retainedUnknown?: boolean;
+  stale?: boolean;
 }
 
 /** Drafts a complete replacement map while retaining untouched legacy selections. */
@@ -20,14 +21,22 @@ export class SkillSelectionDraft {
     return keys.length !== Object.keys(this.baseline).length || keys.some(key => this.current[key] !== this.baseline[key]);
   }
   get states(): SkillStates { return structuredClone(this.current); }
-  choices(): SkillChoice[] {
-    const known = new Set(this.catalog.map(skill => skill.name));
+  choices(catalog: readonly Skill[] = this.catalog, states: SkillStates = this.current): SkillChoice[] {
+    const known = new Set(catalog.map(skill => skill.name));
     return [
-      ...this.catalog.map(skill => ({ ...skill, state: Object.hasOwn(this.current, skill.name) ? this.current[skill.name]! : 'unavailable' as SkillState })),
-      ...Object.entries(this.current).filter(([name]) => !known.has(name)).map(([name, state]) => ({
-        name, gitUrl: '', description: 'Not present in the current catalog; retained until explicitly removed.', state, retainedUnknown: true,
-      })),
+      ...catalog.map(skill => ({ ...skill, state: Object.hasOwn(states, skill.name) ? states[skill.name]! : 'unavailable' as SkillState })),
+      ...Object.entries(states).filter(([name]) => !known.has(name)).map(([name, state]) => {
+        const previous = this.catalog.find(skill => skill.name === name);
+        return {
+          ...previous, name, gitUrl: previous?.gitUrl ?? '', description: previous?.description ?? 'Not present in the current catalog; retained until explicitly removed.', state,
+          retainedUnknown: true, stale: state !== this.baseline[name],
+        };
+      }),
     ];
+  }
+  staleSelections(catalog: readonly Skill[]): string[] {
+    const known = new Set(catalog.map(skill => skill.name));
+    return Object.entries(this.current).filter(([name, state]) => state !== 'unavailable' && !known.has(name) && state !== this.baseline[name]).map(([name]) => name);
   }
   setState(name: string, state: Exclude<SkillState, 'unavailable'>): void {
     if (!this.catalog.some(skill => skill.name === name)) throw new Error(`Unknown catalog skill ${name}`);

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type SkillReconciliation, type SkillRetained, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
 import { Store } from './store.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
@@ -16,6 +16,11 @@ export class Session extends EventEmitter {
   status = 'connecting';
   skillsEnabled = false;
   skillCatalog: Skill[] = [];
+  retainedSkills: SkillRetained[] = [];
+  skillReconciliation?: SkillReconciliation;
+  private skillsReconcileEndpoint?: string;
+  private skillsListEndpoint?: string;
+  get skillsReconcileEndpointAvailable(): boolean { return !!this.skillsReconcileEndpoint; }
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
   private agentProfileEndpoints = new Map<string, string>();
@@ -174,43 +179,65 @@ export class Session extends EventEmitter {
     this.podmanImages = podman?.endpoints?.images ?? '';
     this.podmanDefaults = podman?.endpoints?.defaults ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
-    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown } } | undefined;
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; reconcile?: unknown } } | undefined;
     const namespace = capability?.settingsNamespace;
     const list = capability?.endpoints?.list;
     const supported = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
     if (!supported) {
       if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = [];
+        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = []; this.retainedSkills = []; this.skillReconciliation = undefined; this.skillsReconcileEndpoint = undefined; this.skillsListEndpoint = undefined;
       }
       return;
     }
     const endpoint = list as string;
-    let catalog: { skills?: unknown };
-    try { catalog = await client.request<{ skills?: unknown }>(endpoint, {}); }
+    this.skillsListEndpoint = endpoint;
+    this.skillsReconcileEndpoint = typeof capability?.endpoints?.reconcile === 'string' && /^[a-z][a-z0-9.-]*$/.test(capability.endpoints.reconcile) ? capability.endpoints.reconcile : undefined;
+    await this.refreshSkillCatalog(client, endpoint, namespace as string, skillsRequest);
+  }
+  private async refreshSkillCatalog(client: RpcClient, endpoint: string, namespace = this.skillsNamespace, request = ++this.skillsRequest): Promise<void> {
+    let catalog: { skills?: unknown; retained?: unknown; reconciliation?: unknown };
+    try { catalog = await client.request<{ skills?: unknown; retained?: unknown; reconciliation?: unknown }>(endpoint, {}); }
     catch (error) {
-      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-        this.skillsEnabled = true; this.skillsNamespace = namespace as string;
-        this.skillCatalog = [];
+      if (client === this.client && !this.stopped && request === this.skillsRequest) {
+        this.skillsEnabled = true; this.skillsNamespace = namespace; this.skillCatalog = [];
         this.emit('notice', `Skills catalog unavailable: ${(error as Error).message}`);
       }
       return;
     }
-    if (client !== this.client || this.stopped || skillsRequest !== this.skillsRequest) return;
+    if (client !== this.client || this.stopped || request !== this.skillsRequest) return;
     const catalogSkills = catalog && typeof catalog === 'object' && Array.isArray(catalog.skills) ? catalog.skills as unknown[] : undefined;
-    const malformedCatalog = catalogSkills === undefined;
-    const entries = catalogSkills?.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
+    const validSkills = catalogSkills?.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
       typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
       typeof (skill as Skill).description === 'string') ?? [];
-    this.skillsEnabled = true; this.skillsNamespace = namespace as string;
+    const entries = validSkills.filter(skill => skill.status === undefined || skill.status === 'ready');
+    this.skillsEnabled = true; this.skillsNamespace = namespace;
     this.skillCatalog = entries;
-    if (malformedCatalog || entries.length !== catalogSkills!.length)
+    this.retainedSkills = Array.isArray(catalog?.retained) ? catalog.retained.filter((item): item is SkillRetained => !!item && typeof item === 'object' && typeof (item as SkillRetained).name === 'string') : [];
+    const reconciliation = catalog?.reconciliation;
+    this.skillReconciliation = reconciliation && typeof reconciliation === 'object' && ['pending', 'running', 'ready', 'error'].includes((reconciliation as SkillReconciliation).state)
+      ? reconciliation as SkillReconciliation : undefined;
+    if (catalogSkills === undefined || validSkills.length !== catalogSkills.length)
       this.emit('notice', 'Skills catalog response was invalid; malformed entries were ignored.');
+    this.store.emit('change');
+  }
+  async refreshSkills(): Promise<void> {
+    const client = this.client, list = this.skillsListEndpoint;
+    if (!client || !this.skillsEnabled || !this.status.startsWith('connected') || !list) throw new Error('Skills catalog is not available');
+    await this.refreshSkillCatalog(client, list, this.skillsNamespace);
+  }
+  async reconcileSkills(): Promise<void> {
+    const client = this.client, endpoint = this.skillsReconcileEndpoint;
+    if (!client || !endpoint || !this.status.startsWith('connected')) throw new Error('Skills reconciliation is not available');
+    await client.request(endpoint, {});
+    if (client !== this.client || this.stopped) throw new Error('Server disconnected after retry request');
+    await this.refreshSkills();
   }
   private client?: RpcClient;
   private stopped = false;
   private refreshTimer?: ReturnType<typeof setTimeout>;
   private refreshing = false;
   private refreshAgain = false;
+  private refreshSkillsOnRefresh = true;
   constructor(readonly socketPath: string, private readonly options: { replayHistory?: boolean } = {}) {
     super();
     this.store.on('refresh', () => this.scheduleRefresh());
@@ -221,6 +248,7 @@ export class Session extends EventEmitter {
     while (!this.stopped) {
       const client = this.client = new RpcClient(this.socketPath);
       let buffering = true;
+      let pendingSkillPolls = 0;
       const buffered: ServerEvent[] = [];
       const presentations = new Map<number, EventRendering>();
       client.on('event', (event: ServerEvent) => {
@@ -228,7 +256,13 @@ export class Session extends EventEmitter {
         if (buffering) buffered.push(event);
         else {
           this.store.ingest(event);
-          if (event.type === 'skills.catalog_added' || event.type === 'organization.settings.changed') this.scheduleRefresh();
+          if (event.type === 'skills.catalog_added' || event.type === 'organization.settings.changed') {
+            pendingSkillPolls = 0; this.scheduleRefresh();
+          }
+          if (event.type === 'skills.catalog_changed' || event.type === 'skills.reconciliation_changed') {
+            pendingSkillPolls = 0;
+            void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
+          }
         }
       });
       client.on('presentation', (seq: number, rendering: EventRendering) => {
@@ -262,6 +296,8 @@ export class Session extends EventEmitter {
         for (const [seq, rendering] of presentations) this.store.present(seq, rendering);
         buffered.sort((a, b) => a.seq - b.seq).forEach(event => this.store.ingest(event));
         buffering = false;
+        if (buffered.some(event => event.type === 'skills.catalog_changed' || event.type === 'skills.reconciliation_changed'))
+          void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
         delay = 250;
         if (this.options.replayHistory !== false) {
           this.setStatus('connected · loading history');
@@ -269,7 +305,16 @@ export class Session extends EventEmitter {
           await this.replay(client, snapshot.seq);
         } else this.store.historyCursor = snapshot.seq;
         this.setStatus('connected');
-        poll = setInterval(() => this.scheduleRefresh(), 10_000);
+        poll = setInterval(() => {
+          const pending = this.skillReconciliation?.state === 'pending' || this.skillReconciliation?.state === 'running';
+          if (pending && pendingSkillPolls < 6) {
+            pendingSkillPolls++; void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
+            this.scheduleRefresh();
+          } else {
+            if (!pending) pendingSkillPolls = 0;
+            this.scheduleRefresh(!pending);
+          }
+        }, 10_000);
         await closed;
       } catch (error) {
         if (!this.stopped) this.emit('notice', (error as Error).message);
@@ -300,22 +345,26 @@ export class Session extends EventEmitter {
     }
     this.store.emit('change');
   }
-  private scheduleRefresh(): void {
-    if (this.refreshTimer || this.stopped) return;
+  private scheduleRefresh(refreshSkills = true): void {
+    if (this.stopped) return;
+    this.refreshSkillsOnRefresh ||= refreshSkills;
+    if (this.refreshTimer) return;
     if (this.refreshing) { this.refreshAgain = true; return; }
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
-      void this.refresh();
+      const includeSkills = this.refreshSkillsOnRefresh;
+      this.refreshSkillsOnRefresh = false;
+      void this.refresh(includeSkills);
     }, 150);
   }
-  private async refresh(): Promise<void> {
+  private async refresh(includeSkills = true): Promise<void> {
     const client = this.client;
     if (!client || this.stopped) return;
     this.refreshing = true;
     try {
       const snapshot = await client.request<Snapshot>('organization.snapshot', { includeTerminalOperations: false });
       if (client !== this.client || this.stopped) return;
-      await this.loadSkills(client, snapshot);
+      if (includeSkills) await this.loadSkills(client, snapshot);
       if (client !== this.client || this.stopped) return;
       // A refresh can be older than already received events, which install() replays.
       this.store.install(snapshot);

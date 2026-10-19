@@ -34,10 +34,11 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
     requests.push(request);
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: {
       harnesses: ['fixture'],
-      plugins: { skills: { version: 1, settingsNamespace: 'managed', endpoints: { list: 'skills.list', add: 'skills.add' } } },
+      plugins: { skills: { version: 1, settingsNamespace: 'managed', endpoints: { list: 'skills.list', add: 'skills.add', reconcile: 'skills.reconcile' } } },
       ...(withSettings && { serverSettings: { version: 1, groups: [group], endpoints } }),
     } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: currentSkillCatalog });
+    else if (request.method === 'skills.reconcile') respond(socket, request.id, { accepted: true });
     else if (request.method === endpoints.list) respond(socket, request.id, serverSettings);
     else if (request.method === endpoints.update) {
       changes.push(request.params);
@@ -246,6 +247,19 @@ test('server repository record edits and confirmed immediate save show preparing
     expect(edited.changes).toEqual([{ namespace: 'skills', expectedRevision: 3, patch: { repositories: [{ name: 'alpha', gitUrl: 'https://github.com/org/alpha-v2' }] }, reset: [] }]);
   } finally { await edited.ui.close(); await edited.mock.close(); }
 }, 20_000);
+
+test('server settings exposes explicit skill retry without resaving configuration', async () => {
+  const f = await fixture({ withSettings: true });
+  try {
+    const { keys, visible } = f.ui;
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
+    keys('\r'); await visible('Skills · server-wide · revision 3');
+    keys('R'); await visible('Skills reconciliation retry accepted');
+    expect(f.requests.filter(request => request.method === 'skills.reconcile')).toHaveLength(1);
+    expect(f.requests.filter(request => request.method === endpoints.update)).toHaveLength(0);
+    expect(f.changes).toHaveLength(0);
+  } finally { await f.ui.close(); await f.mock.close(); }
+});
 
 test('server settings repository add stages without a write until revision-confirmed save', async () => {
   const f = await fixture({ withSettings: true });

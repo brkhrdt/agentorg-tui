@@ -41,6 +41,8 @@ export interface RenderingCapability { version: number; catalog: string }
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
 export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
+export interface SkillRetained { name: string; gitUrl?: string; description?: string; status?: string; error?: string; [key: string]: unknown }
+export interface SkillReconciliation { generation?: number; desiredRevision?: number; state: 'pending' | 'running' | 'ready' | 'error'; lastSuccessfulRevision?: number; entries?: Array<{ name: string; gitUrl?: string; status: string; error?: string; attempts?: number }> }
 export interface ServerSettingsField {
   key: string; label: string; description?: string; deprecated?: boolean; optional?: boolean;
   editor: 'text' | 'number' | 'boolean' | 'select' | 'list' | 'string-map' | 'object-map';
@@ -66,6 +68,7 @@ export interface ContainerProfile {
 export interface ServerSettingsDescriptor { namespace: string; title: string; plugin?: string; description?: string; version: number; fields: ServerSettingsField[] }
 export interface ServerSettingsGroup extends ServerSettingsDescriptor {
   revision: number; defaults: Record<string, unknown>; values: Record<string, unknown>; effective: Record<string, unknown>; overridden: string[]; restartRequired: string[];
+  reconciliation?: SkillReconciliation;
 }
 export interface ServerSettingsCatalog { groups: ServerSettingsGroup[]; facts: { cwd: string; dataDir: string; socketPath: string; harnesses: string[]; plugins: string[] } }
 export interface ServerSettingsCapability { version: number; groups: ServerSettingsDescriptor[]; endpoints: { list: string; get: string; update: string } }

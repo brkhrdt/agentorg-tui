@@ -107,7 +107,7 @@ test('live skills reconciliation refreshes status and catalog, polls boundedly, 
   globalThis.setInterval = ((callback: TimerHandler, delay?: number) => {
     intervals.push({ callback: callback as () => void, delay: delay ?? 0 });
     return intervals.length as unknown as ReturnType<typeof setInterval>;
-  }) as typeof setInterval;
+  }) as unknown as typeof setInterval;
   globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => { cancelled.push(timer); }) as typeof clearInterval;
   const session = new Session(mock.path);
   const running = session.run();
