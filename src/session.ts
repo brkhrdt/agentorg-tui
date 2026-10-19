@@ -152,14 +152,14 @@ export class Session extends EventEmitter {
     this.renderers = [];
     if (this.renderingCapability) {
       const catalog = await client.request<{ version: number; renderers: RendererMetadata[] }>(this.renderingCapability.catalog, {});
-      if (client === this.client && !this.stopped && catalog.version === 1) this.renderers = catalog.renderers;
+      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest && catalog.version === 1) this.renderers = catalog.renderers;
     }
     const serverSettings = snapshot.capabilities?.serverSettings;
     this.serverSettingsCapability = serverSettings?.version === 1 && ['list', 'get', 'update'].every(key => typeof serverSettings.endpoints?.[key as keyof typeof serverSettings.endpoints] === 'string') ? serverSettings : undefined;
     if (!this.serverSettingsCapability) this.serverSettingsCatalog = undefined;
     else if (this.serverSettingsCatalog) {
       const catalog = await client.request<ServerSettingsCatalog>(this.serverSettingsCapability.endpoints.list, {});
-      if (client === this.client && !this.stopped) this.installServerSettings(catalog);
+      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) this.installServerSettings(catalog);
     }
     this.serverCwd = snapshot.capabilities?.cwd ?? '';
     this.pathCompletion = snapshot.capabilities?.pathCompletion === true;
@@ -189,9 +189,11 @@ export class Session extends EventEmitter {
       }
       return;
     }
+    if (client !== this.client || this.stopped || skillsRequest !== this.skillsRequest) return;
     const endpoint = list as string;
+    const reconcileEndpoint = typeof capability?.endpoints?.reconcile === 'string' && /^[a-z][a-z0-9.-]*$/.test(capability.endpoints.reconcile) ? capability.endpoints.reconcile : undefined;
     this.skillsListEndpoint = endpoint;
-    this.skillsReconcileEndpoint = typeof capability?.endpoints?.reconcile === 'string' && /^[a-z][a-z0-9.-]*$/.test(capability.endpoints.reconcile) ? capability.endpoints.reconcile : undefined;
+    this.skillsReconcileEndpoint = reconcileEndpoint;
     await this.refreshSkillCatalog(client, endpoint, namespace as string, skillsRequest);
   }
   private async refreshSkillCatalog(client: RpcClient, endpoint: string, namespace = this.skillsNamespace, request = ++this.skillsRequest): Promise<void> {

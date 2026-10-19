@@ -234,8 +234,8 @@ test('delayed older discovery cannot replace newer skills endpoint aliases', asy
     expect(session.skillCatalog.map(skill => skill.name)).toEqual(['current']);
     const oldRenderer = heldRenderer!;
     respond(oldRenderer.socket, oldRenderer.id, { version: 1, renderers: [] });
-    await waitFor(() => requests.some(request => request.method === 'skills.list.old'));
     await older;
+    expect(requests.some(request => request.method === 'skills.list.old')).toBe(false);
     expect(session.skillCatalog.map(skill => skill.name)).toEqual(['current']);
 
     const before = requests.length;
