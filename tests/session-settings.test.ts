@@ -89,6 +89,53 @@ test('session readiness, fixed-target paginated replay, expiry, live dedup and i
   } finally { session.close(); await running; await mock.close(); }
 });
 
+test('live skills reconciliation refreshes status and catalog, polls boundedly, and cancels polling on close', async () => {
+  const requests: any[] = [];
+  let catalog: any = { skills: [{ name: 'alpha', description: 'Ready' }], retained: [], reconciliation: { state: 'ready', entries: [] } };
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: {
+      plugins: { skills: { version: 1, settingsNamespace: 'skills', endpoints: { list: 'skills.list', reconcile: 'skills.reconcile' } } },
+    } });
+    else if (request.method === 'skills.list') respond(socket, request.id, catalog);
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], expired: false, latestSeq: 0, oldestSeq: 1 });
+    else if (request.method === 'skills.reconcile') respond(socket, request.id, { accepted: true });
+  });
+  const intervals: Array<{ callback: () => void; delay: number }> = [];
+  const cancelled: unknown[] = [];
+  const originalSetInterval = globalThis.setInterval, originalClearInterval = globalThis.clearInterval;
+  globalThis.setInterval = ((callback: TimerHandler, delay?: number) => {
+    intervals.push({ callback: callback as () => void, delay: delay ?? 0 });
+    return intervals.length as unknown as ReturnType<typeof setInterval>;
+  }) as typeof setInterval;
+  globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => { cancelled.push(timer); }) as typeof clearInterval;
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    expect(session.skillCatalog.map(skill => skill.name)).toEqual(['alpha']);
+    expect(intervals.map(timer => timer.delay)).toEqual([10_000]);
+    catalog = { skills: [], retained: [{ name: 'alpha', state: 'installed' }], reconciliation: { state: 'error', entries: [{ name: 'alpha', status: 'error', message: 'clone failed' }] } };
+    const socket = [...mock.sockets][0]!;
+    for (const [seq, state] of ['ready', 'removal', 'error', 'retry'].entries())
+      send(socket, event(seq + 1, 'skills.reconciliation_changed', { state, desiredRevision: seq + 2 }));
+    await waitFor(() => requests.filter(request => request.method === 'skills.list').length >= 5);
+    expect(session.skillCatalog).toEqual([]);
+    expect((session as any).skillReconciliation).toMatchObject({ state: 'error' });
+    intervals[0]!.callback();
+    await waitFor(() => requests.filter(request => request.method === 'organization.snapshot').length >= 2);
+    expect((session as any).reconcileSkills).toBeFunction();
+    await (session as any).reconcileSkills();
+    expect(requests.filter(request => request.method === 'skills.reconcile')).toHaveLength(1);
+    expect(requests.filter(request => request.method === 'organization.settings.update')).toHaveLength(0);
+  } finally {
+    session.close(); await running;
+    globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval;
+    expect(cancelled).toContain(1);
+    await mock.close();
+  }
+});
+
 test('reconnect resnapshots, replays missing events and resets when database sequence goes backwards', async () => {
   let connections = 0;
   let database = 1;

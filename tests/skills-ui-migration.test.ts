@@ -11,11 +11,11 @@ const endpoints = { list: 'organization.settings.list', get: 'organization.setti
 const repositoryGroup = (repositories: Array<{ name: string; gitUrl: string }> = []): ServerSettingsGroup => ({
   namespace: 'skills', plugin: 'skills', title: 'Skills', version: 1, revision: 3,
   fields: [{
-    key: 'repositories', label: 'Repository seeds', editor: 'list', effect: 'restart',
+    key: 'repositories', label: 'Repositories', editor: 'list', effect: 'immediate',
     itemIdKey: 'name', itemLabelKey: 'name', itemDefaults: { name: '', gitUrl: '' },
     itemFields: [
-      { key: 'name', label: 'Skill name', editor: 'text', effect: 'restart' },
-      { key: 'gitUrl', label: 'HTTPS Git URL', editor: 'text', effect: 'restart' },
+      { key: 'name', label: 'Skill name', editor: 'text', effect: 'immediate' },
+      { key: 'gitUrl', label: 'HTTPS Git URL', editor: 'text', effect: 'immediate' },
     ],
   }],
   defaults: { repositories: [] }, values: { repositories }, effective: { repositories }, overridden: [], restartRequired: [],
@@ -40,7 +40,7 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
     else if (request.method === endpoints.list) respond(socket, request.id, serverSettings);
     else if (request.method === endpoints.update) {
       changes.push(request.params);
-      respond(socket, request.id, { ...group, values: { ...group.values, ...request.params.patch }, revision: group.revision + 1, restartRequired: ['repositories'] });
+      respond(socket, request.id, { ...group, values: { ...group.values, ...request.params.patch }, revision: group.revision + 1, restartRequired: [], reconciliation: { state: 'pending', desiredRevision: group.revision + 1 } });
     }
     else if (request.method === 'events.history') respond(socket, request.id, { events: [], expired: false, latestSeq: 0, oldestSeq: 1 });
     else if (request.method === 'agent.create') {
@@ -150,6 +150,11 @@ test('skills picker filters without losing its input, scrolls, and explains empt
     await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
     keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r');
     await visible('No catalog skills yet. Open server settings');
+    keys('S'); await visible('Modify agent · revision 8');
+    keys('\r'); await visible('alpha');
+    expect(empty.ui.screen()).toContain('[not in catalog]');
+    keys('?'); await visible('Keys · agent-skills'); keys('d');
+    await waitFor(() => !empty.ui.screen().includes('[not in catalog]'));
   } finally { await empty.ui.close(); await empty.mock.close(); }
 }, 20_000);
 
@@ -192,7 +197,7 @@ test('skills descriptions fit narrow terminal rows', async () => {
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
-test('server repository record edits, deletes and cancellation stage locally; confirmed save shows restart effect', async () => {
+test('server repository record edits and confirmed immediate save show preparing status without restart marker', async () => {
   const initial = [
     { name: 'alpha', gitUrl: 'https://github.com/org/alpha' },
     { name: 'beta', gitUrl: 'https://github.com/org/beta' },
@@ -201,7 +206,7 @@ test('server repository record edits, deletes and cancellation stage locally; co
   try {
     const { keys, visible } = cancelled.ui;
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
-    keys('\r'); await visible('Skills · server-wide · revision 3'); keys('\r'); await visible('Repository seeds');
+    keys('\r'); await visible('Skills · server-wide · revision 3'); keys('\r'); await visible('Repositories');
     keys('d'); keys('\x1b'); await visible('Skills · server-wide · revision 3');
     expect(cancelled.ui.screen()).toContain('[2 entries; edit to inspect]');
     expect(cancelled.changes).toHaveLength(0);
@@ -211,32 +216,32 @@ test('server repository record edits, deletes and cancellation stage locally; co
   try {
     const { keys, visible } = edited.ui;
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
-    keys('\r'); await visible('Skills · server-wide · revision 3'); keys('\r'); await visible('Repository seeds');
-    keys('\r'); await visible('Repository seeds: alpha');
+    keys('\r'); await visible('Skills · server-wide · revision 3'); keys('\r'); await visible('Repositories');
+    keys('\r'); await visible('Repositories: alpha');
     keys('\x1b[B\r'); await visible('HTTPS Git URL · text');
-    keys('\x15https://github.com/org/alpha-v2\r'); await visible('Repository seeds: alpha');
-    keys('S'); await visible('Repository seeds'); expect(edited.changes).toHaveLength(0);
+    keys('\x15https://github.com/org/alpha-v2\r'); await visible('Repositories: alpha');
+    keys('S'); await visible('Repositories'); expect(edited.changes).toHaveLength(0);
     keys('\x1b[B'); keys('d'); keys('S'); await visible('Skills · server-wide · revision 3');
-    keys('S'); await visible('Confirm server-wide'); keys('y'); await visible('Saved on server · restart required');
-    await visible('RESTART REQUIRED');
+    keys('S'); await visible('Confirm server-wide'); keys('y'); await visible('preparing');
+    expect(edited.ui.screen()).not.toContain('RESTART REQUIRED');
     expect(edited.changes).toEqual([{ namespace: 'skills', expectedRevision: 3, patch: { repositories: [{ name: 'alpha', gitUrl: 'https://github.com/org/alpha-v2' }] }, reset: [] }]);
   } finally { await edited.ui.close(); await edited.mock.close(); }
-});
+}, 20_000);
 
-test('server settings repository record add stages without a write until revision-confirmed save', async () => {
+test('server settings repository add stages without a write until revision-confirmed save', async () => {
   const f = await fixture({ withSettings: true });
   const { keys, visible } = f.ui;
   try {
     await visible('worker');
     keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
     keys('\r'); await visible('Skills · server-wide · revision 3');
-    keys('\r'); await visible('Repository seeds');
+    keys('\r'); await visible('Repositories');
     keys('\r'); await visible('No configurations. Press a to add.');
-    keys('a'); await visible('Repository seeds: New entry');
-    keys('\r'); await visible('Skill name · text'); keys('alpha\r'); await visible('Repository seeds: New entry');
-    keys('\x1b[B\r'); await visible('HTTPS Git URL · text'); keys('https://github.com/org/alpha\r'); await visible('Repository seeds: New entry');
+    keys('a'); await visible('Repositories: New entry');
+    keys('\r'); await visible('Skill name · text'); keys('alpha\r'); await visible('Repositories: New entry');
+    keys('\x1b[B\r'); await visible('HTTPS Git URL · text'); keys('https://github.com/org/alpha\r'); await visible('Repositories: New entry');
     expect(f.changes).toHaveLength(0);
-    keys('S'); await visible('Repository seeds'); expect(f.changes).toHaveLength(0);
+    keys('S'); await visible('Repositories'); expect(f.changes).toHaveLength(0);
     keys('S'); await visible('Skills · server-wide · revision 3'); expect(f.changes).toHaveLength(0);
     keys('S'); await visible('Confirm server-wide'); keys('y'); await visible('Saved on server');
     await waitFor(() => f.changes.length === 1);
