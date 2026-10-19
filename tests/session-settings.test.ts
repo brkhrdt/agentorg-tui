@@ -203,6 +203,52 @@ test('late skills catalog response cannot overwrite a newer discovery result', a
   } finally { session.close(); await running; await mock.close(); }
 });
 
+test('delayed older discovery cannot replace newer skills endpoint aliases', async () => {
+  const requests: any[] = [];
+  let heldRenderer: { socket: import('node:net').Socket; id: string } | undefined;
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: {
+      plugins: { skills: { version: 1, settingsNamespace: 'skills', endpoints: { list: 'skills.list.initial', reconcile: 'skills.reconcile.initial' } } },
+    } });
+    else if (request.method === 'skills.list.initial') respond(socket, request.id, { skills: [{ name: 'initial', description: 'Initial catalog' }] });
+    else if (request.method === 'skills.list.new') respond(socket, request.id, { skills: [{ name: 'current', description: 'Current catalog' }] });
+    else if (request.method === 'skills.list.old') respond(socket, request.id, { skills: [{ name: 'stale', description: 'Old catalog' }] });
+    else if (request.method === 'renderers.slow') heldRenderer = { socket, id: request.id };
+    else if (request.method === 'skills.reconcile.new' || request.method === 'skills.reconcile.old') respond(socket, request.id, { accepted: true });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], expired: false, latestSeq: 0, oldestSeq: 1 });
+  });
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    const client = (session as any).client;
+    const older = (session as any).loadSkills(client, { capabilities: {
+      rendering: { version: 1, catalog: 'renderers.slow' },
+      plugins: { skills: { version: 1, settingsNamespace: 'skills', endpoints: { list: 'skills.list.old', reconcile: 'skills.reconcile.old' } } },
+    } });
+    await waitFor(() => !!heldRenderer);
+    await (session as any).loadSkills(client, { capabilities: {
+      plugins: { skills: { version: 1, settingsNamespace: 'skills', endpoints: { list: 'skills.list.new', reconcile: 'skills.reconcile.new' } } },
+    } });
+    expect(session.skillCatalog.map(skill => skill.name)).toEqual(['current']);
+    const oldRenderer = heldRenderer!;
+    respond(oldRenderer.socket, oldRenderer.id, { version: 1, renderers: [] });
+    await waitFor(() => requests.some(request => request.method === 'skills.list.old'));
+    await older;
+    expect(session.skillCatalog.map(skill => skill.name)).toEqual(['current']);
+
+    const before = requests.length;
+    await session.refreshSkills();
+    await session.reconcileSkills();
+    const after = requests.slice(before).map(request => request.method);
+    expect(after).toContain('skills.list.new');
+    expect(after).toContain('skills.reconcile.new');
+    expect(after).not.toContain('skills.list.old');
+    expect(after).not.toContain('skills.reconcile.old');
+  } finally { session.close(); await running; await mock.close(); }
+});
+
 test('reconnect resnapshots, replays missing events and resets when database sequence goes backwards', async () => {
   let connections = 0;
   let database = 1;
