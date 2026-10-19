@@ -172,10 +172,9 @@ test('skill becoming ready after an editor opens can be staged from refreshed di
     send([...f.mock.sockets][0]!, event(1, 'skills.catalog_changed', { state: 'ready' }));
     await waitFor(() => f.requests.filter(request => request.method === 'skills.list').length >= 2 && !f.ui.screen().includes('unavailable  beta'));
     await visible('Beta instructions');
-    keys('a');
-    expect(f.ui.screen()).toContain('available  beta');
-    keys('S'); await visible('Skills:');
-    expect(f.ui.screen()).toContain('2 selected');
+    keys('a'); await visible('available  beta');
+    keys('S'); await visible('Modify agent · revision 8');
+    await visible('2 selected');
     keys('S'); await waitFor(() => f.changes.some(change => change.agentId === 'root'));
     expect(f.changes[0]).toMatchObject({ settings: { extensions: { managed: { alpha: 'installed', beta: 'available' } } } });
   } finally { await f.ui.close(); await f.mock.close(); }
@@ -206,10 +205,11 @@ test('retained installed skill can be downgraded to available', async () => {
     keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('No catalog skills yet');
     keys('S'); await visible('Modify agent · revision 8'); keys('\r'); await visible('alpha');
     expect(screen()).toContain('[not in catalog]');
-    keys('a');
-    expect(screen()).toContain('available  alpha');
+    keys('a'); await waitFor(() => /available\s+alpha/.test(screen()));
     keys('S'); await visible('Modify agent · revision 8');
-    expect(screen()).toContain('2 selected');
+    await visible('1 selected');
+    keys('S'); await waitFor(() => f.changes.some(change => change.agentId === 'root'));
+    expect(f.changes[0]).toMatchObject({ settings: { extensions: { managed: { alpha: 'available' } } } });
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 

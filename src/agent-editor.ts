@@ -103,10 +103,10 @@ export class AgentEditor {
   skillChoices(catalog?: readonly Skill[], states?: SkillStates) { return this.skillDraft?.choices(catalog, states) ?? []; }
   staleSkills(catalog: readonly Skill[]): string[] { return this.skillDraft?.staleSelections(catalog) ?? []; }
   skillStates(): SkillStates { return this.skillDraft?.states ?? {}; }
-  stageSkillStates(states: SkillStates): void {
+  stageSkillStates(states: SkillStates, catalog?: readonly Skill[]): void {
     if (!this.skillDraft) throw new Error('Skills plugin is not available');
     if (!isDeepStrictEqual(this.skillDraft.states, states)) this.skillsExplicit = true;
-    this.skillDraft.replace(states);
+    this.skillDraft.replace(states, catalog);
   }
   setSkillState(name: string, state: 'available' | 'installed'): void {
     if (!this.skillDraft) throw new Error('Skills plugin is not available');

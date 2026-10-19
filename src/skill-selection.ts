@@ -29,23 +29,23 @@ export class SkillSelectionDraft {
         const previous = this.catalog.find(skill => skill.name === name);
         return {
           ...previous, name, gitUrl: previous?.gitUrl ?? '', description: previous?.description ?? 'Not present in the current catalog; retained until explicitly removed.', state,
-          retainedUnknown: true, stale: state !== this.baseline[name],
+          retainedUnknown: true, stale: state !== this.baseline[name] && !(this.baseline[name] === 'installed' && state === 'available'),
         };
       }),
     ];
   }
   staleSelections(catalog: readonly Skill[]): string[] {
     const known = new Set(catalog.map(skill => skill.name));
-    return Object.entries(this.current).filter(([name, state]) => state !== 'unavailable' && !known.has(name) && state !== this.baseline[name]).map(([name]) => name);
+    return Object.entries(this.current).filter(([name, state]) => state !== 'unavailable' && !known.has(name) && state !== this.baseline[name] && !(this.baseline[name] === 'installed' && state === 'available')).map(([name]) => name);
   }
-  setState(name: string, state: Exclude<SkillState, 'unavailable'>): void {
-    if (!this.catalog.some(skill => skill.name === name)) throw new Error(`Unknown catalog skill ${name}`);
+  setState(name: string, state: Exclude<SkillState, 'unavailable'>, catalog: readonly Skill[] = this.catalog): void {
+    if (!catalog.some(skill => skill.name === name)) throw new Error(`Unknown catalog skill ${name}`);
     this.current = { ...this.current, [name]: state };
   }
-  replace(states: SkillStates): void {
+  replace(states: SkillStates, catalog: readonly Skill[] = this.catalog): void {
     for (const [name, state] of Object.entries(states)) {
       if (!['unavailable', 'available', 'installed'].includes(state)) throw new Error(`Invalid state for ${name}`);
-      if (!this.catalog.some(skill => skill.name === name) && (!Object.hasOwn(this.current, name) || this.current[name] !== state))
+      if (!catalog.some(skill => skill.name === name) && (!Object.hasOwn(this.current, name) || (this.current[name] !== state && !(this.current[name] === 'installed' && state === 'available'))))
         throw new Error(`Cannot add unknown retained skill ${name}`);
     }
     this.current = structuredClone(states);

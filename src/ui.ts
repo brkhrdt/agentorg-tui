@@ -344,7 +344,11 @@ export class UI {
     } else if (this.view === 'settings-records') this.openRecord(false);
     else if (this.view === 'server-settings') this.chooseServerGroup();
     else if (this.view === 'server-group') {
-      if (this.menuIndex === this.serverEditor?.fields.length) { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }
+      const editor = this.serverEditor;
+      const diagnostics = editor && !this.recordEditing ? this.skillErrorLines(editor.group) : [];
+      const saveIndex = (editor?.fields.length ?? 0) + diagnostics.length;
+      if (this.menuIndex === saveIndex) { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }
+      else if (editor && this.menuIndex >= editor.fields.length) this.showNotice(diagnostics[this.menuIndex - editor.fields.length] ?? 'Repository diagnostic');
       else this.openServerField();
     } else if (this.view === 'server-confirm') {
       if (this.menuIndex === 1) void this.saveServerSettings(); else this.setView('server-group');
@@ -640,6 +644,15 @@ export class UI {
   }
   private effectiveRestartRequired(group: ServerSettingsGroup): string[] {
     return group.restartRequired.filter(key => !(group.namespace === 'skills' && key === 'repositories' && group.fields.find(field => field.key === key)?.effect === 'immediate'));
+  }
+  private skillErrorLines(group: ServerSettingsGroup): string[] {
+    if (group.namespace !== 'skills') return [];
+    const reconciliation = this.session.skillReconciliation ?? group.reconciliation;
+    return (reconciliation?.entries ?? []).filter(entry => entry.status === 'error').flatMap(entry => [
+      `Repository ${entry.name} · error`,
+      `Source: ${entry.gitUrl ?? 'unknown source'}`,
+      `Error: ${entry.error ?? 'No diagnostic available'}`,
+    ]);
   }
   private async retrySkills(): Promise<void> {
     try { await this.session.reconcileSkills(); this.showNotice('Skills reconciliation retry accepted; settings were not changed.'); }
@@ -974,7 +987,9 @@ export class UI {
   private setPickerSkill(state: 'available' | 'installed'): void {
     const choice = this.pickerChoices()[this.selectedMenuIndex()], picker = this.skillPicker;
     if (!choice || !picker || this.sending) return;
-    if (choice.retainedUnknown || choice.stale) { this.showNotice(`${choice.name} is not currently grantable; remove the stale selection or wait for it to become ready.`); return; }
+    if (choice.stale || (choice.retainedUnknown && !(this.pickerState(choice.name) === 'installed' && state === 'available') && this.pickerState(choice.name) !== state)) {
+      this.showNotice(`${choice.name} is not currently grantable; remove the stale selection or wait for it to become ready.`); return;
+    }
     picker.states = { ...picker.states, [choice.name]: state };
     this.draw();
   }
@@ -996,7 +1011,7 @@ export class UI {
     const picker = this.skillPicker;
     if (!picker || this.editor !== picker.editor) return;
     try {
-      picker.editor.stageSkillStates(picker.states);
+      picker.editor.stageSkillStates(picker.states, this.session.skillCatalog);
       this.skillPicker = undefined;
       this.setView('agent-edit'); this.menuIndex = picker.returnIndex; this.showNotice('Skills staged in this agent draft; save the form to apply.'); this.draw();
     } catch (error) { this.showNotice((error as Error).message); }
@@ -1353,7 +1368,8 @@ export class UI {
         this.menu.setItems(['Cancel — keep draft', 'Save — changes configuration for every connected client', ...(editor?.group.fields.filter(f => Object.hasOwn(params!.patch, f.key) || params!.reset.includes(f.key)).map(f => `${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${f.effect}`) ?? [])]);
       } else if (editor) {
         const current = catalog?.groups.find(g => g.namespace === editor.group.namespace);
-        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${this.effectiveRestartRequired(editor.group).includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
+        const diagnostics = this.recordEditing ? [] : this.skillErrorLines(editor.group);
+        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${this.effectiveRestartRequired(editor.group).includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), ...diagnostics.map(line => clip(line, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
         if (!this.recordEditing && current && current.revision !== editor.group.revision && !this.notice.getContent().includes('draft retained')) this.notice.setContent('Server settings changed in another client · draft is stale; r discards and reloads');
       }
       this.menu.select(this.menuIndex); this.updating = false;

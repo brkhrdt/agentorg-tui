@@ -248,7 +248,6 @@ export class Session extends EventEmitter {
     while (!this.stopped) {
       const client = this.client = new RpcClient(this.socketPath);
       let buffering = true;
-      let pendingSkillPolls = 0;
       const buffered: ServerEvent[] = [];
       const presentations = new Map<number, EventRendering>();
       client.on('event', (event: ServerEvent) => {
@@ -257,10 +256,9 @@ export class Session extends EventEmitter {
         else {
           this.store.ingest(event);
           if (event.type === 'skills.catalog_added' || event.type === 'organization.settings.changed') {
-            pendingSkillPolls = 0; this.scheduleRefresh();
+            this.scheduleRefresh();
           }
           if (event.type === 'skills.catalog_changed' || event.type === 'skills.reconciliation_changed') {
-            pendingSkillPolls = 0;
             void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
           }
         }
@@ -307,13 +305,8 @@ export class Session extends EventEmitter {
         this.setStatus('connected');
         poll = setInterval(() => {
           const pending = this.skillReconciliation?.state === 'pending' || this.skillReconciliation?.state === 'running';
-          if (pending && pendingSkillPolls < 6) {
-            pendingSkillPolls++; void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
-            this.scheduleRefresh();
-          } else {
-            if (!pending) pendingSkillPolls = 0;
-            this.scheduleRefresh(!pending);
-          }
+          if (pending) void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
+          this.scheduleRefresh(!pending);
         }, 10_000);
         await closed;
       } catch (error) {
