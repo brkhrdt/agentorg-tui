@@ -21,11 +21,12 @@ const repositoryGroup = (repositories: Array<{ name: string; gitUrl: string }> =
   defaults: { repositories: [] }, values: { repositories }, effective: { repositories }, overridden: [], restartRequired: [],
 });
 
-async function fixture({ withSettings = false, skillCatalog = skills, repositories = [], modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }>; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
+async function fixture({ withSettings = false, skillCatalog = skills, repositories = [], skillReconciliation, modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }>; skillReconciliation?: any; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
   const root = agent('root', null, { name: 'worker', revision: 8, settings: {
     harness: 'fixture', model: 'test', extensions: { managed: { alpha: 'installed' }, sibling: { retained: true } },
   } });
   const group = repositoryGroup(repositories);
+  if (skillReconciliation) group.reconciliation = skillReconciliation;
   let currentSkillCatalog = skillCatalog;
   const serverSettings: ServerSettingsCatalog = { groups: [group], facts: { cwd: '/work', dataDir: '/data', socketPath: '/socket', harnesses: ['fixture'], plugins: ['skills'] } };
   const requests: any[] = [], changes: any[] = [];
@@ -37,7 +38,7 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
       plugins: { skills: { version: 1, settingsNamespace: 'managed', endpoints: { list: 'skills.list', add: 'skills.add', reconcile: 'skills.reconcile' } } },
       ...(withSettings && { serverSettings: { version: 1, groups: [group], endpoints } }),
     } });
-    else if (request.method === 'skills.list') respond(socket, request.id, { skills: currentSkillCatalog });
+    else if (request.method === 'skills.list') respond(socket, request.id, { skills: currentSkillCatalog, ...(skillReconciliation && { reconciliation: skillReconciliation }) });
     else if (request.method === 'skills.reconcile') respond(socket, request.id, { accepted: true });
     else if (request.method === endpoints.list) respond(socket, request.id, serverSettings);
     else if (request.method === endpoints.update) {
@@ -161,6 +162,25 @@ test('skills picker filters without losing its input, scrolls, and explains empt
   } finally { await empty.ui.close(); await empty.mock.close(); }
 }, 20_000);
 
+test('skill becoming ready after an editor opens can be staged from refreshed discovery', async () => {
+  const f = await fixture({ skillCatalog: [] });
+  try {
+    const { keys, visible } = f.ui;
+    await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
+    keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('No catalog skills yet');
+    f.setSkillCatalog([skills[1]!]);
+    send([...f.mock.sockets][0]!, event(1, 'skills.catalog_changed', { state: 'ready' }));
+    await waitFor(() => f.requests.filter(request => request.method === 'skills.list').length >= 2 && !f.ui.screen().includes('unavailable  beta'));
+    await visible('Beta instructions');
+    keys('a');
+    expect(f.ui.screen()).toContain('available  beta');
+    keys('S'); await visible('Skills:');
+    expect(f.ui.screen()).toContain('2 selected');
+    keys('S'); await waitFor(() => f.changes.some(change => change.agentId === 'root'));
+    expect(f.changes[0]).toMatchObject({ settings: { extensions: { managed: { alpha: 'installed', beta: 'available' } } } });
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
 test('a staged skill whose source is removed becomes stale and is never silently submitted', async () => {
   const f = await fixture();
   try {
@@ -175,6 +195,21 @@ test('a staged skill whose source is removed becomes stale and is never silently
     keys('\r'); await visible('Beta instructions');
     expect(screen()).toContain('stale');
     expect(f.changes).toHaveLength(0);
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('retained installed skill can be downgraded to available', async () => {
+  const f = await fixture({ skillCatalog: [] });
+  try {
+    const { keys, visible, screen } = f.ui;
+    await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
+    keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('No catalog skills yet');
+    keys('S'); await visible('Modify agent · revision 8'); keys('\r'); await visible('alpha');
+    expect(screen()).toContain('[not in catalog]');
+    keys('a');
+    expect(screen()).toContain('available  alpha');
+    keys('S'); await visible('Modify agent · revision 8');
+    expect(screen()).toContain('2 selected');
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
@@ -260,6 +295,20 @@ test('server settings exposes explicit skill retry without resaving configuratio
     expect(f.changes).toHaveLength(0);
   } finally { await f.ui.close(); await f.mock.close(); }
 });
+
+test('repository reconciliation failure identifies the repository and retains its diagnostic', async () => {
+  const f = await fixture({ withSettings: true, repositories: [{ name: 'alpha', gitUrl: 'https://git.example/alpha' }], skillReconciliation: {
+    state: 'error', entries: [{ name: 'alpha', gitUrl: 'https://git.example/alpha', status: 'error', error: 'TLS certificate rejected by registry' }],
+  } });
+  try {
+    const { keys, visible, screen } = f.ui;
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
+    keys('\r'); await visible('Skills · server-wide · revision 3');
+    expect(screen()).toContain('alpha');
+    expect(screen()).toContain('https://git.example/alpha');
+    expect(screen()).toContain('TLS certificate rejected by registry');
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
 
 test('server settings repository add stages without a write until revision-confirmed save', async () => {
   const f = await fixture({ withSettings: true });

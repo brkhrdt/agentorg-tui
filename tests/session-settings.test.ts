@@ -136,6 +136,73 @@ test('live skills reconciliation refreshes status and catalog, polls boundedly, 
   }
 });
 
+test('missed completion events keep skill polling alive beyond six intervals until reconciliation terminates', async () => {
+  const requests: any[] = [];
+  let state: 'pending' | 'ready' = 'pending';
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: {
+      plugins: { skills: { version: 1, settingsNamespace: 'skills', endpoints: { list: 'skills.list' } } },
+    } });
+    else if (request.method === 'skills.list') respond(socket, request.id, { skills: state === 'ready' ? [{ name: 'beta', description: 'Prepared' }] : [], reconciliation: { state, entries: [] } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], expired: false, latestSeq: 0, oldestSeq: 1 });
+  });
+  const originalSetInterval = globalThis.setInterval, originalClearInterval = globalThis.clearInterval;
+  let tick: (() => void) | undefined;
+  globalThis.setInterval = ((callback: TimerHandler) => { tick = callback as () => void; return 1 as unknown as ReturnType<typeof setInterval>; }) as unknown as typeof setInterval;
+  globalThis.clearInterval = (() => {}) as typeof clearInterval;
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected' && !!tick);
+    for (let i = 0; i < 6; i++) {
+      const before = requests.filter(request => request.method === 'skills.list').length;
+      tick!();
+      await waitFor(() => requests.filter(request => request.method === 'skills.list').length > before);
+      await new Promise(resolve => setTimeout(resolve, 180)); // Drain coalesced snapshot refresh before the next interval.
+    }
+    expect(session.skillReconciliation?.state).toBe('pending');
+    const beforeTerminalPoll = requests.filter(request => request.method === 'skills.list').length;
+    state = 'ready'; // The completion notification was missed; polling must still discover this.
+    tick!();
+    await waitFor(() => requests.filter(request => request.method === 'skills.list').length > beforeTerminalPoll && session.skillReconciliation?.state === 'ready');
+    expect(session.skillCatalog.map(skill => skill.name)).toEqual(['beta']);
+  } finally {
+    session.close(); await running;
+    globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval;
+    await mock.close();
+  }
+});
+
+test('late skills catalog response cannot overwrite a newer discovery result', async () => {
+  const requests: any[] = [];
+  let held: { socket: import('node:net').Socket; id: string } | undefined;
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: {
+      plugins: { skills: { version: 1, settingsNamespace: 'skills', endpoints: { list: 'skills.list' } } },
+    } });
+    else if (request.method === 'skills.list' && !held && requests.filter(item => item.method === 'skills.list').length === 1)
+      respond(socket, request.id, { skills: [{ name: 'alpha', description: 'Initial' }] });
+    else if (request.method === 'skills.list' && !held) held = { socket, id: request.id };
+    else if (request.method === 'skills.list') respond(socket, request.id, { skills: [{ name: 'gamma', description: 'Newer discovery' }] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], expired: false, latestSeq: 0, oldestSeq: 1 });
+  });
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    const stale = session.refreshSkills();
+    await waitFor(() => !!held);
+    const newer = session.refreshSkills();
+    await newer;
+    expect(session.skillCatalog.map(skill => skill.name)).toEqual(['gamma']);
+    respond(held!.socket, held!.id, { skills: [{ name: 'beta', description: 'Stale response' }] });
+    await stale;
+    expect(session.skillCatalog.map(skill => skill.name)).toEqual(['gamma']);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
 test('reconnect resnapshots, replays missing events and resets when database sequence goes backwards', async () => {
   let connections = 0;
   let database = 1;
