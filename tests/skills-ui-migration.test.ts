@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { agent, mockServer, operation, respond, send, waitFor } from './helpers.js';
+import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 import type { ServerSettingsCatalog, ServerSettingsGroup } from '../src/protocol.js';
 
@@ -26,6 +26,7 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
     harness: 'fixture', model: 'test', extensions: { managed: { alpha: 'installed' }, sibling: { retained: true } },
   } });
   const group = repositoryGroup(repositories);
+  let currentSkillCatalog = skillCatalog;
   const serverSettings: ServerSettingsCatalog = { groups: [group], facts: { cwd: '/work', dataDir: '/data', socketPath: '/socket', harnesses: ['fixture'], plugins: ['skills'] } };
   const requests: any[] = [], changes: any[] = [];
   let connections = 0;
@@ -36,7 +37,7 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
       plugins: { skills: { version: 1, settingsNamespace: 'managed', endpoints: { list: 'skills.list', add: 'skills.add' } } },
       ...(withSettings && { serverSettings: { version: 1, groups: [group], endpoints } }),
     } });
-    else if (request.method === 'skills.list') respond(socket, request.id, { skills: skillCatalog });
+    else if (request.method === 'skills.list') respond(socket, request.id, { skills: currentSkillCatalog });
     else if (request.method === endpoints.list) respond(socket, request.id, serverSettings);
     else if (request.method === endpoints.update) {
       changes.push(request.params);
@@ -60,7 +61,8 @@ async function fixture({ withSettings = false, skillCatalog = skills, repositori
     else respond(socket, request.id, { seq: 0, liveOnly: true });
   }, () => { connections++; });
   const ui = terminalClient(mock.path, mock.directory, { cols });
-  return { mock, ui, root, requests, changes, group, connections: () => connections };
+  return { mock, ui, root, requests, changes, group, connections: () => connections,
+    setSkillCatalog(catalog: typeof skills) { currentSkillCatalog = catalog; } };
 }
 
 test('tree shortcut, action menu, help and footer no longer expose the legacy global Skills screen', async () => {
@@ -156,6 +158,23 @@ test('skills picker filters without losing its input, scrolls, and explains empt
     keys('?'); await visible('Keys · agent-skills'); keys('d');
     await waitFor(() => !empty.ui.screen().includes('[not in catalog]'));
   } finally { await empty.ui.close(); await empty.mock.close(); }
+}, 20_000);
+
+test('a staged skill whose source is removed becomes stale and is never silently submitted', async () => {
+  const f = await fixture();
+  try {
+    const { keys, visible, screen } = f.ui;
+    await visible('worker'); keys('e'); await visible('Modify agent · revision 8');
+    keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Beta instructions');
+    keys('\x1b[B'); keys('a'); keys('S'); await visible('Modify agent · revision 8');
+    f.setSkillCatalog([skills[0]!]);
+    const socket = [...f.mock.sockets][0]!;
+    send(socket, event(1, 'organization.settings.changed', { namespace: 'skills', revision: 4 }));
+    await waitFor(() => f.requests.filter(request => request.method === 'skills.list').length >= 2);
+    keys('\r'); await visible('Beta instructions');
+    expect(screen()).toContain('stale');
+    expect(f.changes).toHaveLength(0);
+  } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
 test('conflicts, failed operations and disconnects retain the staged skills draft without retry', async () => {
