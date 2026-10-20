@@ -1,10 +1,10 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
-import type { Agent, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice } from './protocol.js';
+import type { Agent, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
-import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, LEVEL_NAMES, TABLE_FIELDS, type ColorSetting, type Level, Settings } from './settings.js';
+import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, TABLE_FIELDS, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
 import { genericPreview, rendererPreview } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
@@ -20,7 +20,7 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
-type View = 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function agentHierarchy(agent: Agent | undefined, agents: Map<string, Agent>): string {
   const names: string[] = [], seen = new Set<string>();
@@ -136,9 +136,11 @@ export class UI {
   private closing = false;
   private lastTreeItems: string[] = [];
   private lastChat = '';
-  private renderedEvents = new Map<number, { signature: string; text: string }>();
+  private renderedEvents = new Map<number, { event: ServerEvent; rendering?: EventRendering; level: number; width: number; colors: string; budget: number; text: string }>();
+  private historyField?: keyof HistorySettings;
 
   constructor(private session: Session, private settings: Settings, private configPath: string) {
+    this.session.configureHistory(settings.history);
     this.screen.on('prerender', () => this.resizeComposer());
     // Rows are already cell-clipped. Blessed otherwise word-wraps an exactly
     // full styled row just because trailing ANSI resets increase string.length.
@@ -156,7 +158,7 @@ export class UI {
       }
     });
     for (const widget of [this.tree, this.menu, this.details]) {
-      widget.key(['?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
+      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
         const binding = key.full === 'C-home' || key.full === 'C-end' ? key.full :
           ['space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
@@ -229,18 +231,28 @@ export class UI {
         if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
         else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
         else if (this.view === 'agent-skills') this.cancelAgentSkills();
-        else this.setView(this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
+        else this.setView(this.view === 'history-field' ? 'history-settings' : this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
       });
     }
     this.composer.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
-      if (key.full === 'C-end') { this.follow = true; this.chat.setScrollPerc(100); }
-      else if (key.full === 'C-home') { this.follow = false; this.chat.setScroll(0); }
-      else {
+      if (key.full === 'C-end') {
+        this.follow = true;
+        if (this.chatAgent) void this.session.followChat(this.chatAgent).catch(error => this.showNotice(error.message));
+        this.chat.setScrollPerc(100);
+      } else {
         this.follow = false;
-        this.chat.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.chat.height) - 2));
+        if (this.chatAgent) this.session.pauseChat(this.chatAgent);
+        if (key.full === 'C-home') this.chat.setScroll(0);
+        else this.chat.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.chat.height) - 2));
+        if (key.name === 'pageup' || key.full === 'C-home') this.loadOlderChat();
       }
       this.screen.render();
+    });
+    this.chat.on('wheelup', () => {
+      this.follow = false;
+      if (this.chatAgent) this.session.pauseChat(this.chatAgent);
+      this.loadOlderChat();
     });
     this.screen.key('C-c', () => this.close());
     this.screen.on('resize', () => {
@@ -321,7 +333,10 @@ export class UI {
   private chooseMenu(): void {
     this.menuIndex = this.selectedMenuIndex();
     const fields = this.editor?.fields ?? [];
-    if (this.view === 'colors') {
+    if (this.view === 'history-settings') {
+      this.historyField = (Object.keys(HISTORY_FIELDS) as (keyof HistorySettings)[])[this.menuIndex];
+      if (this.historyField) { this.input.setValue(String(this.settings.history[this.historyField])); this.setView('history-field'); }
+    } else if (this.view === 'colors') {
       const key = Object.keys(COLOR_SETTINGS)[this.menuIndex] as ColorSetting | undefined;
       if (key) this.changeColor(1);
     } else if (this.view === 'structured') this.openEntry(false);
@@ -335,6 +350,7 @@ export class UI {
       else if (this.menuIndex === offset + 2) this.setView('filters');
       else if (this.menuIndex === offset + 3) this.setView('levels');
       else if (this.menuIndex === offset + 4) this.toggleCompactToolCalls();
+      else if (this.menuIndex === offset + 5) this.setView('history-settings');
     } else if (this.view === 'settings-options') {
       const choice = this.genericChoices[this.menuIndex];
       try {
@@ -445,7 +461,8 @@ export class UI {
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only event rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only event rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
+    if (this.view === 'history-settings') return [action('enter', 'Edit selected history limit', choose), action('z', 'Restore history cache defaults', () => { this.settings.history = { ...DEFAULT_HISTORY }; this.session.configureHistory(this.settings.history); this.saveSettings(); this.draw(); }), back];
     if (this.view === 'colors') return [action('space', 'Cycle selected color', cycle), action('left', 'Previous color', () => this.changeColor(-1)), action('right', 'Next color', () => this.changeColor(1)), action('enter', 'Next color', () => this.changeColor(1)), action('z', 'Reset all colors', () => { this.settings.colors = { ...DEFAULT_COLORS }; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
       action('space', 'Toggle field visibility', cycle),
@@ -1033,6 +1050,20 @@ export class UI {
     this.chatAgent = agent.id; this.follow = true; this.lastChat = ''; this.renderedEvents.clear();
     this.composer.setValue('');
     this.setView('chat');
+    void this.session.openChat(agent.id).catch(error => this.showNotice(`Chat history: ${error.message}`));
+  }
+  private loadOlderChat(): void {
+    const id = this.chatAgent;
+    if (this.view !== 'chat' || !id || this.chat.getScroll() > 0 || this.session.chatLoading(id) || !this.session.chatHasMore(id)) return;
+    const anchor = this.chat.getScreenLines().slice(0, 2).join('\n');
+    void this.session.olderChat(id).then(() => {
+      if (this.view !== 'chat' || this.chatAgent !== id) return;
+      this.draw();
+      const lines = this.chat.getScreenLines();
+      const index = anchor ? lines.findIndex((_, i) => lines.slice(i, i + 2).join('\n') === anchor) : 0;
+      this.chat.setScroll(Math.max(0, index - Math.max(1, Number(this.chat.height) - 2)));
+      this.screen.render();
+    }).catch(error => this.showNotice(error.message));
   }
   private openPrompt(): void {
     const agent = this.selected();
@@ -1055,6 +1086,10 @@ export class UI {
   }
   private setView(view: View): void {
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
+    if (this.view === 'chat' && view !== 'chat') {
+      this.session.leaveChat();
+      this.chat.setContent(''); this.lastChat = ''; this.renderedEvents.clear();
+    }
     this.view = view;
     this.menuIndex = 0;
     this.previewIndex = 0;
@@ -1081,7 +1116,7 @@ export class UI {
       }
     } else if (view === 'agent-info') {
       this.details.show(); this.details.focus();
-    } else if (['settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['history-settings', 'settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -1095,6 +1130,14 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'history-field' && this.historyField) {
+      try {
+        this.settings.history = historySettings({ ...this.settings.history, [this.historyField]: Number(value) });
+        this.session.configureHistory(this.settings.history);
+        this.saveSettings(); this.setView('history-settings');
+      } catch (error) { this.showNotice((error as Error).message); this.input.readInput(); }
+      return;
+    }
     if (this.view === 'agent-skills-filter') { this.skillPicker && (this.skillPicker.filter = value); this.menuIndex = 0; this.setView('agent-skills'); this.draw(); return; }
     if (this.view === 'settings-choice-setup' && this.pendingChoiceSetup?.setup) {
       const choice = this.pendingChoiceSetup, actions = this.choiceActions;
@@ -1241,7 +1284,9 @@ export class UI {
       this.view === 'chat' ? store.agents.get(this.chatAgent ?? '') :
       this.view === 'prompt' ? store.agents.get(this.promptAgent ?? '') : this.selected();
     const structuredLabel = this.structuredServer ? this.serverField?.label : this.structuredField ? this.editor?.label(this.structuredField) : '';
-    const heading = this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; ${this.structuredServer ? 'server' : 'agent'} Save applies` :
+    const heading = this.view === 'history-settings' ? 'History cache · client preferences · changes saved automatically' :
+      this.view === 'history-field' ? `Edit ${HISTORY_FIELDS[this.historyField!]} · positive integer` :
+      this.view === 'structured' || this.view === 'structured-filter' ? `Edit ${structuredLabel} · ${this.structured?.filter ? `filter: ${this.structured.filter}` : 'list / map'} · S stages; ${this.structuredServer ? 'server' : 'agent'} Save applies` :
       this.view === 'volume-destination' ? `Container destination · ${this.pendingVolume?.name} · e.g. /home/pi/.pi` :
       this.view === 'structured-raw' ? `Edit ${structuredLabel} · advanced JSON` :
       this.view === 'entry-type' ? `Edit ${structuredLabel} · value type` :
@@ -1376,10 +1421,17 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry repositories' : ''}  Esc discard`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`]);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
-      this.footer.setContent(' s server settings   t TUI colors   b table fields   f event filters   l rendering levels   c compact phases   ↑↓ select   Enter open   Esc tree');
+      this.footer.setContent(' s server settings   t TUI colors   b table fields   f event filters   l rendering levels   c compact phases   h history cache   ↑↓ select   Enter open   Esc tree');
+    } else if (this.view === 'history-settings') {
+      this.updating = true;
+      this.menu.setItems((Object.keys(HISTORY_FIELDS) as (keyof HistorySettings)[]).map(key => `${HISTORY_FIELDS[key]}: ${this.settings.history[key]}`));
+      this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(' ↑↓ limit  Enter edit  z defaults  Esc tree · cache eviction never deletes database history');
+    } else if (this.view === 'history-field') {
+      this.footer.setContent(' Enter save and apply immediately  Ctrl+U clear  Esc cancel · positive integer');
     } else if (this.view === 'colors') {
       this.updating = true;
       const keys = Object.keys(COLOR_SETTINGS) as ColorSetting[];
@@ -1426,24 +1478,32 @@ export class UI {
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.view === 'filters' ? ' ↑↓ select   Space toggle tracked   Esc tree · changes saved automatically' : ' ↑↓ event  ←→ level  1–4 level  r examples  z inherit  Esc tree');
     } else if (this.view === 'chat') {
-      const events = store.orderedEvents().filter(event => event.agentId === this.chatAgent);
-      const blocks = chatGroups(events, this.settings, store.renderings).map(event => {
+      const events = this.session.chatEvents(this.chatAgent!);
+      const groups = chatGroups(events, this.settings, store.renderings);
+      if (this.follow) groups.reverse();
+      const blocks: string[] = [], retained = new Set<number>();
+      const colors = JSON.stringify(this.settings.colors);
+      let budget = this.settings.history.cacheBytes;
+      for (const event of groups) {
+        if (budget <= 0) break;
         const rendering = store.renderings.get(event.seq);
         const level = this.settings.level(event.type, rendering?.subtype);
-        const signature = JSON.stringify([event, rendering, level, width, this.settings.colors]);
         const cached = this.renderedEvents.get(event.seq);
-        if (cached?.signature === signature) return cached.text;
-        const text = renderEvent(event, level, Math.max(1, width - 1), rendering, this.settings.colors);
-        this.renderedEvents.set(event.seq, { signature, text });
-        return text;
-      });
-      const content = [store.historyGap ? '[History gap: earlier events have expired.]' : '', ...blocks].filter(Boolean).join('\n\n') || 'No tracked events yet.';
+        let text = cached?.event === event && cached.rendering === rendering && cached.level === level && cached.width === width && cached.colors === colors && cached.budget === budget ? cached.text :
+          renderEvent(event, level, Math.max(1, width - 1), rendering, this.settings.colors);
+        if (Buffer.byteLength(text) > budget) text = Buffer.from(text).subarray(0, budget).toString('utf8') + '\n[Display budget reached; raw history remains in the database.]';
+        this.renderedEvents.set(event.seq, { event, rendering, level, width, colors, budget, text });
+        retained.add(event.seq); blocks.push(text); budget -= Buffer.byteLength(text) + 2;
+      }
+      for (const seq of this.renderedEvents.keys()) if (!retained.has(seq)) this.renderedEvents.delete(seq);
+      if (this.follow) blocks.reverse();
+      const content = [this.session.chatLoading(this.chatAgent!) ? '[Loading history…]' : '', store.historyGap ? '[History gap: earlier events have expired.]' : '', ...blocks].filter(Boolean).join('\n\n') || 'No tracked events yet.';
       if (content !== this.lastChat) {
         const scroll = this.chat.getScroll();
         this.chat.setContent(content); this.lastChat = content;
         if (this.follow) this.chat.setScrollPerc(100); else this.chat.setScroll(scroll);
       }
-      this.footer.setContent(' Text: Enter interrupt/send  PgUp/PgDn scroll  Ctrl+Home top  Ctrl+End follow  Ctrl+U clear  Esc tree');
+      this.footer.setContent(' Text: Enter interrupt/send  PgUp older  PgDn scroll  Ctrl+Home top  Ctrl+End latest/follow  Ctrl+U clear  Esc tree');
     } else if (this.view === 'settings-choice-setup') {
       this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
     } else if (this.view === 'server-field') {

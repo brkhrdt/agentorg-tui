@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type SkillReconciliation, type SkillRetained, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
 import { Store } from './store.js';
+import { DEFAULT_HISTORY, historySettings, type HistorySettings } from './settings.js';
 import type { ImageScope } from './agent-editor.js';
 import { pluginFields, type PluginField } from './structured-editor.js';
 import type { PathCompletion } from './path-input.js';
@@ -10,6 +11,10 @@ export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | '
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const done = (operation: Operation) => ['completed', 'failed', 'stopped'].includes(operation.status);
+
+interface ChatWindow {
+  seqs: Set<number>; hasMore: boolean; following: boolean; valid: boolean; loading?: Promise<void>;
+}
 
 export class Session extends EventEmitter {
   readonly store = new Store();
@@ -237,26 +242,158 @@ export class Session extends EventEmitter {
   private client?: RpcClient;
   private stopped = false;
   private refreshTimer?: ReturnType<typeof setTimeout>;
+  private pruneTimer?: ReturnType<typeof setTimeout>;
   private refreshing = false;
   private refreshAgain = false;
   private refreshSkillsOnRefresh = true;
-  constructor(readonly socketPath: string, private readonly options: { replayHistory?: boolean } = {}) {
+  private history: HistorySettings = { ...DEFAULT_HISTORY };
+  private chats = new Map<string, ChatWindow>();
+  private activeChat?: string;
+  private recentFloor = 0;
+  private evictedFloor = 0;
+  private recentComplete = false;
+  constructor(readonly socketPath: string, private readonly options: { replayHistory?: boolean; history?: HistorySettings } = {}) {
     super();
+    this.configureHistory(options.history ?? DEFAULT_HISTORY);
     this.store.on('refresh', () => this.scheduleRefresh());
+    this.store.on('evict', (seq: number) => {
+      this.evictedFloor = Math.max(this.evictedFloor, seq + 1);
+      this.recentFloor = Math.max(this.recentFloor, this.evictedFloor);
+      this.recentComplete = false;
+      for (const window of this.chats.values()) if (window.seqs.delete(seq)) { window.valid = false; window.hasMore = true; }
+    });
+  }
+  configureHistory(settings: HistorySettings): void {
+    this.history = historySettings(settings);
+    for (const window of this.chats.values()) window.valid = false;
+    this.store.configureHistory(this.history);
+  }
+  chatEvents(agentId: string): ServerEvent[] {
+    const window = this.chats.get(agentId);
+    return [...(window?.seqs ?? [])].sort((a, b) => a - b).flatMap(seq => {
+      const event = this.store.events.get(seq);
+      return event ? [event] : [];
+    });
+  }
+  chatHasMore(agentId: string): boolean { return this.chats.get(agentId)?.hasMore ?? false; }
+  chatLoading(agentId: string): boolean { return !!this.chats.get(agentId)?.loading; }
+  leaveChat(): void { this.activeChat = undefined; this.store.setActiveChat(); }
+  async openChat(agentId: string): Promise<void> {
+    this.activeChat = agentId;
+    this.store.setActiveChat(agentId);
+    const previous = this.chats.get(agentId);
+    if (previous?.valid && previous.following) return previous.loading;
+    const window: ChatWindow = { seqs: new Set(), following: true, hasMore: true, valid: true };
+    this.chats.set(agentId, window);
+    const count = Math.min(this.history.chatPageSize, this.history.recentEvents);
+    const cached = this.store.orderedEvents().filter(event => event.agentId === agentId && event.seq >= this.recentFloor);
+    if (cached.length >= count || this.recentComplete) {
+      const tail = cached.slice(-count);
+      for (const event of tail) { window.seqs.add(event.seq); this.store.ingest(event, 'history'); }
+      window.hasMore = cached.length > count || !this.recentComplete;
+      this.store.emit('change');
+      return;
+    }
+    return this.loadChat(agentId, window, this.store.watermark + 1);
+  }
+  async olderChat(agentId: string): Promise<void> {
+    const window = this.chats.get(agentId);
+    if (!window || window.loading || !window.hasMore) return window?.loading;
+    const before = this.chatEvents(agentId)[0]?.seq;
+    if (before === undefined) return this.followChat(agentId);
+    window.following = false;
+    this.store.setActiveChat(this.activeChat, true);
+    return this.loadChat(agentId, window, before);
+  }
+  pauseChat(agentId: string): void {
+    const window = this.chats.get(agentId);
+    if (window) window.following = false;
+    this.store.setActiveChat(this.activeChat, true);
+  }
+  async followChat(agentId: string): Promise<void> {
+    this.chats.delete(agentId);
+    return this.openChat(agentId);
+  }
+  private loadChat(agentId: string, window: ChatWindow, before: number): Promise<void> {
+    const client = this.client;
+    if (!client || this.stopped) { window.valid = false; return Promise.reject(new Error('Server is not connected')); }
+    const work = async () => {
+      const target = Math.min(this.history.chatPageSize, this.history.recentEvents);
+      let received = 0, bytes = 0;
+      while (received < target && bytes < this.history.cacheBytes) {
+        const page = await client.request<HistoryPage>('events.history', { after: 0, before, agentId, limit: Math.min(1000, target - received), ...(this.renderingCapability && { renderings: true }) });
+        if (client !== this.client || this.stopped || this.chats.get(agentId) !== window) return;
+        if (page.expired && !this.store.historyGap) {
+          this.store.historyGap = true;
+          this.emit('notice', 'History retention gap: earlier chat is unavailable.');
+        }
+        const events = page.events.filter(e => e.agentId === agentId && e.seq < before).sort((a, b) => a.seq - b.seq);
+        window.hasMore = page.hasMore ?? false;
+        if (!events.length) { window.hasMore = false; break; }
+        for (const event of events) {
+          window.seqs.add(event.seq);
+          this.store.ingest(event, 'history');
+          const rendering = page.renderings?.[event.seq];
+          if (rendering && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
+        }
+        received += events.length;
+        bytes += Buffer.byteLength(JSON.stringify(page));
+        before = events[0]!.seq;
+        if (!window.hasMore) break;
+      }
+      this.store.emit('change');
+    };
+    const pending = work().catch(error => { window.valid = false; throw error; }).finally(() => {
+      if (window.loading === pending) window.loading = undefined;
+      this.store.emit('change');
+    });
+    window.loading = pending;
+    this.store.emit('change');
+    return pending;
+  }
+  private live(event: ServerEvent): void {
+    const window = event.agentId ? this.chats.get(event.agentId) : undefined;
+    const following = window?.following && event.agentId === this.activeChat;
+    if (following) window.seqs.add(event.seq);
+    else if (window) window.valid = false;
+    this.store.ingest(event, following ? 'chat-live' : 'live');
   }
   private setStatus(status: string): void { this.status = status; this.emit('status'); }
+  private schedulePrune(): void {
+    if (this.stopped || this.pruneTimer) return;
+    this.pruneTimer = setTimeout(() => {
+      this.pruneTimer = undefined;
+      this.store.pruneHistory();
+      this.schedulePrune();
+    }, 10_000);
+  }
   async run(): Promise<void> {
+    this.schedulePrune(); // Cache expiry also runs while the server is offline.
     let delay = 250;
     while (!this.stopped) {
       const client = this.client = new RpcClient(this.socketPath);
       let buffering = true;
       const buffered: ServerEvent[] = [];
       const presentations = new Map<number, EventRendering>();
+      let bufferedBytes = 0, droppedBufferedState = false, droppedSeq = 0;
+      const trimBuffers = () => {
+        while (buffered.length + presentations.size > this.history.recentEvents || bufferedBytes > this.history.cacheBytes) {
+          const presentationSeq = presentations.keys().next().value;
+          if (presentationSeq !== undefined && (!buffered.length || presentationSeq <= buffered[0]!.seq)) {
+            bufferedBytes -= Buffer.byteLength(JSON.stringify(presentations.get(presentationSeq)));
+            presentations.delete(presentationSeq);
+          } else if (buffered.length) {
+            const dropped = buffered.shift()!;
+            bufferedBytes -= Buffer.byteLength(JSON.stringify(dropped));
+            droppedBufferedState = true; droppedSeq = Math.max(droppedSeq, dropped.seq);
+          } else break;
+        }
+      };
       client.on('event', (event: ServerEvent) => {
         this.emit('event', event);
-        if (buffering) buffered.push(event);
+        if (buffering) { buffered.push(event); bufferedBytes += Buffer.byteLength(JSON.stringify(event)); trimBuffers(); }
         else {
-          this.store.ingest(event);
+          this.live(event);
           if (event.type === 'skills.catalog_added' || event.type === 'organization.settings.changed') {
             this.scheduleRefresh();
           }
@@ -266,8 +403,11 @@ export class Session extends EventEmitter {
         }
       });
       client.on('presentation', (seq: number, rendering: EventRendering) => {
-        if (buffering) presentations.set(seq, rendering);
-        else this.store.present(seq, rendering);
+        if (buffering) {
+          if (presentations.has(seq)) bufferedBytes -= Buffer.byteLength(JSON.stringify(presentations.get(seq)));
+          presentations.set(seq, rendering);
+          bufferedBytes += Buffer.byteLength(JSON.stringify(rendering)); trimBuffers();
+        } else this.store.present(seq, rendering);
       });
       client.on('diagnostic', (message: string) => this.emit('notice', message));
       const closed = new Promise<void>(resolve => client.once('disconnect', resolve));
@@ -292,19 +432,33 @@ export class Session extends EventEmitter {
         }
         await this.loadSkills(client, snapshot);
         if (this.renderingCapability) await client.request('subscribe', { renderings: true });
+        this.chats.clear(); // Reconnects cannot assert coverage across missed live traffic.
+        this.recentComplete = false;
+        this.store.reset();
+        this.evictedFloor = droppedBufferedState ? droppedSeq + 1 : 0;
+        this.recentFloor = this.evictedFloor;
         this.store.install(snapshot);
         for (const [seq, rendering] of presentations) this.store.present(seq, rendering);
-        buffered.sort((a, b) => a.seq - b.seq).forEach(event => this.store.ingest(event));
+        buffered.sort((a, b) => a.seq - b.seq).forEach(event => this.live(event));
+        presentations.clear();
         buffering = false;
         if (buffered.some(event => event.type === 'skills.catalog_changed' || event.type === 'skills.reconciliation_changed'))
           void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
+        buffered.length = 0; bufferedBytes = 0;
+        if (droppedBufferedState) this.scheduleRefresh(false);
         delay = 250;
         if (this.options.replayHistory !== false) {
           this.setStatus('connected · loading history');
           // Keep the UI live during history download, with a fixed replay target.
-          await this.replay(client, snapshot.seq);
+          try { await this.replay(client, snapshot.seq); }
+          catch (error) {
+            if (!(error instanceof ApiError)) throw error;
+            this.emit('notice', `Recent history unavailable: ${error.message}. Chat can retry on demand.`);
+          }
         } else this.store.historyCursor = snapshot.seq;
+        snapshot = undefined; // Do not retain an obsolete startup snapshot while connected.
         this.setStatus('connected');
+        if (this.activeChat && !this.chats.has(this.activeChat)) void this.openChat(this.activeChat).catch(error => this.emit('notice', error.message));
         poll = setInterval(() => {
           const pending = this.skillReconciliation?.state === 'pending' || this.skillReconciliation?.state === 'running';
           if (pending) void this.refreshSkills().catch(error => this.emit('notice', `Skills refresh failed: ${(error as Error).message}`));
@@ -326,18 +480,30 @@ export class Session extends EventEmitter {
     }
   }
   private async replay(client: RpcClient, target: number): Promise<void> {
-    while (!this.stopped && this.store.historyCursor < target) {
-      const page = await client.request<HistoryPage>('events.history', { after: this.store.historyCursor, limit: 100, ...(this.renderingCapability && { renderings: true }) });
+    let before = target + 1, received = 0, bytes = 0;
+    this.recentFloor = Math.max(this.evictedFloor, before);
+    this.recentComplete = target === 0 && this.evictedFloor === 0;
+    while (!this.stopped && target > 0 && received < this.history.recentEvents && bytes < this.history.cacheBytes) {
+      const page = await client.request<HistoryPage>('events.history', { after: 0, before, limit: Math.min(1000, this.history.recentEvents - received), ...(this.renderingCapability && { renderings: true }) });
       if (page.expired && !this.store.historyGap) {
         this.store.historyGap = true;
         this.emit('notice', 'History retention gap: earlier chat is unavailable.');
-        this.scheduleRefresh();
       }
-      for (const [seq, rendering] of Object.entries(page.renderings ?? {})) this.store.present(Number(seq), rendering);
-      for (const event of page.events) this.store.ingest(event);
-      if (!page.events.length) { this.store.historyCursor = target; break; }
-      this.store.historyCursor = page.events[page.events.length - 1]!.seq;
+      const events = page.events.filter(event => event.seq < before && event.seq <= target).sort((a, b) => a.seq - b.seq);
+      if (!events.length) { this.recentComplete = this.evictedFloor === 0; break; }
+      this.recentFloor = Math.max(this.evictedFloor, Math.min(this.recentFloor, events[0]!.seq));
+      for (const event of events) {
+        this.store.ingest(event);
+        const rendering = page.renderings?.[event.seq];
+        if (rendering && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
+      }
+      received += events.length;
+      bytes += Buffer.byteLength(JSON.stringify(page));
+      before = events[0]!.seq;
+      if (!page.hasMore) { this.recentComplete = this.evictedFloor === 0; break; }
     }
+    // This cursor tracks state synchronization, never evictable history coverage.
+    this.store.historyCursor = target;
     this.store.emit('change');
   }
   private scheduleRefresh(refreshSkills = true): void {
@@ -418,6 +584,7 @@ export class Session extends EventEmitter {
   close(): void {
     this.stopped = true;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.pruneTimer) clearTimeout(this.pruneTimer);
     this.client?.close();
   }
 }

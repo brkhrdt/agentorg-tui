@@ -8,8 +8,8 @@ const help = `Agent Organization TUI
 Usage: org-tui [--socket PATH] [--config PATH] [--no-history]
 
   --socket PATH  Unix socket (default: ORG_SOCKET or .org/server.sock)
-  --config PATH  Event filters/levels (default: $XDG_CONFIG_HOME/org-tui/settings.json)
-  --no-history   Load current state and new events only; skip historical chat
+  --config PATH  Client settings (including history cache) (default: $XDG_CONFIG_HOME/org-tui/settings.json)
+  --no-history   Skip startup history; chat can still load history on demand
   -h, --help     Show help
 
 Tree: ↑↓ select, Enter interrupting prompt, c chat, v f filters, v l levels, q quit.
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('An interactive terminal is required. Use --help for usage.');
   const settings = await Settings.load(resolve(config));
-  const session = new Session(resolve(socket), { replayHistory });
+  const session = new Session(resolve(socket), { replayHistory, history: settings.history });
   const ui = new UI(session, settings, resolve(config));
   process.once('SIGTERM', () => ui.close());
   process.once('SIGINT', () => ui.close());

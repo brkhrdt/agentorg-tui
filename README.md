@@ -30,16 +30,16 @@ real agent tree without model credentials; attach this TUI to the socket it prin
 to watch streaming activity. Its optional `--tui-probe` measures this TUI's actual
 session/store/tree renderer during agent creation/removal, without terminal painting.
 State refreshes request only nonterminal operations; completed prompt output is
-normally replayed from paged event history rather than downloaded in snapshots.
+loaded on demand from paged event history rather than downloaded in snapshots.
 
-For current state and **new events only**, skip historical chat loading:
+For current state and **new events only at startup**, skip the recent-history download:
 
 ```sh
 bun start --socket /tmp/bench/server.sock --no-history
 ```
 
 This does not change server recovery or re-execute old prompts/tools. It simply
-omits historical chat, including after reconnect; the server still loads its tree
+omits automatic history loading, including after reconnect; explicitly opening chat can still fetch history. The server still loads its tree
 and persisted sessions from SQLite. A reproducible server-recovery timing procedure
 is documented in the benchmark's [RECOVERY.md](../agentorg-plugin-harness-bench/RECOVERY.md).
 
@@ -109,6 +109,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | v, then b | Choose and reorder table fields (client only) |
 | v, then f | Configure tracked events (client only) |
 | v, then l | Configure rendering levels |
+| v, then h | Configure history cache limits and idle expiry (client only) |
 | q / Ctrl+C | Quit the client, leaving server work running |
 
 Rows default to **name, status, model, latest tracked event**. Use `v`, then
@@ -190,6 +191,33 @@ Saves are revision-fenced. Other clients' changes refresh the catalog but do not
 overwrite your draft. Conflicts keep the draft and are never automatically
 retried; `r` explicitly discards it and reloads current values. Escape discards a
 field/collection edit or the whole group draft, depending on the current view.
+
+### History cache: `v`, then `h`
+
+These client-only settings save in `--config` and apply immediately:
+
+| Setting | Default |
+| --- | --- |
+| Cached events (maximum, recent and explicitly loaded combined) | 2,000 |
+| Chat page size (raw events, not coalesced messages) | 200 |
+| Cache payload budget (bytes) | 33,554,432 (32 MiB) |
+| Inactive chat expiry (minutes) | 10 |
+
+Use Enter to edit a positive integer (`cacheBytes` must be at least 1,024),
+Ctrl+U to clear, Escape to cancel, or `z` to restore defaults. Page sizes are
+clamped to the event-cache limit. The byte budget counts serialized events and
+presentations, not total process RSS; rendered output/widget text is bounded too.
+The active chat is preferred under cache pressure, but still obeys both limits.
+Inactive historical reads expire on the periodic sweep (approximately every ten
+seconds), and least-recently-used inactive history is evicted first under pressure.
+Recent events can remain within the global cache after a chat expires. Leaving
+chat clears its rendered-text cache and hidden widget content.
+
+Eviction **never deletes SQLite history**. Database retention is separately
+configured under **v → s → Organization / core → maxEvents**: **0 means unlimited**
+(the server default). A positive value permanently deletes older database events
+on subsequent writes. Existing server overrides remain effective until changed;
+previously deleted events cannot be recovered by this client.
 
 ### Agent lifecycle: `a`, `n`, `e`
 
@@ -465,9 +493,8 @@ includes the entire prompt. Resizing the terminal rewraps the draft.
 
 - **Enter** sends the message. Every send explicitly uses `queue: false`: it
   cancels queued prompts and interrupts active work before the new prompt runs.
-- **Page Up / Page Down** scroll history and pause auto-follow.
-- **Ctrl+Home** jumps to the top; **Ctrl+End** jumps to the bottom and resumes
-  auto-follow.
+- **Page Up / Page Down** scroll history and pause auto-follow. Page Up (or mouse-wheel up) at the loaded top fetches another older page for this agent.
+- **Ctrl+Home** jumps to the loaded top and can load an older page; **Ctrl+End** reloads the latest chat window and resumes auto-follow. Loading older pages slides a bounded window rather than accumulating all history.
 - **Ctrl+U** clears the draft and collapses the input back to one row.
 - **Escape** returns to the tree without sending the input.
 
@@ -477,10 +504,13 @@ must be started with `a` → **Start / restart agent** before they can receive m
 
 ## Connection and history behavior
 
-The client buffers events while synchronizing a snapshot, then merges retained
-history with the live stream by sequence number. State synchronization and
-history coverage use separate cursors. Safe readiness queries retry `NOT_READY`.
-Disconnects trigger backoff, reconnect, resnapshot, and history catch-up. A lower
+The client bounds its startup live-event buffer while synchronizing a snapshot,
+then downloads only a recent tail (up to the configured event/byte limits), never
+the entire event log. Opening chat shows the latest configured page for that agent,
+using cached coverage where available or querying SQLite through the server.
+Older pages load on demand. State synchronization and evictable history coverage
+are independent. Safe readiness queries retry `NOT_READY`.
+Disconnects trigger backoff, reconnect, resnapshot, and another bounded tail load. A lower
 snapshot sequence resets the old database's view. Retention gaps and truncated
 payloads are explicitly marked; incomplete lifecycle data triggers a snapshot
 refresh. Snapshots also refresh periodically to reconcile intermediate state.
@@ -491,9 +521,12 @@ such. This client does not respond to permission requests; they are visible as
 events but require another client to resolve them.
 
 "Full chat" means all available **server event history**, not the full native
-harness transcript. The public API retains a bounded event log and lacks message
-boundaries/session transcript downloads; missing text cannot be recovered by
-this client. Received history is held in memory for the client session. Treat
+harness transcript. The server retains events indefinitely by default, unless an
+operator configures a positive `maxEvents` limit. The API lacks message
+boundaries/session transcript downloads; missing or previously pruned text cannot
+be recovered by this client. In-memory history and derived caches are bounded and
+expire; oversized wire/cache records may be explicitly marked previews without
+changing their durable copies. Treat
 raw output as sensitive: it can include settings, prompts, and tool arguments.
 
 ## Development

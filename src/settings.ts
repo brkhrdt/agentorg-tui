@@ -49,7 +49,24 @@ export const EVENT_TYPES = [
 ];
 export const defaultConfigPath = () => join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'org-tui', 'settings.json');
 
+export const HISTORY_FIELDS = {
+  recentEvents: 'Cached events (maximum)', chatPageSize: 'Chat page size (events)',
+  cacheBytes: 'Cache payload budget (bytes)', idleMinutes: 'Inactive chat expiry (minutes)',
+} as const;
+export interface HistorySettings { recentEvents: number; chatPageSize: number; cacheBytes: number; idleMinutes: number }
+export const DEFAULT_HISTORY: Readonly<HistorySettings> = { recentEvents: 2000, chatPageSize: 200, cacheBytes: 32 * 1024 * 1024, idleMinutes: 10 };
+export function historySettings(value: unknown): HistorySettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid history settings');
+  const settings = { ...DEFAULT_HISTORY, ...value };
+  for (const key of Object.keys(settings)) {
+    const v = settings[key as keyof HistorySettings];
+    if (!Object.hasOwn(HISTORY_FIELDS, key) || !Number.isSafeInteger(v) || v < (key === 'cacheBytes' ? 1024 : 1)) throw new Error(`Invalid history setting: ${key}`);
+  }
+  return settings;
+}
+
 export class Settings {
+  history: HistorySettings = { ...DEFAULT_HISTORY };
   excluded = new Set([
     'agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed',
     'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed',
@@ -78,6 +95,7 @@ export class Settings {
       const data = JSON.parse(await readFile(path, 'utf8'));
       if (!Array.isArray(data.excluded) || !data.excluded.every((v: unknown) => typeof v === 'string') ||
           !data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels)) throw new Error('Invalid settings format');
+      if (data.history !== undefined) settings.history = historySettings(data.history);
       settings.excluded = new Set(data.excluded);
       settings.tableFields = normalizeTableFields(data.tableFields);
       if (data.compactToolCalls !== undefined && typeof data.compactToolCalls !== 'boolean') throw new Error('Invalid compactToolCalls setting');
@@ -105,7 +123,7 @@ export class Settings {
   async save(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors }, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors, history: this.history }, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   }
 }

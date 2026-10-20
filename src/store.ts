@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Agent, Operation, ServerEvent, Snapshot, EventRendering } from './protocol.js';
-import type { Settings } from './settings.js';
+import { DEFAULT_HISTORY, historySettings, type HistorySettings, type Settings } from './settings.js';
 
 export const object = (value: unknown): Record<string, any> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
@@ -35,12 +35,81 @@ export class Store extends EventEmitter {
   private lastByAgent = new Map<string, ServerEvent>();
   private latestIndexedSeq = -1;
   private latestDirty = false;
+  private policy: HistorySettings = { ...DEFAULT_HISTORY };
+  private cache = new Map<number, { bytes: number; recent: boolean; loadedAt?: number; pending?: boolean }>();
+  // Keep sequence IDs even when pinned history displaces live payloads, so old
+  // chat records cannot remain "recent" forever merely by staying protected.
+  private recentSequences = new Set<number>();
+  private activeChat?: string;
+  private browsingOlder = false;
+  cachedBytes = 0; // Serialized payloads, not a claim about total process RSS.
+
+  configureHistory(settings: HistorySettings): void {
+    this.policy = historySettings(settings);
+    this.pruneHistory();
+  }
+  setActiveChat(agentId?: string, older = false): void {
+    const now = Date.now();
+    for (const [seq, entry] of this.cache) if (entry.loadedAt !== undefined &&
+      [this.activeChat, agentId].includes(this.events.get(seq)?.agentId)) entry.loadedAt = now;
+    this.activeChat = agentId; this.browsingOlder = older;
+    this.pruneHistory();
+  }
+  private measure(seq: number): void {
+    const entry = this.cache.get(seq)!;
+    this.cachedBytes -= entry.bytes;
+    entry.bytes = (this.events.has(seq) ? Buffer.byteLength(JSON.stringify(this.events.get(seq))) : 0) +
+      (this.renderings.has(seq) ? Buffer.byteLength(JSON.stringify(this.renderings.get(seq))) : 0);
+    this.cachedBytes += entry.bytes;
+  }
+  private forget(seq: number): void {
+    const entry = this.cache.get(seq);
+    if (!entry) return;
+    this.cachedBytes -= entry.bytes;
+    this.cache.delete(seq); this.events.delete(seq); this.renderings.delete(seq);
+    this.sortedCache = undefined;
+    // These maps can hold merged chunks referencing evicted payloads too.
+    this.latestByType.clear(); this.lastByAgent.clear();
+    this.latestIndexedSeq = -1; this.latestDirty = true;
+    this.emit('evict', seq);
+  }
+  pruneHistory(now = Date.now()): void {
+    if (this.recentSequences.size > this.policy.recentEvents) {
+      const recent = [...this.recentSequences].sort((a, b) => b - a);
+      for (const seq of recent.slice(this.policy.recentEvents)) {
+        this.recentSequences.delete(seq);
+        const entry = this.cache.get(seq);
+        if (entry) entry.recent = false;
+      }
+    }
+    let changed = false;
+    const active = (seq: number) => !!this.activeChat && this.events.get(seq)?.agentId === this.activeChat;
+    for (const [seq, entry] of this.cache) {
+      if (entry.loadedAt !== undefined && !active(seq) && now - entry.loadedAt >= this.policy.idleMinutes * 60_000) entry.loadedAt = undefined;
+      if ((!entry.recent && entry.loadedAt === undefined && !entry.pending) ||
+          (entry.pending && now - (entry.loadedAt ?? 0) >= this.policy.idleMinutes * 60_000)) { this.forget(seq); changed = true; }
+    }
+    if (this.cache.size <= this.policy.recentEvents && this.cachedBytes <= this.policy.cacheBytes) {
+      if (changed) this.emit('change');
+      return;
+    }
+    const priority = (seq: number, entry: { recent: boolean; loadedAt?: number; pending?: boolean }) =>
+      active(seq) && entry.loadedAt !== undefined ? 2 : entry.recent || entry.pending ? 1 : 0;
+    const candidates = [...this.cache].sort(([a, x], [b, y]) => priority(a, x) - priority(b, y) ||
+      (priority(a, x) === 2 && this.browsingOlder ? b - a : priority(a, x) === 0 ? (x.loadedAt ?? 0) - (y.loadedAt ?? 0) || a - b : a - b));
+    for (const [seq] of candidates) {
+      if (this.cache.size <= this.policy.recentEvents && this.cachedBytes <= this.policy.cacheBytes) break;
+      this.forget(seq); changed = true;
+    }
+    if (changed) this.emit('change');
+  }
 
   reset(): void {
     this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
+    this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined;
   }
   install(snapshot: Snapshot): void {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
@@ -51,15 +120,33 @@ export class Store extends EventEmitter {
     this.emit('change');
   }
   present(seq: number, rendering: EventRendering): void {
+    const rawBytes = this.events.has(seq) ? Buffer.byteLength(JSON.stringify(this.events.get(seq))) : 0;
+    if (rawBytes + Buffer.byteLength(JSON.stringify(rendering)) > this.policy.cacheBytes) return;
     this.renderings.set(seq, rendering);
+    if (!this.cache.has(seq)) this.cache.set(seq, { bytes: 0, recent: false, loadedAt: Date.now(), pending: true });
+    this.measure(seq);
+    this.pruneHistory();
     const event = this.events.get(seq);
     if (event && rendering.subtype) this.discovered.add(`${event.type}:${rendering.subtype}`);
     this.latestDirty = true;
     this.emit('change');
   }
-  ingest(event: ServerEvent): void {
-    if (this.events.has(event.seq)) return;
+  ingest(event: ServerEvent, source: 'live' | 'history' | 'chat-live' = 'live'): void {
+    const stateEvent = event;
+    if (Buffer.byteLength(JSON.stringify(event)) > this.policy.cacheBytes) {
+      const data = JSON.stringify(event.data ?? null);
+      event = { ...event, data: { truncated: true, originalBytes: Buffer.byteLength(data), preview: Buffer.from(data).subarray(0, Math.floor(this.policy.cacheBytes / 12)).toString('utf8') } };
+    }
+    const entry = this.cache.get(event.seq) ?? { bytes: 0, recent: false };
+    entry.pending = false;
+    if (source !== 'history') this.recentSequences.add(event.seq);
+    entry.recent ||= this.recentSequences.has(event.seq);
+    if (source !== 'live') entry.loadedAt = Date.now();
+    this.cache.set(event.seq, entry);
+    if (this.events.has(event.seq)) { this.pruneHistory(); return; }
     this.events.set(event.seq, event);
+    if (this.renderings.has(event.seq) && Buffer.byteLength(JSON.stringify(event)) + Buffer.byteLength(JSON.stringify(this.renderings.get(event.seq))) > this.policy.cacheBytes) this.renderings.delete(event.seq);
+    this.measure(event.seq);
     if (this.sortedCache && (!this.sortedCache.length || this.sortedCache.at(-1)!.seq < event.seq)) this.sortedCache.push(event);
     else this.sortedCache = undefined;
     // History can arrive after live events; rebuild summaries in sequence order.
@@ -68,7 +155,8 @@ export class Store extends EventEmitter {
     this.discovered.add(event.type);
     const subtype = this.renderings.get(event.seq)?.subtype;
     if (subtype) this.discovered.add(`${event.type}:${subtype}`);
-    if (this.watermark >= 0 && event.seq > this.watermark) this.reduce(event);
+    if (this.watermark >= 0 && stateEvent.seq > this.watermark) this.reduce(stateEvent);
+    this.pruneHistory();
     this.emit('change');
   }
   orderedEvents(): ServerEvent[] {
