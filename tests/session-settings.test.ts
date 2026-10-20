@@ -48,7 +48,7 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
   } finally { await mock.close(); }
 });
 
-test('session readiness, fixed-target paginated replay, expiry, live dedup and interrupting prompt', async () => {
+test('session readiness, fixed-target backwards tail pages, expiry, live dedup and interrupting prompt', async () => {
   const history = [event(1), event(2), event(3)];
   const requests: any[] = [];
   let snapshots = 0;
@@ -62,8 +62,9 @@ test('session readiness, fixed-target paginated replay, expiry, live dedup and i
         respond(socket, request.id, { seq: 3, agents: [agent('root')], operations: [], capabilities: { harnesses: ['fixture', 'alpha'] } });
       }
     } else if (request.method === 'events.history') {
-      const page = history.filter(event => event.seq > request.params.after).slice(0, 2);
-      respond(socket, request.id, { events: page, oldestSeq: 2, latestSeq: 3, expired: request.params.after === 0 });
+      const matches = history.filter(event => event.seq < request.params.before);
+      const page = matches.slice(-2);
+      respond(socket, request.id, { events: page, hasMore: matches.length > page.length, oldestSeq: 2, latestSeq: 3, expired: true });
     } else if (request.method === 'agent.prompt') {
       send(socket, event(4, 'operation.changed', operation('completed')));
       respond(socket, request.id, operation('queued'));
@@ -81,7 +82,7 @@ test('session readiness, fixed-target paginated replay, expiry, live dedup and i
     expect(session.store.orderedEvents().map(event => event.seq)).toEqual([1, 2, 3]);
     expect(session.store.historyCursor).toBe(3);
     expect(session.store.historyGap).toBe(true);
-    expect(requests.filter(request => request.method === 'events.history').map(request => request.params.after)).toEqual([0, 2]);
+    expect(requests.filter(request => request.method === 'events.history').map(request => request.params.before)).toEqual([4, 2]);
     await session.prompt('root', 'interrupt now');
     expect(requests.find(request => request.method === 'agent.prompt').params).toEqual({ agentId: 'root', text: 'interrupt now', queue: false });
     expect(session.store.operations.get('op')!.status).toBe('completed');
