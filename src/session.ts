@@ -210,7 +210,7 @@ export class Session extends EventEmitter {
     catch (error) {
       if (client === this.client && !this.stopped && request === this.skillsRequest) {
         this.skillsEnabled = true; this.skillsNamespace = namespace; this.skillCatalog = [];
-        this.emit('notice', `Skills catalog unavailable: ${(error as Error).message}`);
+        if (!requireCurrent) this.emit('notice', `Skills catalog unavailable: ${(error as Error).message}`);
       }
       if (throwOnFailure) throw error;
       return;
@@ -224,10 +224,7 @@ export class Session extends EventEmitter {
       typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
       typeof (skill as Skill).description === 'string') ?? [];
     const invalidCatalog = catalogSkills === undefined || validSkills.length !== catalogSkills.length;
-    if (requireCurrent && invalidCatalog) {
-      this.emit('notice', 'Skills catalog response was invalid; catalog refresh was not accepted.');
-      throw new Error('Invalid skills catalog response');
-    }
+    if (requireCurrent && invalidCatalog) throw new Error('Invalid skills catalog response');
     const entries = validSkills.filter(skill => skill.status === undefined || skill.status === 'ready');
     this.skillsEnabled = true; this.skillsNamespace = namespace;
     this.skillCatalog = entries;

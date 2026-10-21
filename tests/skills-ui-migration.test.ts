@@ -21,27 +21,37 @@ const repositoryGroup = (repositories: Array<{ name: string; gitUrl: string }> =
   defaults: { repositories: [] }, values: { repositories }, effective: { repositories }, overridden: [], restartRequired: [],
 });
 
-async function fixture({ withSettings = false, localImport = false, pathCompletion = false, rootCwd, skillCatalog = skills, repositories = [], skillReconciliation, modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; localImport?: boolean; pathCompletion?: boolean; rootCwd?: string; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }>; skillReconciliation?: any; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
+async function fixture({ withSettings = false, missingSettingsGroup = false, noAgents = false, localImport = false, wrongImportEndpoint = false, pathCompletion = false, holdLocalImport = false, holdCatalogRefresh = false, malformedLocalImport = false, malformedHeldCatalog = false, skillCatalog = skills, repositories = [], skillReconciliation, modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; missingSettingsGroup?: boolean; noAgents?: boolean; localImport?: boolean; wrongImportEndpoint?: boolean; pathCompletion?: boolean; holdLocalImport?: boolean; holdCatalogRefresh?: boolean; malformedLocalImport?: boolean; malformedHeldCatalog?: boolean; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }>; skillReconciliation?: any; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
   const root = agent('root', null, { name: 'worker', revision: 8, settings: {
-    harness: 'fixture', model: 'test', ...(rootCwd && { cwd: rootCwd }), extensions: { managed: { alpha: 'installed' }, sibling: { retained: true } },
+    harness: 'fixture', model: 'test', extensions: { managed: { alpha: 'installed' }, sibling: { retained: true } },
   } });
   const group = repositoryGroup(repositories);
   if (skillReconciliation) group.reconciliation = skillReconciliation;
   let currentSkillCatalog = skillCatalog;
-  const serverSettings: ServerSettingsCatalog = { groups: [group], facts: { cwd: '/work', dataDir: '/data', socketPath: '/socket', harnesses: ['fixture'], plugins: ['skills'] } };
+  const serverSettings: ServerSettingsCatalog = { groups: missingSettingsGroup ? [] : [group], facts: { cwd: '/work', dataDir: '/data', socketPath: '/socket', harnesses: ['fixture'], plugins: ['skills'] } };
   const requests: any[] = [], changes: any[] = [];
-  let connections = 0;
+  let connections = 0, skillsListCalls = 0;
+  let heldLocalImport: { socket: any; id: string } | undefined;
+  let heldCatalogRefresh: { socket: any; id: string } | undefined;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: noAgents ? [] : [root], operations: [], capabilities: {
       harnesses: ['fixture'],
       ...(pathCompletion && { cwd: '/server/cwd', pathCompletion: true }),
-      plugins: { skills: { version: 1, settingsNamespace: 'managed', ...(localImport && { localImport: true }), endpoints: { list: 'skills.list', add: 'skills.add', ...(localImport && { addFromPath: 'skills.addFromPath' }), reconcile: 'skills.reconcile' } } },
+      plugins: { skills: { version: 1, settingsNamespace: 'managed', ...(localImport && { localImport: true }), endpoints: { list: 'skills.list', add: 'skills.add', ...(localImport && { addFromPath: wrongImportEndpoint ? 'skills.add.alias' : 'skills.addFromPath' }), reconcile: 'skills.reconcile' } } },
       ...(withSettings && { serverSettings: { version: 1, groups: [group], endpoints } }),
     } });
     else if (request.method === 'organization.paths') respond(socket, request.id, { path: request.params.input, isDirectory: true, entries: [] });
-    else if (request.method === 'skills.list') respond(socket, request.id, { skills: currentSkillCatalog, ...(skillReconciliation && { reconciliation: skillReconciliation }) });
-    else if (request.method === 'skills.addFromPath') { currentSkillCatalog = skills; respond(socket, request.id, { name: 'alpha' }); }
+    else if (request.method === 'skills.list') {
+      skillsListCalls++;
+      if (holdCatalogRefresh && skillsListCalls > 1 && !heldCatalogRefresh) heldCatalogRefresh = { socket, id: request.id };
+      else respond(socket, request.id, { skills: currentSkillCatalog, ...(skillReconciliation && { reconciliation: skillReconciliation }) });
+    }
+    else if (request.method === 'skills.addFromPath') {
+      if (holdLocalImport) heldLocalImport = { socket, id: request.id };
+      else if (malformedLocalImport) respond(socket, request.id, null);
+      else { currentSkillCatalog = skills; respond(socket, request.id, { name: 'alpha' }); }
+    }
     else if (request.method === 'skills.reconcile') respond(socket, request.id, { accepted: true });
     else if (request.method === endpoints.list) respond(socket, request.id, serverSettings);
     else if (request.method === endpoints.update) {
@@ -67,6 +77,8 @@ async function fixture({ withSettings = false, localImport = false, pathCompleti
   }, () => { connections++; });
   const ui = terminalClient(mock.path, mock.directory, { cols });
   return { mock, ui, root, requests, changes, group, connections: () => connections,
+    releaseLocalImport() { currentSkillCatalog = skills; if (heldLocalImport) respond(heldLocalImport.socket, heldLocalImport.id, { name: 'alpha' }); },
+    releaseCatalogRefresh() { if (heldCatalogRefresh) respond(heldCatalogRefresh.socket, heldCatalogRefresh.id, { skills: malformedHeldCatalog ? null : currentSkillCatalog }); },
     setSkillCatalog(catalog: typeof skills) { currentSkillCatalog = catalog; } };
 }
 
@@ -89,39 +101,137 @@ test('tree shortcut, action menu, help and footer no longer expose the legacy gl
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
-test('local skill registration confirms a literal server path, refreshes catalog and does not modify agent', async () => {
-  const f = await fixture({ localImport: true });
+test('v → s → Skills registers local paths independently and preserves a dirty settings draft', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, pathCompletion: true, repositories: [{ name: 'alpha', gitUrl: 'https://git.example/alpha' }] });
   const { keys, visible, screen } = f.ui;
   try {
-    await visible('worker');
-    keys('e'); keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Alpha instructions');
-    keys('L'); await visible('Register local server skill');
-    keys('\x1b'); await visible('Alpha instructions');
-    keys('L'); await visible('Register local server skill');
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
+    keys('\r'); await visible('Skills · server-wide · revision 3');
+    // Dirty the local server-settings draft by removing a repository and staging the collection, but do not save it.
+    keys('\r'); await visible('named configurations'); keys('d'); await visible('No configurations.'); keys('S'); await visible('Skills · server-wide · revision 3');
+    expect(screen()).toContain('Repositories: [0 entries; edit to inspect] · edited draft');
+    keys('L'); await visible('Register local server skill'); keys('\x1b'); await visible('Skills · server-wide · revision 3');
+    expect(screen()).toContain('Repositories: [0 entries; edit to inspect] · edited draft');
+    keys('\x1b[B'.repeat(3)); await visible('L  Register local skill'); keys('\r');
+    await waitFor(() => f.requests.some(r => r.method === 'organization.paths' && r.params.base === '/server/cwd'));
     keys('/srv/my local skill/SKILL.md'); keys('\r'); await visible('Confirm local skill registration');
     expect(screen()).toContain('/srv/my local skill/SKILL.md');
-    keys('\r'); await visible('Alpha instructions');
-    expect(f.requests.filter(request => request.method === 'skills.addFromPath')).toHaveLength(0);
-    keys('L'); await visible('Register local server skill');
-    keys('/srv/my local skill/SKILL.md'); keys('\r'); await visible('Confirm local skill registration');
     keys('\x1b[B\r'); await visible('Local skill registered and catalog refreshed');
-    expect(f.requests.filter(request => request.method === 'skills.addFromPath').map(request => request.params)).toEqual([{ path: '/srv/my local skill/SKILL.md' }]);
+    await visible('Skills · server-wide · revision 3');
+    keys('\x1b[A'); await visible('c  Refresh catalog (read-only)'); keys('\r'); await visible('Skills catalog refreshed; settings draft was not changed.');
+    expect(screen()).toContain('Repositories: [0 entries; edit to inspect] · edited draft');
+    expect(f.requests.filter(r => r.method === 'skills.addFromPath').map(r => r.params)).toEqual([{ path: '/srv/my local skill/SKILL.md' }]);
     expect(f.changes).toHaveLength(0);
+    expect(f.requests.filter(r => [endpoints.update, 'skills.reconcile', 'agent.create', 'agent.modify', 'skills.add'].includes(r.method))).toHaveLength(0);
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('local registration is available from Skills settings with no agents', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, noAgents: true });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('No active agents'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('\x1b[B'.repeat(3)); await visible('L  Register local skill'); keys('\r'); await visible('Register local server skill');
+    keys('/tmp/orphan skill'); keys('\r'); await visible('Confirm local skill registration'); keys('\x1b[B\r');
+    await visible('Local skill registered and catalog refreshed');
+    expect(f.requests.filter(r => r.method === 'skills.addFromPath').map(r => r.params)).toEqual([{ path: '/tmp/orphan skill' }]);
+    expect(f.requests.filter(r => ['agent.create', 'agent.modify'].includes(r.method))).toHaveLength(0);
+    expect(screen()).toContain('Skills · server-wide');
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('in-flight local registration does not steal focus after Escape navigation', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, holdLocalImport: true });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('L'); await visible('Register local server skill'); keys('/tmp/local skill'); keys('\r'); await visible('Confirm local skill registration'); keys('y');
+    await waitFor(() => f.requests.some(r => r.method === 'skills.addFromPath'));
+    keys('\x1b'); await visible('worker');
+    f.releaseLocalImport(); await visible('Local skill registered and catalog refreshed');
+    expect(screen()).toContain('worker');
+    expect(screen()).not.toContain('Skills · server-wide');
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
-test('local path completion uses server cwd without overwriting a child draft parent-relative base', async () => {
-  const f = await fixture({ localImport: true, pathCompletion: true, rootCwd: '/captured/parent' });
-  const { keys, visible } = f.ui;
+test('delayed catalog refresh cannot replace a newer view or notice', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, holdCatalogRefresh: true });
+  const { keys, visible, screen } = f.ui;
   try {
-    await visible('worker'); keys('n'); await visible('Create agent');
-    keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Alpha instructions');
-    keys('L'); await waitFor(() => f.requests.some(r => r.method === 'organization.paths' && r.params.base === '/server/cwd'));
-    keys('\x1b'); await visible('Alpha instructions'); keys('S'); await visible('Create agent');
-    keys('\x1b[A'.repeat(5)); await visible('cwd'); keys('\r');
-    await waitFor(() => f.requests.some(r => r.method === 'organization.paths' && r.params.base === '/captured/parent'));
-    expect(f.requests.filter(r => r.method === 'organization.paths').map(r => r.params.base)).toContain('/captured/parent');
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('c'); await waitFor(() => f.requests.filter(r => r.method === 'skills.list').length === 2);
+    keys('\x1b'); await visible('Server settings'); keys('\r'); await visible('Organization facts');
+    f.releaseCatalogRefresh(); await new Promise(resolve => setTimeout(resolve, 100));
+    expect(screen()).toContain('Organization facts');
+    expect(screen()).not.toContain('Skills catalog refreshed; settings draft was not changed.');
   } finally { await f.ui.close(); await f.mock.close(); }
+});
+
+test('delayed strict catalog failure cannot overwrite local-import uncertainty notice', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, holdCatalogRefresh: true, malformedLocalImport: true, malformedHeldCatalog: true });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('c'); await waitFor(() => f.requests.filter(r => r.method === 'skills.list').length === 2);
+    keys('L'); await visible('Register local server skill'); keys('/tmp/local'); keys('\r'); await visible('Confirm local skill registration'); keys('y');
+    await visible('Local skill registration returned an invalid response; outcome is unknown');
+    f.releaseCatalogRefresh(); await new Promise(resolve => setTimeout(resolve, 100));
+    expect(screen()).toContain('Local skill registration returned an invalid response; outcome is unknown');
+    expect(screen()).not.toContain('Skills catalog response was invalid');
+    expect(screen()).toContain('Skills · server-wide');
+  } finally { await f.ui.close(); await f.mock.close(); }
+});
+
+test('agent Skills picker has no local registration shortcut; assignment remains a separate save', async () => {
+  const f = await fixture({ withSettings: true, localImport: true });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('e'); keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Alpha instructions');
+    expect(screen()).not.toContain('register local');
+    expect(screen()).not.toContain('Register local server skill');
+    keys('a'); keys('S'); await visible('Modify agent · revision 8');
+    expect(f.requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(0);
+    keys('S'); await waitFor(() => f.changes.some(change => change.agentId === 'root'));
+    expect(f.changes).toHaveLength(1);
+    expect(f.changes[0]).toMatchObject({ agentId: 'root', expectedRevision: 8, settings: { extensions: { managed: { alpha: 'available' } } } });
+  } finally { await f.ui.close(); await f.mock.close(); }
+});
+
+test('local registration and catalog refresh controls fail closed without Skills settings route or capability', async () => {
+  const missingRoute = await fixture({ localImport: true, withSettings: false });
+  try {
+    const { keys, visible, screen } = missingRoute.ui;
+    await visible('worker'); keys('v'); await visible('TUI colors');
+    expect(screen()).not.toContain('Server settings');
+    keys('\x1b'); await visible('worker'); keys('e'); keys('\x1b[B'.repeat(9)); await visible('Skills:'); keys('\r'); await visible('Alpha instructions');
+    expect(screen()).not.toContain('Register local');
+    expect(screen()).not.toContain('register local');
+  } finally { await missingRoute.ui.close(); await missingRoute.mock.close(); }
+
+  const missingGroup = await fixture({ withSettings: true, missingSettingsGroup: true, localImport: true });
+  try {
+    const { keys, visible, screen } = missingGroup.ui;
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
+    expect(screen()).not.toContain('Skills · server-wide');
+    expect(screen()).not.toContain('Register a local server skill');
+    expect(missingGroup.requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(0);
+  } finally { await missingGroup.ui.close(); await missingGroup.mock.close(); }
+
+  const missingCapability = await fixture({ withSettings: true, localImport: false });
+  try {
+    const { keys, visible, screen } = missingCapability.ui;
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    expect(screen()).not.toContain('L register local skill');
+    expect(missingCapability.requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(0);
+  } finally { await missingCapability.ui.close(); await missingCapability.mock.close(); }
+
+  const wrongEndpoint = await fixture({ withSettings: true, localImport: true, wrongImportEndpoint: true });
+  try {
+    const { keys, visible, screen } = wrongEndpoint.ui;
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    expect(screen()).not.toContain('L register local skill');
+    expect(wrongEndpoint.requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(0);
+  } finally { await wrongEndpoint.ui.close(); await wrongEndpoint.mock.close(); }
 });
 
 test('ordinary modify Skills picker is keyboard-only and saves exactly one complete revision-fenced map', async () => {
