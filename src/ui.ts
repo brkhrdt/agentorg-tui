@@ -125,6 +125,9 @@ export class UI {
   private skillPicker?: { editor: AgentEditor; states: SkillStates; choices: SkillChoice[]; returnIndex: number; filter: string };
   private localSkillPath = '';
   private localSkillSubmitting = false;
+  private localSkillReturnIndex = 0;
+  private navigationGeneration = 0;
+  private skillsCatalogUiRequest = 0;
   private chatAgent?: string;
   private promptAgent?: string;
   private rows: TreeRow[] = [];
@@ -232,7 +235,7 @@ export class UI {
       input.on('cancel', () => {
         if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
         else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
-        else if (this.view === 'local-skill-path' || this.view === 'local-skill-confirm') this.setView('agent-skills');
+        else if (this.view === 'local-skill-path' || this.view === 'local-skill-confirm') this.returnLocalSkill();
         else if (this.view === 'agent-skills') this.cancelAgentSkills();
         else this.setView(this.view === 'history-field' ? 'history-settings' : this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
       });
@@ -367,12 +370,16 @@ export class UI {
       const diagnostics = editor && !this.recordEditing ? this.skillErrorLines(editor.group) : [];
       const saveIndex = (editor?.fields.length ?? 0) + diagnostics.length;
       if (this.menuIndex === saveIndex) { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }
-      else if (editor && this.menuIndex >= editor.fields.length) this.showNotice(diagnostics[this.menuIndex - editor.fields.length] ?? 'Repository diagnostic');
-      else this.openServerField();
+      else if (editor && this.menuIndex >= editor.fields.length && this.menuIndex < saveIndex) this.showNotice(diagnostics[this.menuIndex - editor.fields.length] ?? 'Repository diagnostic');
+      else if (editor && this.menuIndex > saveIndex) {
+        const command = this.serverSkillsCommands()[this.menuIndex - saveIndex - 1];
+        if (command?.key === 'c') void this.refreshSkillsCatalog();
+        else if (command?.key === 'L') this.openLocalSkillPath();
+      } else this.openServerField();
     } else if (this.view === 'server-confirm') {
       if (this.menuIndex === 1) void this.saveServerSettings(); else this.setView('server-group');
     } else if (this.view === 'local-skill-confirm') {
-      if (this.menuIndex === 1) void this.registerLocalSkill(); else this.setView('agent-skills');
+      if (this.menuIndex === 1) void this.registerLocalSkill(); else this.returnLocalSkill();
     }
     else if (this.view === 'confirm') { if (this.menuIndex === 1) void this.runAction(); else this.setView('tree'); }
     else if (this.view === 'harness-options') {
@@ -484,7 +491,8 @@ export class UI {
       action('S', 'Stage entries in server draft', () => this.finishRecords(true)), action('escape', 'Discard collection edits', () => this.finishRecords(false))];
     if (this.view === 'server-settings') return [action('enter', 'Open settings / facts', choose), action('r', 'Refresh server settings', () => { void this.openServerSettings(); }), action('escape', 'Back to settings', () => this.setView('view'))];
     if (this.view === 'server-facts') return [action('escape', 'Back to server settings', () => this.setView('server-settings'))];
-    if (this.view === 'server-group') return [action('enter', 'Edit field / review save', choose), action('S', this.recordEditing ? 'Stage entry in collection' : 'Review server-wide save', () => { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }),
+    if (this.view === 'server-group') return [action('enter', 'Edit field / review save / run command', choose), action('S', this.recordEditing ? 'Stage entry in collection' : 'Review server-wide save', () => { if (this.recordEditing) this.stageRecord(); else this.setView('server-confirm'); }),
+      ...this.serverSkillsCommands().map(command => action(command.key, command.key === 'c' ? 'Refresh shared Skills catalog only' : 'Register a local server skill', () => { if (command.key === 'c') void this.refreshSkillsCatalog(); else this.openLocalSkillPath(); })),
       ...(!this.recordEditing && this.serverEditor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? [action('R', 'Retry skills reconciliation without saving settings', () => { void this.retrySkills(); })] : []),
       action('z', 'Reset selected field to startup default (draft)', () => {
       const field = this.serverEditor?.fields[this.menuIndex];
@@ -496,8 +504,6 @@ export class UI {
     if (this.view === 'image-scope') return (['node', 'inherited', 'all'] as const).map((scope, index) => action(String(index + 1), ['This node only', 'Inheriting descendants', 'All descendants'][index]!, () => { void this.saveAgent(scope); })).concat([action('enter', 'Choose selected scope', choose), back]);
     if (this.view === 'harness-options') return [action('enter', 'Choose selected option', choose), action('m', 'Manual entry', () => { this.menuIndex = this.editor!.fields.indexOf(this.optionField); this.openField(); }), back];
     if (this.view === 'agent-skills') return [
-      ...(this.session.localSkillImportAvailable ? [action('L', 'Register local server skill', () => { this.input.setValue(''); this.setView('local-skill-path'); this.showNotice(`Enter a server-side directory or root SKILL.md path. Server startup base: ${this.session.serverCwd || '(unknown)'}.`); })] : []),
-      action('r', 'Refresh skills catalog', () => { void this.session.refreshSkills(true).then(() => this.showNotice('Skills catalog refreshed.')).catch(error => this.showNotice(`Skills catalog refresh failed: ${error.message}`)); }),
       action('a', 'Select as available', () => this.setPickerSkill('available')),
       action('i', 'Select as installed', () => this.setPickerSkill('installed')),
       action('d', 'Remove from this agent', () => this.removePickerSkill()),
@@ -507,8 +513,8 @@ export class UI {
       action('v', 'Open server settings for repository configuration', () => { this.cancelAgentSkills(); void this.openServerSettings(); }),
       action('escape', 'Cancel field draft', () => this.cancelAgentSkills()),
     ];
-    if (this.view === 'local-skill-confirm') return [action('enter', 'Choose confirmation', choose), action('y', 'Register this server-side skill', () => { void this.registerLocalSkill(); }), action('n', 'Cancel', () => this.setView('agent-skills')), action('escape', 'Cancel registration', () => this.setView('agent-skills'))];
-    if (this.view === 'local-skill-path') return [action('enter', 'Review path and confirm', () => { const path = this.input.getValue(); if (!path) { this.showNotice('Enter a server-side path.'); return; } this.localSkillPath = path; this.setView('local-skill-confirm'); }), action('escape', 'Cancel registration', () => this.setView('agent-skills'))];
+    if (this.view === 'local-skill-confirm') return [action('enter', 'Choose confirmation', choose), action('y', 'Register this server-side skill', () => { void this.registerLocalSkill(); }), action('n', 'Cancel', () => this.returnLocalSkill()), action('escape', 'Cancel registration', () => this.returnLocalSkill())];
+    if (this.view === 'local-skill-path') return [action('enter', 'Review path and confirm', () => { const path = this.input.getValue(); if (!path) { this.showNotice('Enter a server-side path.'); return; } this.localSkillPath = path; this.setView('local-skill-confirm'); }), action('escape', 'Cancel registration', () => this.returnLocalSkill())];
     if (this.view === 'agent-skills-filter') return [
       action('enter', 'Apply filter', () => this.applySkillFilter()),
       action('escape', 'Cancel filter', () => this.cancelSkillFilter()),
@@ -679,6 +685,13 @@ export class UI {
       `Source: ${entry.gitUrl ?? 'unknown source'}`,
       `Error: ${entry.error ?? 'No diagnostic available'}`,
     ]);
+  }
+  private serverSkillsCommands(): Array<{ key: 'c' | 'L'; label: string }> {
+    if (this.recordEditing || this.serverEditor?.group.namespace !== 'skills') return [];
+    return [
+      ...(this.session.skillsEnabled ? [{ key: 'c' as const, label: 'Refresh catalog (read-only)' }] : []),
+      ...(this.session.localSkillImportAvailable ? [{ key: 'L' as const, label: 'Register local skill' }] : []),
+    ];
   }
   private async retrySkills(): Promise<void> {
     try { await this.session.reconcileSkills(); this.showNotice('Skills reconciliation retry accepted; settings were not changed.'); }
@@ -1033,20 +1046,50 @@ export class UI {
     else if (state === 'available') this.setPickerSkill('installed');
     else this.removePickerSkill();
   }
+  private openLocalSkillPath(): void {
+    if (this.recordEditing || this.serverEditor?.group.namespace !== 'skills' || !this.session.localSkillImportAvailable) return;
+    this.localSkillReturnIndex = this.menuIndex;
+    this.localSkillPath = '';
+    this.input.setValue('');
+    this.setView('local-skill-path');
+    this.showNotice(`Enter a server-side directory or root SKILL.md path. Server startup base: ${this.session.serverCwd || '(unknown)'}.`);
+  }
+  private returnLocalSkill(): void {
+    if (this.closing) return;
+    this.setView('server-group');
+    this.menuIndex = this.localSkillReturnIndex;
+    this.draw();
+  }
+  private async refreshSkillsCatalog(): Promise<void> {
+    const editor = this.serverEditor, navigation = this.navigationGeneration, request = ++this.skillsCatalogUiRequest;
+    const ownsContext = () => !this.closing && request === this.skillsCatalogUiRequest && navigation === this.navigationGeneration && this.view === 'server-group' && this.serverEditor === editor;
+    try {
+      await this.session.refreshSkills(true);
+      if (ownsContext()) this.showNotice('Skills catalog refreshed; settings draft was not changed.');
+    } catch (error) {
+      if (ownsContext()) this.showNotice(`Skills catalog refresh failed: ${(error as Error).message}`);
+    }
+    if (ownsContext()) this.draw();
+  }
   private async registerLocalSkill(): Promise<void> {
-    if (this.localSkillSubmitting || this.sending || !this.session.localSkillImportAvailable) return;
+    if (this.localSkillSubmitting || this.sending) return;
+    if (this.recordEditing || this.serverEditor?.group.namespace !== 'skills' || !this.session.localSkillImportAvailable) {
+      this.showNotice('Local skill import is unavailable in this Skills settings context.'); return;
+    }
     const path = this.localSkillPath;
     if (!path) return;
+    const editor = this.serverEditor, navigation = this.navigationGeneration;
+    const ownsContext = () => !this.closing && this.view === 'local-skill-confirm' && this.serverEditor === editor && this.serverEditor?.group.namespace === 'skills' && !this.recordEditing && this.navigationGeneration === navigation;
+    ++this.skillsCatalogUiRequest;
     this.localSkillSubmitting = true; this.sending = true; this.draw();
     try {
       await this.session.importLocalSkill(path);
-      if (this.view === 'local-skill-confirm') { this.setView('agent-skills'); this.showNotice('Local skill registered and catalog refreshed. Registration does not install or assign it; stage with a/i and save the agent form.'); }
+      if (ownsContext()) this.returnLocalSkill();
+      if (!this.closing) this.showNotice('Local skill registered and catalog refreshed. It is not installed or assigned; use the agent Skills picker to stage it and save that agent.');
     } catch (error) {
-      const message = (error as Error).message;
-      if (!this.closing && /Do not retry|do not retry/i.test(message)) this.setView('agent-skills');
-      if (!this.closing) this.showNotice(message);
-    }
-    finally { this.localSkillSubmitting = false; this.sending = false; this.draw(); }
+      if (ownsContext()) this.returnLocalSkill();
+      if (!this.closing) this.showNotice((error as Error).message);
+    } finally { this.localSkillSubmitting = false; this.sending = false; this.draw(); }
   }
   private stageAgentSkills(): void {
     const picker = this.skillPicker;
@@ -1109,6 +1152,7 @@ export class UI {
     }
   }
   private setView(view: View): void {
+    ++this.navigationGeneration;
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     if (this.view === 'chat' && view !== 'chat') {
       this.session.leaveChat();
@@ -1414,9 +1458,9 @@ export class UI {
       const choices = this.pickerChoices();
       this.updating = true;
       this.menu.setItems(choices.length ? choices.map(choice => clip(`${cell(this.pickerState(choice.name), 11)}  ${cell(choice.name, 24)} ${choice.stale ? '[stale] [not in catalog] ' : choice.retainedUnknown ? '[not in catalog] [retained] ' : ''}${choice.description}`, width - 1)) :
-        [this.hasCatalogSkills() ? 'No skills match this filter.' : `No catalog skills. ${this.session.localSkillImportAvailable ? 'L registers a local skill; ' : ''}open server settings (v) to add repositories.`]);
+        [this.hasCatalogSkills() ? 'No skills match this filter.' : 'No catalog skills. Open server settings (v) to configure skill sources.']);
       this.menu.select(Math.max(0, this.menuIndex)); this.updating = false;
-      this.footer.setContent(` ↑↓ select  a available  i installed  d remove  Space cycle  / filter  ${this.session.localSkillImportAvailable ? 'L register local  ' : ''}r refresh  v server settings  S stage  Esc cancel`);
+      this.footer.setContent(choices.length ? ' ↑↓ select  a available  i installed  d remove  Space cycle  / filter  S stage in form  Esc cancel' : ' v server settings  S stage  Esc cancel · no catalog entries to assign');
     } else if (this.view === 'local-skill-confirm') {
       this.updating = true; this.menu.setItems([`Cancel`, `Register: ${this.localSkillPath}`, 'This copies the skill into the shared server snapshot. Imported code is shared with every client. Registration does not install or assign it.']); this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' y register exactly once  n / Esc cancel · no agent changes');
@@ -1446,11 +1490,12 @@ export class UI {
       } else if (editor) {
         const current = catalog?.groups.find(g => g.namespace === editor.group.namespace);
         const diagnostics = this.recordEditing ? [] : this.skillErrorLines(editor.group);
-        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${this.effectiveRestartRequired(editor.group).includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), ...diagnostics.map(line => clip(line, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes']);
+        const commands = this.serverSkillsCommands();
+        this.menu.setItems([...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${this.effectiveRestartRequired(editor.group).includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)), ...diagnostics.map(line => clip(line, width - 1)), this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes', ...commands.map(command => `${command.key}  ${command.label}`)]);
         if (!this.recordEditing && current && current.revision !== editor.group.revision && !this.notice.getContent().includes('draft retained')) this.notice.setContent('Server settings changed in another client · draft is stale; r discards and reloads');
       }
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry repositories' : ''}  Esc discard`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
+      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter edit  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsEnabled ? '  c refresh catalog' : ''}${editor?.group.namespace === 'skills' && this.session.localSkillImportAvailable ? '  L register local skill' : ''}${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry repositories' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
       this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
