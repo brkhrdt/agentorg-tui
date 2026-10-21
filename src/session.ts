@@ -25,6 +25,8 @@ export class Session extends EventEmitter {
   skillReconciliation?: SkillReconciliation;
   private skillsReconcileEndpoint?: string;
   private skillsListEndpoint?: string;
+  private skillsAddFromPathEndpoint?: string;
+  get localSkillImportAvailable(): boolean { return !!this.skillsAddFromPathEndpoint && this.skillsEnabled; }
   get skillsReconcileEndpointAvailable(): boolean { return !!this.skillsReconcileEndpoint; }
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
@@ -184,13 +186,13 @@ export class Session extends EventEmitter {
     this.podmanImages = podman?.endpoints?.images ?? '';
     this.podmanDefaults = podman?.endpoints?.defaults ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
-    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; reconcile?: unknown } } | undefined;
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; localImport?: unknown; endpoints?: { list?: unknown; reconcile?: unknown; addFromPath?: unknown } } | undefined;
     const namespace = capability?.settingsNamespace;
     const list = capability?.endpoints?.list;
     const supported = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
     if (!supported) {
       if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = []; this.retainedSkills = []; this.skillReconciliation = undefined; this.skillsReconcileEndpoint = undefined; this.skillsListEndpoint = undefined;
+        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = []; this.retainedSkills = []; this.skillReconciliation = undefined; this.skillsReconcileEndpoint = undefined; this.skillsListEndpoint = undefined; this.skillsAddFromPathEndpoint = undefined;
       }
       return;
     }
@@ -199,9 +201,10 @@ export class Session extends EventEmitter {
     const reconcileEndpoint = typeof capability?.endpoints?.reconcile === 'string' && /^[a-z][a-z0-9.-]*$/.test(capability.endpoints.reconcile) ? capability.endpoints.reconcile : undefined;
     this.skillsListEndpoint = endpoint;
     this.skillsReconcileEndpoint = reconcileEndpoint;
+    this.skillsAddFromPathEndpoint = capability?.localImport === true && capability?.endpoints?.addFromPath === 'skills.addFromPath' ? 'skills.addFromPath' : undefined;
     await this.refreshSkillCatalog(client, endpoint, namespace as string, skillsRequest);
   }
-  private async refreshSkillCatalog(client: RpcClient, endpoint: string, namespace = this.skillsNamespace, request = ++this.skillsRequest): Promise<void> {
+  private async refreshSkillCatalog(client: RpcClient, endpoint: string, namespace = this.skillsNamespace, request = ++this.skillsRequest, throwOnFailure = false, requireCurrent = false): Promise<void> {
     let catalog: { skills?: unknown; retained?: unknown; reconciliation?: unknown };
     try { catalog = await client.request<{ skills?: unknown; retained?: unknown; reconciliation?: unknown }>(endpoint, {}); }
     catch (error) {
@@ -209,13 +212,22 @@ export class Session extends EventEmitter {
         this.skillsEnabled = true; this.skillsNamespace = namespace; this.skillCatalog = [];
         this.emit('notice', `Skills catalog unavailable: ${(error as Error).message}`);
       }
+      if (throwOnFailure) throw error;
       return;
     }
-    if (client !== this.client || this.stopped || request !== this.skillsRequest) return;
+    if (client !== this.client || this.stopped || request !== this.skillsRequest) {
+      if (requireCurrent) throw new Error(client !== this.client || this.stopped ? 'Server disconnected during skills catalog refresh' : 'Skills catalog refresh was superseded by a newer request');
+      return;
+    }
     const catalogSkills = catalog && typeof catalog === 'object' && Array.isArray(catalog.skills) ? catalog.skills as unknown[] : undefined;
     const validSkills = catalogSkills?.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
       typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
       typeof (skill as Skill).description === 'string') ?? [];
+    const invalidCatalog = catalogSkills === undefined || validSkills.length !== catalogSkills.length;
+    if (requireCurrent && invalidCatalog) {
+      this.emit('notice', 'Skills catalog response was invalid; catalog refresh was not accepted.');
+      throw new Error('Invalid skills catalog response');
+    }
     const entries = validSkills.filter(skill => skill.status === undefined || skill.status === 'ready');
     this.skillsEnabled = true; this.skillsNamespace = namespace;
     this.skillCatalog = entries;
@@ -223,14 +235,36 @@ export class Session extends EventEmitter {
     const reconciliation = catalog?.reconciliation;
     this.skillReconciliation = reconciliation && typeof reconciliation === 'object' && ['pending', 'running', 'ready', 'error'].includes((reconciliation as SkillReconciliation).state)
       ? reconciliation as SkillReconciliation : undefined;
-    if (catalogSkills === undefined || validSkills.length !== catalogSkills.length)
-      this.emit('notice', 'Skills catalog response was invalid; malformed entries were ignored.');
+    if (invalidCatalog) this.emit('notice', 'Skills catalog response was invalid; malformed entries were ignored.');
     this.store.emit('change');
   }
-  async refreshSkills(): Promise<void> {
+  async importLocalSkill(path: string): Promise<void> {
+    const client = this.client, endpoint = this.skillsAddFromPathEndpoint;
+    if (!client || !this.skillsEnabled || !endpoint || endpoint !== 'skills.addFromPath' || !this.status.startsWith('connected')) throw new Error('Local skill import is not available');
+    // Recheck the currently installed snapshot-derived capability immediately before mutation.
+    const snapshot = await client.request<Snapshot>('organization.snapshot', {});
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; localImport?: unknown; endpoints?: { list?: unknown; addFromPath?: unknown } } | undefined;
+    if (client !== this.client || this.stopped || !this.status.startsWith('connected')) throw new Error('Server disconnected before registering skill');
+    if (!capability || (capability.version !== undefined && capability.version !== 1) || typeof capability.settingsNamespace !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.settingsNamespace) || typeof capability.endpoints?.list !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.endpoints.list) || capability.localImport !== true || capability.endpoints.addFromPath !== 'skills.addFromPath' || this.skillsAddFromPathEndpoint !== 'skills.addFromPath') throw new Error('Local skill import is no longer supported by this server');
+    let result: unknown;
+    try { result = await client.request<unknown>(endpoint, { path }, 120_000); }
+    catch (error) {
+      if (error instanceof ApiError) throw new Error(`Local skill registration failed: ${error.message}`);
+      throw new Error(`Local skill registration outcome is unknown (${(error as Error).message}). Do not retry; refresh the catalog to check whether it registered.`);
+    }
+    const registeredSkill = result && typeof result === 'object' && !Array.isArray(result)
+      ? ('skill' in result ? (result as { skill?: unknown }).skill : result) : undefined;
+    if (!registeredSkill || typeof registeredSkill !== 'object' || Array.isArray(registeredSkill) ||
+      typeof (registeredSkill as { name?: unknown }).name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((registeredSkill as { name: string }).name))
+      throw new Error('Local skill registration returned an invalid response; outcome is unknown. Do not retry; refresh the catalog to check whether it registered.');
+    if (client !== this.client || this.stopped) throw new Error('Skill may be registered, but the server disconnected before catalog refresh. Refresh the catalog; do not retry registration.');
+    try { await this.refreshSkills(true); }
+    catch (error) { throw new Error(`Skill registered, but catalog refresh failed: ${(error as Error).message}. Refresh the catalog; do not retry registration.`); }
+  }
+  async refreshSkills(requireCurrent = false): Promise<void> {
     const client = this.client, list = this.skillsListEndpoint;
     if (!client || !this.skillsEnabled || !this.status.startsWith('connected') || !list) throw new Error('Skills catalog is not available');
-    await this.refreshSkillCatalog(client, list, this.skillsNamespace);
+    await this.refreshSkillCatalog(client, list, this.skillsNamespace, ++this.skillsRequest, true, requireCurrent);
   }
   async reconcileSkills(): Promise<void> {
     const client = this.client, endpoint = this.skillsReconcileEndpoint;

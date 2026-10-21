@@ -20,7 +20,7 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
-type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function agentHierarchy(agent: Agent | undefined, agents: Map<string, Agent>): string {
   const names: string[] = [], seen = new Set<string>();
@@ -123,6 +123,8 @@ export class UI {
   private lastInfo = '';
   private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
   private skillPicker?: { editor: AgentEditor; states: SkillStates; choices: SkillChoice[]; returnIndex: number; filter: string };
+  private localSkillPath = '';
+  private localSkillSubmitting = false;
   private chatAgent?: string;
   private promptAgent?: string;
   private rows: TreeRow[] = [];
@@ -158,7 +160,7 @@ export class UI {
       }
     });
     for (const widget of [this.tree, this.menu, this.details]) {
-      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
+      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'S-l', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
         const binding = key.full === 'C-home' || key.full === 'C-end' ? key.full :
           ['space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
@@ -183,7 +185,7 @@ export class UI {
       changed: () => { this.structured!.filter = this.input.getValue(); this.menuIndex = 0; this.draw(); },
     });
     enablePathKeys(this.editorInput, {
-      active: () => this.isPathInput(),
+      active: () => this.isPathInput(), acceptSpace: () => this.view !== 'local-skill-path',
       move: delta => {
         if (!this.pathCandidates.length) return;
         this.pathIndex = (this.pathIndex + delta + this.pathCandidates.length) % this.pathCandidates.length;
@@ -230,6 +232,7 @@ export class UI {
       input.on('cancel', () => {
         if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
         else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
+        else if (this.view === 'local-skill-path' || this.view === 'local-skill-confirm') this.setView('agent-skills');
         else if (this.view === 'agent-skills') this.cancelAgentSkills();
         else this.setView(this.view === 'history-field' ? 'history-settings' : this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
       });
@@ -368,6 +371,8 @@ export class UI {
       else this.openServerField();
     } else if (this.view === 'server-confirm') {
       if (this.menuIndex === 1) void this.saveServerSettings(); else this.setView('server-group');
+    } else if (this.view === 'local-skill-confirm') {
+      if (this.menuIndex === 1) void this.registerLocalSkill(); else this.setView('agent-skills');
     }
     else if (this.view === 'confirm') { if (this.menuIndex === 1) void this.runAction(); else this.setView('tree'); }
     else if (this.view === 'harness-options') {
@@ -491,6 +496,8 @@ export class UI {
     if (this.view === 'image-scope') return (['node', 'inherited', 'all'] as const).map((scope, index) => action(String(index + 1), ['This node only', 'Inheriting descendants', 'All descendants'][index]!, () => { void this.saveAgent(scope); })).concat([action('enter', 'Choose selected scope', choose), back]);
     if (this.view === 'harness-options') return [action('enter', 'Choose selected option', choose), action('m', 'Manual entry', () => { this.menuIndex = this.editor!.fields.indexOf(this.optionField); this.openField(); }), back];
     if (this.view === 'agent-skills') return [
+      ...(this.session.localSkillImportAvailable ? [action('L', 'Register local server skill', () => { this.input.setValue(''); this.setView('local-skill-path'); this.showNotice(`Enter a server-side directory or root SKILL.md path. Server startup base: ${this.session.serverCwd || '(unknown)'}.`); })] : []),
+      action('r', 'Refresh skills catalog', () => { void this.session.refreshSkills(true).then(() => this.showNotice('Skills catalog refreshed.')).catch(error => this.showNotice(`Skills catalog refresh failed: ${error.message}`)); }),
       action('a', 'Select as available', () => this.setPickerSkill('available')),
       action('i', 'Select as installed', () => this.setPickerSkill('installed')),
       action('d', 'Remove from this agent', () => this.removePickerSkill()),
@@ -500,6 +507,8 @@ export class UI {
       action('v', 'Open server settings for repository configuration', () => { this.cancelAgentSkills(); void this.openServerSettings(); }),
       action('escape', 'Cancel field draft', () => this.cancelAgentSkills()),
     ];
+    if (this.view === 'local-skill-confirm') return [action('enter', 'Choose confirmation', choose), action('y', 'Register this server-side skill', () => { void this.registerLocalSkill(); }), action('n', 'Cancel', () => this.setView('agent-skills')), action('escape', 'Cancel registration', () => this.setView('agent-skills'))];
+    if (this.view === 'local-skill-path') return [action('enter', 'Review path and confirm', () => { const path = this.input.getValue(); if (!path) { this.showNotice('Enter a server-side path.'); return; } this.localSkillPath = path; this.setView('local-skill-confirm'); }), action('escape', 'Cancel registration', () => this.setView('agent-skills'))];
     if (this.view === 'agent-skills-filter') return [
       action('enter', 'Apply filter', () => this.applySkillFilter()),
       action('escape', 'Cancel filter', () => this.cancelSkillFilter()),
@@ -883,7 +892,7 @@ export class UI {
     this.setView('entry-value');
   }
   private isPathInput(): boolean {
-    return this.session.pathCompletion && ((this.view === 'agent-field' && (this.editField === 'cwd' || ['directory', 'path'].includes(this.editor?.spec(this.editField!).editor ?? ''))) ||
+    return this.session.pathCompletion && (this.view === 'local-skill-path' || (this.view === 'agent-field' && (this.editField === 'cwd' || ['directory', 'path'].includes(this.editor?.spec(this.editField!).editor ?? ''))) ||
       (this.view === 'entry-value' && ['directories', 'paths'].includes(this.structured?.spec.editor ?? '')));
   }
   private isVolumeField(): boolean { return !this.structuredServer && ['readOnlyVolumes', 'readWriteVolumes'].includes(this.structuredField ?? ''); }
@@ -913,7 +922,7 @@ export class UI {
     }, 75);
   }
   private pathKind(): 'directory' | 'any' {
-    return (this.view === 'entry-value' && this.structured?.spec.editor === 'paths') || (this.view === 'agent-field' && this.editField && this.editor?.spec(this.editField).editor === 'path') ? 'any' : 'directory';
+    return this.view === 'local-skill-path' ? 'any' : (this.view === 'entry-value' && this.structured?.spec.editor === 'paths') || (this.view === 'agent-field' && this.editField && this.editor?.spec(this.editField).editor === 'path') ? 'any' : 'directory';
   }
   private refreshPaths(): void {
     const request = ++this.pathRequest;
@@ -927,7 +936,7 @@ export class UI {
       this.pathTimer = undefined;
       if (!this.isPathInput() || request !== this.pathRequest) return;
       try {
-        const result = await this.session.completePath(input, this.pathBase, this.pathKind());
+        const result = await this.session.completePath(input, this.view === 'local-skill-path' ? this.session.serverCwd : this.pathBase, this.pathKind());
         if (this.closing || !this.isPathInput() || request !== this.pathRequest || this.editor !== editor) return;
         this.pathCandidates = result.entries;
         this.paths.setItems(result.entries.length ? result.entries.map(entry => clip(`${entry.name}${entry.kind === 'directory' ? '/' : ''}`, Number(this.screen.width) - 1)) : ['No matching directories']);
@@ -1024,6 +1033,21 @@ export class UI {
     else if (state === 'available') this.setPickerSkill('installed');
     else this.removePickerSkill();
   }
+  private async registerLocalSkill(): Promise<void> {
+    if (this.localSkillSubmitting || this.sending || !this.session.localSkillImportAvailable) return;
+    const path = this.localSkillPath;
+    if (!path) return;
+    this.localSkillSubmitting = true; this.sending = true; this.draw();
+    try {
+      await this.session.importLocalSkill(path);
+      if (this.view === 'local-skill-confirm') { this.setView('agent-skills'); this.showNotice('Local skill registered and catalog refreshed. Registration does not install or assign it; stage with a/i and save the agent form.'); }
+    } catch (error) {
+      const message = (error as Error).message;
+      if (!this.closing && /Do not retry|do not retry/i.test(message)) this.setView('agent-skills');
+      if (!this.closing) this.showNotice(message);
+    }
+    finally { this.localSkillSubmitting = false; this.sending = false; this.draw(); }
+  }
   private stageAgentSkills(): void {
     const picker = this.skillPicker;
     if (!picker || this.editor !== picker.editor) return;
@@ -1104,7 +1128,7 @@ export class UI {
     this.input.bottom = composer ? 3 : this.isPathInput() || this.isVolumeInput() ? 7 : 2;
     this.promptTop.bottom = 4;
     this.tree.bottom = view === 'prompt' ? 5 : 2;
-    if (this.isPathInput() || this.isVolumeInput()) this.paths.show();
+    if (this.isPathInput() || this.isVolumeInput()) { this.paths.show(); if (this.isPathInput()) this.refreshPaths(); }
     if (view === 'tree' || view === 'prompt') {
       this.tree.show(); this.columns.show();
       if (view === 'tree') this.tree.focus();
@@ -1116,7 +1140,7 @@ export class UI {
       }
     } else if (view === 'agent-info') {
       this.details.show(); this.details.focus();
-    } else if (['history-settings', 'settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['history-settings', 'settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'local-skill-confirm', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -1130,6 +1154,7 @@ export class UI {
   }
   private async submit(value: string): Promise<void> {
     if (this.sending) return;
+    if (this.view === 'local-skill-path') { if (!value) { this.showNotice('Enter a server-side path.'); this.input.readInput(); return; } this.localSkillPath = value; this.setView('local-skill-confirm'); return; }
     if (this.view === 'history-field' && this.historyField) {
       try {
         this.settings.history = historySettings({ ...this.settings.history, [this.historyField]: Number(value) });
@@ -1306,6 +1331,8 @@ export class UI {
       this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
       this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
       this.view === 'agent-skills' ? `Skills: ${agent?.name} · staged in draft` :
+      this.view === 'local-skill-path' ? 'Register local server skill · enter directory or root SKILL.md' :
+      this.view === 'local-skill-confirm' ? 'Confirm local skill registration' :
       this.view === 'agent-skills-filter' ? `Filter skills · ${this.skillPicker?.filter ?? ''}` :
       this.view === 'settings-choice-setup' ? `${this.pendingChoiceSetup?.setup?.label}` :
       this.view === 'settings-options' ? `${this.choiceLabel} · select an available option` :
@@ -1387,9 +1414,14 @@ export class UI {
       const choices = this.pickerChoices();
       this.updating = true;
       this.menu.setItems(choices.length ? choices.map(choice => clip(`${cell(this.pickerState(choice.name), 11)}  ${cell(choice.name, 24)} ${choice.stale ? '[stale] [not in catalog] ' : choice.retainedUnknown ? '[not in catalog] [retained] ' : ''}${choice.description}`, width - 1)) :
-        [this.hasCatalogSkills() ? 'No skills match this filter.' : 'No catalog skills. Open server settings (v) to add repositories.']);
+        [this.hasCatalogSkills() ? 'No skills match this filter.' : `No catalog skills. ${this.session.localSkillImportAvailable ? 'L registers a local skill; ' : ''}open server settings (v) to add repositories.`]);
       this.menu.select(Math.max(0, this.menuIndex)); this.updating = false;
-      this.footer.setContent(choices.length ? ' ↑↓ select  a available  i installed  d remove  Space cycle  / filter  S stage in form  Esc cancel' : ' v server settings  / filter  S stage  Esc cancel · changes are not saved until the agent form is saved');
+      this.footer.setContent(` ↑↓ select  a available  i installed  d remove  Space cycle  / filter  ${this.session.localSkillImportAvailable ? 'L register local  ' : ''}r refresh  v server settings  S stage  Esc cancel`);
+    } else if (this.view === 'local-skill-confirm') {
+      this.updating = true; this.menu.setItems([`Cancel`, `Register: ${this.localSkillPath}`, 'This copies the skill into the shared server snapshot. Imported code is shared with every client. Registration does not install or assign it.']); this.menu.select(this.menuIndex); this.updating = false;
+      this.footer.setContent(' y register exactly once  n / Esc cancel · no agent changes');
+    } else if (this.view === 'local-skill-path') {
+      this.footer.setContent(' Enter review  Tab complete if supported  spaces are literal  Esc cancel · server-side path');
     } else if (this.view === 'agent-skills-filter') {
       this.footer.setContent(' Type a name/description filter  Enter apply  Ctrl+U clear  Esc cancel');
     } else if (this.view === 'settings-options') {
