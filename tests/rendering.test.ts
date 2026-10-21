@@ -132,7 +132,7 @@ test('only tool symbols use lifecycle colors; commands, filenames and output sta
   for (const rawOutput of [{ isError: true }, { structuredContent: { exit_code: 7 } }, { content: [{ type: 'text', text: 'exit code: 2' }] }]) {
     expect(renderTreeEvent(event(1, 'tool.result', { title: 'bash', status: 'completed', rawOutput }), 80, presentation)).toStartWith('\x1b[31m');
   }
-  for (const [tool, symbol] of [['bash', '$'], ['read', '<'], ['write', '>'], ['edit', 'Δ'], ['mcp__organization__child_create', '• mcp__organization__child_create']]) {
+  for (const [tool, symbol] of [['bash', '$'], ['read', '<'], ['write', '>'], ['edit', 'Δ'], ['mcp__agentorg__create_subagent', '• mcp__agentorg__create_subagent']]) {
     const e = event(1, 'tool.call', { title: tool, status: 'pending', rawInput: { path: 'a.ts', command: 'echo hello' } });
     const rendered = renderEvent(e, 1, 100);
     expect(stripAnsi(rendered)).toStartWith(symbol!);
@@ -461,7 +461,7 @@ test('terminal changes only symbol colors across phases and independently colors
 }, 15000);
 
 test('terminal level names use the available pane width before truncating long MCP tools', async () => {
-  const type = 'tool.call:mcp__organization__child_create';
+  const type = 'tool.call:mcp__agentorg__create_subagent';
   const tooLong = `${type}_${'extra'.repeat(12)}`;
   const mock = await mockServer((socket, request) => {
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 2, agents: [agent('root')], operations: [] });
