@@ -40,7 +40,7 @@ export interface RendererMetadata {
 export interface RenderingCapability { version: number; catalog: string }
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
-export interface Skill { name: string; description: string; gitUrl: string; [key: string]: unknown }
+export interface Skill { name: string; description: string; gitUrl?: string; [key: string]: unknown }
 export interface SkillRetained { name: string; gitUrl?: string; description?: string; status?: string; error?: string; [key: string]: unknown }
 export interface SkillReconciliation { generation?: number; desiredRevision?: number; state: 'pending' | 'running' | 'ready' | 'error'; lastSuccessfulRevision?: number; entries?: Array<{ name: string; gitUrl?: string; status: string; error?: string; attempts?: number }> }
 export interface ServerSettingsField {
