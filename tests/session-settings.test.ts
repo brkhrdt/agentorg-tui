@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Session } from '../src/session.js';
-import { DEFAULT_TABLE_FIELDS, Settings } from '../src/settings.js';
+import { DEFAULT_LEVELS, DEFAULT_TABLE_FIELDS, Settings } from '../src/settings.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
 test('settings round-trip defaults, exclusions, plugin levels and invalid config', async () => {
@@ -10,8 +10,24 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
   try {
     const path = join(mock.directory, 'config', 'settings.json');
     const settings = await Settings.load(path);
+    expect(settings.levels).toEqual({
+      'agent.message': 3, 'prompt.queued': 3, 'tool.update': 3, 'tool.result': 2, 'agent.plan': 3,
+      'tool.call:mcp__agentorg__prompt_subagent': 3, 'tool.call:cancel_operation': 2, 'tool.result:bash': 2,
+      'tool.result:mcp__agentorg__modify_subagent': 2, 'tool.result:mcp__agentorg__get_completion': 2,
+      'tool.result:cancel_operation': 2, 'tool.result:create_subagent': 2, 'tool.result:get_completion': 2,
+      'tool.result:get_operation': 2, 'tool.result:get_subagent': 2, 'tool.result:mcp__agentorg__cancel_operation': 2,
+      'tool.result:mcp__agentorg__create_subagent': 2, 'tool.result:mcp__agentorg__get_operation': 2,
+      'tool.result:mcp__agentorg__get_subagent': 2, 'tool.result:mcp__agentorg__prompt_subagent': 2,
+      'tool.result:mcp__agentorg__remove_subagent': 2,
+    });
+    expect(settings.levels).toEqual(DEFAULT_LEVELS);
     expect(settings.level('agent.message')).toBe(3);
     expect(settings.level('tool.call')).toBe(1);
+    expect(settings.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(3);
+    expect(settings.level('tool.call', 'cancel_operation')).toBe(2);
+    expect(settings.level('tool.call', 'mcp__agentorg__create_subagent')).toBe(1);
+    expect(settings.level('tool.result', 'mcp__agentorg__get_operation')).toBe(2);
+    expect(settings.level('tool.result', 'read')).toBe(2);
     expect(['agent.message', 'prompt.queued', 'tool.call', 'tool.result'].filter(type => settings.tracked(type))).toEqual(['agent.message', 'prompt.queued', 'tool.call', 'tool.result']);
     expect(['agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed', 'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed', 'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling', 'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped'].filter(type => settings.tracked(type))).toEqual([]);
     expect(settings.tracked('tool.update')).toBe(true);
@@ -19,6 +35,7 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     settings.toggle('agent.message');
     settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;
+    settings.levels['tool.result:mcp__agentorg__get_operation'] = 4;
     expect(settings.compactToolCalls).toBe(false);
     settings.compactToolCalls = true;
     settings.colors.selectionBg = 'white';
@@ -28,6 +45,9 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     const loaded = await Settings.load(path);
     expect(loaded.tracked('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
+    expect(loaded.level('tool.result', 'mcp__agentorg__get_operation')).toBe(4);
+    expect(loaded.level('tool.result', 'mcp__agentorg__get_completion')).toBe(2);
+    expect(loaded.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(3);
     expect(loaded.tableFields).toEqual(['error', 'name', 'status']);
     expect(loaded.compactToolCalls).toBe(true);
     expect(loaded.colors).toMatchObject({ selectionBg: 'white', selectionFg: 'black', toolCall: 'magenta' });

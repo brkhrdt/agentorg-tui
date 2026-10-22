@@ -7,6 +7,29 @@ export const LEVEL_NAMES = ['summary', 'extended', 'full', 'raw'] as const;
 export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
 export type TableField = typeof TABLE_FIELDS[number];
 export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'model', 'event'];
+export const DEFAULT_LEVELS: Record<string, Level> = {
+  'agent.message': 3,
+  'prompt.queued': 3,
+  'tool.update': 3,
+  'tool.result': 2,
+  'agent.plan': 3,
+  'tool.call:mcp__agentorg__prompt_subagent': 3,
+  'tool.call:cancel_operation': 2,
+  'tool.result:bash': 2,
+  'tool.result:mcp__agentorg__modify_subagent': 2,
+  'tool.result:mcp__agentorg__get_completion': 2,
+  'tool.result:cancel_operation': 2,
+  'tool.result:create_subagent': 2,
+  'tool.result:get_completion': 2,
+  'tool.result:get_operation': 2,
+  'tool.result:get_subagent': 2,
+  'tool.result:mcp__agentorg__cancel_operation': 2,
+  'tool.result:mcp__agentorg__create_subagent': 2,
+  'tool.result:mcp__agentorg__get_operation': 2,
+  'tool.result:mcp__agentorg__get_subagent': 2,
+  'tool.result:mcp__agentorg__prompt_subagent': 2,
+  'tool.result:mcp__agentorg__remove_subagent': 2,
+};
 export const COLOR_OPTIONS = ['default', 'black', 'red', 'green', 'yellow', 'orange', 'blue', 'magenta', 'cyan', 'white', 'gray'] as const;
 export const COLOR_SETTINGS = {
   selectionBg: 'Selection background', selectionFg: 'Selection text', title: 'Title', headings: 'Table headings',
@@ -73,7 +96,7 @@ export class Settings {
     'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling',
     'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped',
   ]);
-  levels: Record<string, Level> = { 'agent.message': 3, 'prompt.queued': 3, 'tool.update': 3, 'tool.result': 2, 'agent.plan': 3 };
+  levels: Record<string, Level> = { ...DEFAULT_LEVELS };
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   compactToolCalls = false;
   colors: Record<ColorSetting, string> = { ...DEFAULT_COLORS };
@@ -110,7 +133,7 @@ export class Settings {
           }
         }
       }
-      settings.levels = {};
+      settings.levels = { ...DEFAULT_LEVELS };
       for (const [type, level] of Object.entries(data.levels)) {
         if (![1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
         settings.levels[type] = level as Level;
