@@ -14,8 +14,9 @@ export function genericPreview(type: string): RendererMetadata {
 }
 
 /** A bounded excerpt, not the renderer's full output; raw remains the synthetic envelope. */
-export function rendererPreview(renderer: RendererMetadata, type: string, selected: Level, width: number, height: number, colors: RenderColors = {}): string {
-  const example = renderer.examples.find(example => example.type === type) ?? renderer.examples[0];
+export function rendererPreview(renderer: RendererMetadata, type: string, selected: Level, width: number, height: number, colors: RenderColors = {}, subtype?: string): string {
+  const examples = subtype ? renderer.aliasExamples?.[subtype] ?? renderer.examples : renderer.examples;
+  const example = examples.find(example => example.type === type) ?? examples[0];
   const title = `${renderer.name} · ${renderer.id}`;
   if (!example) return clip(`${title}\nNo examples available`, width);
   let event: ServerEvent;

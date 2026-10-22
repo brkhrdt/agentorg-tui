@@ -281,6 +281,25 @@ test('presentation sidecars select tree summaries independently of chat subtype 
   store.reset(); expect(store.renderings.size).toBe(0);
 });
 
+test('MCP level previews select alias-specific Pi examples and retain emitted identity for all public tools', () => {
+  const names = ['create_subagent', 'prompt_subagent', 'get_subagent', 'snapshot_organization', 'stop_subagent', 'restart_subagent', 'restart_subagent_subtree', 'replace_subagent_session', 'remove_subagent', 'modify_subagent', 'get_completion', 'get_operation', 'wait_operation', 'cancel_operation'];
+  for (const tool of names) {
+    const emitted = `mcp__agentorg__${tool}`;
+    const example = (identity: string, subtype?: string) => {
+      const raw = JSON.stringify({ kind: 'event', seq: 0, time: '2026-01-01T00:00:00.000Z', type: 'tool.result', data: { title: identity, status: 'completed', rawInput: { example: tool }, rawOutput: { content: [{ type: 'text', text: '{"status":"completed"}' }], isError: false } } }, null, 2);
+      return { type: 'tool.result', summary: `Example ${identity}`, extended: `Example ${identity} · returned completed`, full: `Example ${identity} · details`, raw, ...(subtype && { subtype }) };
+    };
+    const canonical = example(tool), aliased = example(emitted, emitted);
+    const metadata: RendererMetadata = { id: `core.mcp-${tool}`, name: tool, eventTypes: ['tool.call', 'tool.update', 'tool.result'], tool, aliases: [emitted], examples: [canonical], aliasExamples: { [emitted]: [aliased] } };
+    for (const level of [1, 2, 3, 4] as const) {
+      const preview = rendererPreview(metadata, 'tool.result', level, 120, 40, {}, emitted);
+      expect(preview).toContain(`Example ${emitted}`);
+      if (level === 4) expect(preview).toContain(`"title": "${emitted}"`);
+      expect(preview).not.toContain(`"title": "${tool}"`);
+    }
+  }
+});
+
 test('examples show all four levels when space allows, only the selected level on small terminals', () => {
   const large = rendererPreview(metadata, 'tool.result', 3, 55, 24);
   for (const text of ['1 summary', '2 extended', '3 full', '4 raw', 'Pi read', 'Custom read complete']) expect(large).toContain(text);

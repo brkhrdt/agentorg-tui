@@ -34,8 +34,8 @@ export interface ServerEvent {
 export interface ExtendedDiff { prefix: string; before: string; after: string }
 export interface EventRendering { rendererId: string; subtype?: string; canonicalTool?: string; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail'; summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff }
 export interface RendererMetadata {
-  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string; aliases?: string[]; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail';
-  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; extendedDiff?: ExtendedDiff }>;
+  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string; aliases?: string[]; aliasExamples?: Record<string, Array<{ type: string; summary: string; extended: string; full: string; raw: string; subtype?: string; extendedDiff?: ExtendedDiff }>>; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail';
+  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; subtype?: string; extendedDiff?: ExtendedDiff }>;
 }
 export interface RenderingCapability { version: number; catalog: string }
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -51,7 +51,11 @@ export function validEventRendering(value: unknown): value is EventRendering {
 export function validRendererMetadata(value: unknown): value is RendererMetadata {
   if (!object(value) || typeof value.id !== 'string' || value.id.length > 256 || typeof value.name !== 'string' || value.name.length > 128 || !Array.isArray(value.eventTypes) || value.eventTypes.length < 1 || value.eventTypes.length > 64 || !value.eventTypes.every((x: unknown) => typeof x === 'string' && x.length <= 128) || !Array.isArray(value.examples) || value.examples.length < 1 || value.examples.length > 8) return false;
   if (value.tool !== undefined && typeof value.tool !== 'string' || value.harness !== undefined && typeof value.harness !== 'string') return false;
-  if (value.aliases !== undefined && (!Array.isArray(value.aliases) || !value.aliases.every((x: unknown) => typeof x === 'string'))) return false;
+  if (value.aliases !== undefined && (!Array.isArray(value.aliases) || !value.aliases.every((x: unknown) => typeof x === 'string' && x.length <= 128))) return false;
+  if (value.aliasExamples !== undefined) {
+    if (!object(value.aliasExamples) || Object.keys(value.aliasExamples).some(identity => !value.aliases?.includes(identity))) return false;
+    for (const [identity, examples] of Object.entries(value.aliasExamples)) if (!Array.isArray(examples) || examples.length < 1 || examples.length > 8 || !examples.every(example => object(example) && example.subtype === identity && typeof example.type === 'string' && typeof example.raw === 'string' && example.raw.length <= 2 * 1024 * 1024 && validEventRendering({ ...example, rendererId: value.id }))) return false;
+  }
   if (value.updateMode !== undefined && !['semantic','streaming'].includes(value.updateMode) || value.extendedLayout !== undefined && value.extendedLayout !== 'header-detail') return false;
   return value.examples.every((example: unknown) => object(example) && typeof example.type === 'string' && typeof example.raw === 'string' && example.raw.length <= 2 * 1024 * 1024 && validEventRendering({ ...example, rendererId: value.id }));
 }

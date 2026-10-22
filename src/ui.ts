@@ -1546,7 +1546,7 @@ export class UI {
         this.preview.width = side ? '50%' : '100%';
         this.preview.top = side ? 2 : height - 11;
         this.preview.show();
-        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 4 : 9) - 2), this.settings.colors));
+        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 4 : 9) - 2), this.settings.colors, subtype));
       } else this.menu.bottom = 2;
       this.updating = true;
       this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?
