@@ -35,22 +35,24 @@ const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: 
     : ansiColor(color in DEFAULT_COLORS ? resolveColor(colors, color as ColorSetting) : color);
   return `\x1b[${code}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${code}m`)}\x1b[0m`;
 };
-function toolColor(event: ServerEvent, tool?: string): ColorSetting | 'gray' {
+function toolColor(event: ServerEvent, tool?: string, invocationError?: boolean): ColorSetting | 'gray' {
   if (event.type === 'tool.call') return 'toolCall';
   if (event.type === 'tool.update') return 'toolUpdate';
   const data = object(event.data), result = object(data.rawOutput);
   const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
     ((tool ?? data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/\bexit(?:ed)?(?: with)? (?:code|status):?\s*(-?\d+)/i)?.[1] : undefined);
-  if (['failed', 'cancelled', 'canceled'].includes(data.status) || result.isError === true || (exit !== undefined && Number(exit) !== 0)) return 'toolFailure';
+  const failedOutput = invocationError ?? (result.isError === true || (exit !== undefined && Number(exit) !== 0));
+  if (failedOutput || ['failed', 'cancelled', 'canceled'].includes(data.status)) return 'toolFailure';
   return data.status === 'completed' ? 'toolSuccess' : 'gray';
 }
 /** Only the symbol carries lifecycle color; edit's signed counts have independent diff colors. */
-function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}, rendering?: Pick<EventRendering, 'toolSymbol' | 'toolTarget'>): string {
-  const plain = stripAnsi(text);
+function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}, rendering?: Pick<EventRendering, 'toolSymbol' | 'toolTarget' | 'invocationError'>): string {
+  const plain = clean(text);
   if (rendering?.toolSymbol) {
-    const target = rendering.toolTarget;
+    const symbol = clean(rendering.toolSymbol).replace(/\s/g, '');
+    const target = rendering.toolTarget && clean(rendering.toolTarget);
     const body = target && plain.startsWith(target) ? paint(target, 'agentTarget', colors) + plain.slice(target.length) : plain;
-    return paint(rendering.toolSymbol, toolColor(event, tool), colors) + (body ? ` ${body}` : '');
+    return paint(symbol, toolColor(event, tool, rendering.invocationError), colors) + (body ? ` ${body}` : '');
   }
   const match = /^([\s]*)([$<>Δ•])(?=\s|$)(.*)$/u.exec(plain);
   if (!match) return plain;
@@ -271,7 +273,9 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     }
     if (isTool(event)) {
       const [heading, ...body] = logicalLines(rendering.full);
-      return wrapAnsi(toolHeader(markdown(heading ?? '', width, true, colors), event, rendering.subtype, colors, rendering), width, { hard: true, trim: false }) +
+      const header = toolHeader(markdown(heading ?? '', width, true, colors), event, rendering.subtype, colors, rendering);
+      // Semantic status follows immediately, even with an unusually long target/prompt.
+      return (rendering.extendedLayout === 'header-detail' ? clipStyled(header, width) : wrapAnsi(header, width, { hard: true, trim: false })) +
         (body.join('\n').trim() ? '\n' + markdown(body.join('\n'), width, false, colors) : '');
     }
     return `${paint(clip(`${event.time} · ${label(event)}`, width), 'gray', colors)}\n${markdown(rendering.full, width, false, colors)}`;
