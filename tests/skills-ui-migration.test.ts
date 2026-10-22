@@ -1,11 +1,12 @@
 import { expect, test } from 'bun:test';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
-import type { ServerSettingsCatalog, ServerSettingsGroup } from '../src/protocol.js';
+import { formatSkillDetails } from '../src/ui.js';
+import type { ServerSettingsCatalog, ServerSettingsGroup, Skill } from '../src/protocol.js';
 
 const skills = [
-  { name: 'alpha', description: 'Alpha instructions', gitUrl: 'https://github.com/org/alpha' },
-  { name: 'beta', description: 'Beta instructions', gitUrl: 'https://github.com/org/beta' },
+  { name: 'alpha', description: 'Alpha instructions', gitUrl: 'https://github.com/org/alpha', source: { kind: 'git' as const, gitUrl: 'https://github.com/org/alpha' }, path: '/managed/alpha', createdAt: 'now', history: { mode: 'git-preserved', scope: 'branches-tags-head-v1', selectedCommit: 'a'.repeat(40) } },
+  { name: 'beta', description: 'Beta instructions', gitUrl: 'https://github.com/org/beta', source: { kind: 'git' as const, gitUrl: 'https://github.com/org/beta' }, path: '/managed/beta', createdAt: 'now', history: { mode: 'git-preserved', scope: 'branches-tags-head-v1', selectedCommit: 'b'.repeat(40) } },
 ];
 const endpoints = { list: 'organization.settings.list', get: 'organization.settings.get', update: 'organization.settings.update' };
 const repositoryGroup = (repositories: Array<{ name: string; gitUrl: string }> = []): ServerSettingsGroup => ({
@@ -17,40 +18,58 @@ const repositoryGroup = (repositories: Array<{ name: string; gitUrl: string }> =
       { key: 'name', label: 'Skill name', editor: 'text', effect: 'immediate' },
       { key: 'gitUrl', label: 'HTTPS Git URL', editor: 'text', effect: 'immediate' },
     ],
-  }],
-  defaults: { repositories: [] }, values: { repositories }, effective: { repositories }, overridden: [], restartRequired: [],
+  }, { key: 'gitTimeoutMs', label: 'Git timeout', editor: 'number', min: 1000, max: 60000, effect: 'immediate' }, { key: 'maxCatalogEntries', label: 'Maximum catalog entries', editor: 'number', min: 1, max: 256, effect: 'immediate' }],
+  defaults: { repositories: [], gitTimeoutMs: 60000, maxCatalogEntries: 256 }, values: { repositories, gitTimeoutMs: 60000, maxCatalogEntries: 256 }, effective: { repositories, gitTimeoutMs: 60000, maxCatalogEntries: 256 }, overridden: [], restartRequired: [],
 });
 
-async function fixture({ withSettings = false, missingSettingsGroup = false, noAgents = false, localImport = false, wrongImportEndpoint = false, pathCompletion = false, holdLocalImport = false, holdCatalogRefresh = false, malformedLocalImport = false, malformedHeldCatalog = false, skillCatalog = skills, repositories = [], skillReconciliation, modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; missingSettingsGroup?: boolean; noAgents?: boolean; localImport?: boolean; wrongImportEndpoint?: boolean; pathCompletion?: boolean; holdLocalImport?: boolean; holdCatalogRefresh?: boolean; malformedLocalImport?: boolean; malformedHeldCatalog?: boolean; skillCatalog?: typeof skills; repositories?: Array<{ name: string; gitUrl: string }>; skillReconciliation?: any; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
+async function fixture({ withSettings = false, missingSettingsGroup = false, noAgents = false, localImport = false, wrongImportEndpoint = false, pathCompletion = false, holdLocalImport = false, holdCatalogRefresh = false, holdCatalogStatusChange = false, malformedLocalImport = false, malformedHeldCatalog = false, skillCatalog = skills as Skill[], repositories = [], skillReconciliation, modifyOutcome = 'ok', cols = 120 }: { withSettings?: boolean; missingSettingsGroup?: boolean; noAgents?: boolean; localImport?: boolean; wrongImportEndpoint?: boolean; pathCompletion?: boolean; holdLocalImport?: boolean; holdCatalogRefresh?: boolean; holdCatalogStatusChange?: boolean; malformedLocalImport?: boolean; malformedHeldCatalog?: boolean; skillCatalog?: Skill[]; repositories?: Array<{ name: string; gitUrl: string }>; skillReconciliation?: any; modifyOutcome?: 'ok' | 'conflict' | 'failed' | 'disconnect'; cols?: number } = {}) {
   const root = agent('root', null, { name: 'worker', revision: 8, settings: {
     harness: 'fixture', model: 'test', extensions: { managed: { alpha: 'installed' }, sibling: { retained: true } },
   } });
   const group = repositoryGroup(repositories);
   if (skillReconciliation) group.reconciliation = skillReconciliation;
   let currentSkillCatalog = skillCatalog;
+  let currentManagedCatalog: Array<Skill & { status: 'ready' | 'retired' }> = skillCatalog.map(skill => ({ ...skill, status: 'ready' as const }));
   const serverSettings: ServerSettingsCatalog = { groups: missingSettingsGroup ? [] : [group], facts: { cwd: '/work', dataDir: '/data', socketPath: '/socket', harnesses: ['fixture'], plugins: ['skills'] } };
   const requests: any[] = [], changes: any[] = [];
   let connections = 0, skillsListCalls = 0;
   let heldLocalImport: { socket: any; id: string } | undefined;
   let heldCatalogRefresh: { socket: any; id: string } | undefined;
+  let heldCatalogStatusChange: { socket: any; id: string; method: string; params: any } | undefined;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: noAgents ? [] : [root], operations: [], capabilities: {
       harnesses: ['fixture'],
       ...(pathCompletion && { cwd: '/server/cwd', pathCompletion: true }),
-      plugins: { skills: { version: 1, settingsNamespace: 'managed', ...(localImport && { localImport: true }), endpoints: { list: 'skills.list', add: 'skills.add', ...(localImport && { addFromPath: wrongImportEndpoint ? 'skills.add.alias' : 'skills.addFromPath' }), reconcile: 'skills.reconcile' } } },
+      plugins: { skills: { version: 1, settingsNamespace: 'managed', catalogManagement: { version: 1, semantics: 'reversible-retirement-v1', sourceIdentity: 'name+source-v1' }, ...(localImport && { localImport: true, localImportHistory: 'preserve-v1', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' } }), endpoints: { list: 'skills.list', add: 'skills.add', retireRepository: 'skills.retireRepository', restoreRepository: 'skills.restoreRepository', deleteRepository: 'skills.deleteRepository', ...(localImport && { addFromPath: 'skills.addFromPath', registerRepository: wrongImportEndpoint ? 'skills.register.alias' : 'skills.registerRepository' }), reconcile: 'skills.reconcile' } } },
       ...(withSettings && { serverSettings: { version: 1, groups: [group], endpoints } }),
     } });
-    else if (request.method === 'organization.paths') respond(socket, request.id, { path: request.params.input, isDirectory: true, entries: [] });
+    else if (request.method === 'organization.paths') respond(socket, request.id, { path: request.params.input, isDirectory: true, entries: [{ name: 'stale-path-suggestion', path: '/server/cwd/stale-path-suggestion', kind: 'directory' }] });
     else if (request.method === 'skills.list') {
       skillsListCalls++;
       if (holdCatalogRefresh && skillsListCalls > 1 && !heldCatalogRefresh) heldCatalogRefresh = { socket, id: request.id };
-      else respond(socket, request.id, { skills: currentSkillCatalog, ...(skillReconciliation && { reconciliation: skillReconciliation }) });
+      else respond(socket, request.id, { skills: currentSkillCatalog, managed: currentManagedCatalog, ...(skillReconciliation && { reconciliation: skillReconciliation }) });
     }
-    else if (request.method === 'skills.addFromPath') {
+    else if (request.method === 'skills.registerRepository') {
       if (holdLocalImport) heldLocalImport = { socket, id: request.id };
       else if (malformedLocalImport) respond(socket, request.id, null);
-      else { currentSkillCatalog = skills; respond(socket, request.id, { name: 'alpha' }); }
+      else { currentSkillCatalog = skills; const record = { ...skills[0], source: { kind: 'local' as const, path: '/tmp/skill' }, path: '/managed/alpha', createdAt: 'now', origin: 'manual', history: { mode: 'directory-initialized', selectedCommit: 'a'.repeat(40) } }; currentManagedCatalog = [{ ...record, status: 'ready' }]; respond(socket, request.id, record); }
+    }
+    else if (request.method === 'skills.retireRepository' || request.method === 'skills.restoreRepository') {
+      if (holdCatalogStatusChange && !heldCatalogStatusChange) heldCatalogStatusChange = { socket, id: request.id, method: request.method, params: request.params };
+      else {
+        const name = request.params.name, status = request.method === 'skills.retireRepository' ? 'retired' : 'ready';
+        currentManagedCatalog = currentManagedCatalog.map(skill => skill.name === name ? { ...skill, status } : skill);
+        currentSkillCatalog = currentSkillCatalog.filter(skill => skill.name !== name || status === 'ready');
+        if (status === 'ready') { const restored = currentManagedCatalog.find(skill => skill.name === name); if (restored) currentSkillCatalog = [...currentSkillCatalog, restored]; }
+        respond(socket, request.id, { skill: currentManagedCatalog.find(skill => skill.name === name), status });
+      }
+    }
+    else if (request.method === 'skills.deleteRepository') {
+      const name = request.params.name;
+      currentManagedCatalog = currentManagedCatalog.filter(skill => skill.name !== name);
+      currentSkillCatalog = currentSkillCatalog.filter(skill => skill.name !== name);
+      respond(socket, request.id, { name, source: request.params.source, status: 'deleted', removedAssignments: 1, removedInstallations: 1 });
     }
     else if (request.method === 'skills.reconcile') respond(socket, request.id, { accepted: true });
     else if (request.method === endpoints.list) respond(socket, request.id, serverSettings);
@@ -77,9 +96,18 @@ async function fixture({ withSettings = false, missingSettingsGroup = false, noA
   }, () => { connections++; });
   const ui = terminalClient(mock.path, mock.directory, { cols });
   return { mock, ui, root, requests, changes, group, connections: () => connections,
-    releaseLocalImport() { currentSkillCatalog = skills; if (heldLocalImport) respond(heldLocalImport.socket, heldLocalImport.id, { name: 'alpha' }); },
+    releaseLocalImport() { currentSkillCatalog = skills; if (heldLocalImport) { const record = { ...skills[0], source: { kind: 'local' as const, path: '/tmp/local skill' }, path: '/managed/alpha', createdAt: 'now', origin: 'manual', history: { mode: 'directory-initialized', selectedCommit: 'a'.repeat(40) } }; currentManagedCatalog = [{ ...record, status: 'ready' }]; respond(heldLocalImport.socket, heldLocalImport.id, record); } },
     releaseCatalogRefresh() { if (heldCatalogRefresh) respond(heldCatalogRefresh.socket, heldCatalogRefresh.id, { skills: malformedHeldCatalog ? null : currentSkillCatalog }); },
-    setSkillCatalog(catalog: typeof skills) { currentSkillCatalog = catalog; } };
+    releaseCatalogStatusChange() {
+      const pending = heldCatalogStatusChange;
+      if (!pending) return;
+      const name = pending.params.name, status = pending.method === 'skills.retireRepository' ? 'retired' : 'ready';
+      currentManagedCatalog = currentManagedCatalog.map(skill => skill.name === name ? { ...skill, status } : skill);
+      currentSkillCatalog = currentSkillCatalog.filter(skill => skill.name !== name || status === 'ready');
+      if (status === 'ready') { const restored = currentManagedCatalog.find(skill => skill.name === name); if (restored) currentSkillCatalog = [...currentSkillCatalog, restored]; }
+      respond(pending.socket, pending.id, { skill: currentManagedCatalog.find(skill => skill.name === name), status });
+    },
+    setSkillCatalog(catalog: Skill[]) { currentSkillCatalog = catalog; currentManagedCatalog = catalog.map(skill => ({ ...skill, status: 'ready' as const })); } };
 }
 
 test('tree shortcut, action menu, help and footer no longer expose the legacy global Skills screen', async () => {
@@ -101,56 +129,175 @@ test('tree shortcut, action menu, help and footer no longer expose the legacy gl
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
-test('v → s → Skills registers local paths independently and preserves a dirty settings draft', async () => {
-  const f = await fixture({ withSettings: true, localImport: true, pathCompletion: true, repositories: [{ name: 'alpha', gitUrl: 'https://git.example/alpha' }] });
+test('v → s → Skills has one source-only Add flow and preserves a dirty runtime-settings draft', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, pathCompletion: true, repositories: [{ name: 'legacy-alpha', gitUrl: 'https://git.example/alpha' }] });
   const { keys, visible, screen } = f.ui;
   try {
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
     keys('\r'); await visible('Skills · server-wide · revision 3');
-    // Dirty the local server-settings draft by removing a repository and staging the collection, but do not save it.
-    keys('\r'); await visible('named configurations'); keys('d'); await visible('No configurations.'); keys('S'); await visible('Skills · server-wide · revision 3');
-    expect(screen()).toContain('Repositories: [0 entries; edit to inspect] · edited draft');
-    keys('L'); await visible('Register local server skill'); keys('\x1b'); await visible('Skills · server-wide · revision 3');
-    expect(screen()).toContain('Repositories: [0 entries; edit to inspect] · edited draft');
-    keys('\x1b[B'.repeat(3)); await visible('L  Register local skill'); keys('\r');
-    await waitFor(() => f.requests.some(r => r.method === 'organization.paths' && r.params.base === '/server/cwd'));
-    keys('/srv/my local skill/SKILL.md'); keys('\r'); await visible('Confirm local skill registration');
+    expect(screen()).toContain('Add skill repository…');
+    expect(screen()).toContain('Legacy configured seeds: 1');
+    expect(screen()).not.toContain('Repositories:');
+    expect(screen()).not.toContain('alpha · git-preserved');
+    expect(screen()).not.toContain('beta · git-preserved');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\x1b[B\r'); await visible('Git timeout · number'); keys('\x15'); keys('45000\r'); await visible('Git timeout: 45000');
+    keys('a'); await visible('Add skill repository · one source locator');
+    await waitFor(() => f.requests.some(r => r.method === 'organization.paths'));
+    await waitFor(() => screen().includes('stale-path-suggestion/'));
+    const pathRequests = f.requests.filter(r => r.method === 'organization.paths').length;
+    keys('https://github.com/org/repo'); await new Promise(resolve => setTimeout(resolve, 200));
+    expect(f.requests.filter(r => r.method === 'organization.paths')).toHaveLength(pathRequests);
+    expect(screen()).not.toContain('stale-path-suggestion');
+    keys('\x15'); keys('/srv/my local skill/SKILL.md');
+    await waitFor(() => f.requests.filter(r => r.method === 'organization.paths').length > pathRequests);
+    keys('\r'); await visible('Confirm skill repository registration');
     expect(screen()).toContain('/srv/my local skill/SKILL.md');
-    keys('\x1b[B\r'); await visible('Local skill registered and catalog refreshed');
+    keys('\x1b[B\r'); await visible('Registered alpha in this organization');
     await visible('Skills · server-wide · revision 3');
-    keys('\x1b[A'); await visible('c  Refresh catalog (read-only)'); keys('\r'); await visible('Skills catalog refreshed; settings draft was not changed.');
-    expect(screen()).toContain('Repositories: [0 entries; edit to inspect] · edited draft');
-    expect(f.requests.filter(r => r.method === 'skills.addFromPath').map(r => r.params)).toEqual([{ path: '/srv/my local skill/SKILL.md' }]);
+    expect(screen()).toContain('Git timeout: 45000');
+    expect(screen()).not.toContain('alpha · git-preserved');
+    expect(screen()).not.toContain('Last registration confirmed');
+    keys('c'); await visible('Skills catalog refreshed; settings draft was not changed.');
+    expect(f.requests.filter(r => r.method === 'skills.registerRepository').map(r => r.params)).toEqual([{ source: '/srv/my local skill/SKILL.md' }]);
     expect(f.changes).toHaveLength(0);
-    expect(f.requests.filter(r => [endpoints.update, 'skills.reconcile', 'agent.create', 'agent.modify', 'skills.add'].includes(r.method))).toHaveLength(0);
+    expect(f.requests.filter(r => [endpoints.update, 'skills.reconcile', 'agent.create', 'agent.modify', 'skills.add', 'skills.addFromPath'].includes(r.method))).toHaveLength(0);
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
-test('local registration is available from Skills settings with no agents', async () => {
+test('catalog Enter opens narrow scrollable details with full source and managed path', async () => {
+  const description = Array.from({ length: 45 }, (_, index) => `Detailed instruction paragraph ${index + 1} with enough text to span the narrow terminal display.`).join('\n');
+  const skill = { ...skills[0]!, description } as Skill;
+  const f = await fixture({ withSettings: true, skillCatalog: [skill], cols: 60 });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    expect(screen()).not.toContain('alpha · git-preserved');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('READY · alpha');
+    keys('\r'); await visible('Registered skill repository · alpha');
+    keys('\x1b[4~'); await waitFor(() => screen().includes('Source: https://github.com/org/alpha'));
+    const normalizedBottom = screen().replace(/\s+/g, ' ');
+    expect(normalizedBottom).toContain('Source: https://github.com/org/alpha');
+    expect(normalizedBottom).toContain('Managed location: /managed/alpha');
+    keys('\x1b'); await visible('Manage registered catalog skills');
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('repository details strip terminal controls without concealing source or managed location', async () => {
+  const esc = String.fromCharCode(27), bel = String.fromCharCode(7);
+  const description = `Safe description.\nSecond ordinary line.\n${esc}]0;attacker-controlled title${bel}OSC text\n${esc}[8mCSI conceal remains active`;
+  const skill = { ...skills[0]!, description,
+    source: { kind: 'git' as const, gitUrl: `https://github.com/org/alpha${esc}[31m` }, path: `/managed/alpha${esc}[0m` } as Skill;
+  const formatted = formatSkillDetails(skill);
+  expect(formatted).not.toContain(esc);
+  expect(formatted).not.toContain(bel);
+  expect(formatted).toContain('Description: Safe description.\nSecond ordinary line.\nOSC text\nCSI conceal remains active');
+  expect(formatted).toContain('Source: https://github.com/org/alpha\nManaged location: /managed/alpha');
+  const f = await fixture({ withSettings: true, skillCatalog: [skill], cols: 60 });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    expect(screen()).not.toContain('alpha · git-preserved');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('Manage registered catalog skills');
+    keys('\r'); await visible('Registered skill repository · alpha');
+    const details = screen().replace(/\s+/g, ' ');
+    expect(details).toContain('Second ordinary line.');
+    expect(details).toContain('CSI conceal remains active');
+    expect(details).toContain('Source: https://github.com/org/alpha');
+    expect(details).toContain('Managed location: /managed/alpha');
+    keys('\x1b'); await visible('Manage registered catalog skills');
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('Skills settings manager retires, restores, and permanently deletes manual catalog skills', async () => {
+  const f = await fixture({ withSettings: true, repositories: [{ name: 'legacy-seed', gitUrl: 'https://git.example/seed' }] });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 50)); keys('\r'); await visible('Manage registered catalog skills · reversible retirement');
+    expect(screen()).toContain('READY · alpha'); expect(screen()).toContain('READY · beta'); expect(screen()).not.toContain('legacy-seed');
+    keys('d'); await visible('Retired alpha from new grants');
+    expect(screen()).toContain('RETIRED · alpha');
+    const retire = f.requests.find(request => request.method === 'skills.retireRepository');
+    expect(retire?.params).toEqual({ name: 'alpha', source: skills[0]!.source, expectedStatus: 'ready' });
+    expect(f.changes).toHaveLength(0);
+    keys('r'); await visible('Restored alpha to the active catalog');
+    expect(screen()).toContain('READY · alpha');
+    expect(f.requests.find(request => request.method === 'skills.restoreRepository')?.params).toEqual({ name: 'alpha', source: skills[0]!.source, expectedStatus: 'retired' });
+    keys('x'); await visible('Confirm permanent deletion · alpha');
+    expect(screen()).toContain('plugin-owned installed/recovery copies');
+    expect(screen()).toContain('no agent is stopped');
+    keys('y'); await visible('Permanently deleted alpha');
+    expect(screen()).not.toContain('READY · alpha'); expect(screen()).toContain('READY · beta');
+    expect(f.requests.find(request => request.method === 'skills.deleteRepository')?.params).toEqual({ name: 'alpha', source: skills[0]!.source, expectedStatus: 'ready' });
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('stale retirement completion cannot replace notice or selection after manager navigation', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, holdCatalogStatusChange: true });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('Manage registered catalog skills · reversible retirement');
+    keys('d'); await waitFor(() => f.requests.some(request => request.method === 'skills.retireRepository'));
+
+    keys('\x1b'); await visible('Skills · server-wide');
+    keys('\x1b'); await visible('Server settings');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('Skills · server-wide');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('Manage registered catalog skills · reversible retirement');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('Registered skill repository · beta');
+    keys('\x1b'); await visible('Manage registered catalog skills · reversible retirement');
+    f.releaseCatalogStatusChange();
+    await waitFor(() => f.requests.filter(request => request.method === 'skills.list').length >= 2);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(screen()).toContain('beta');
+    expect(screen()).not.toContain('Retired alpha from new grants.');
+    keys('\r'); await visible('Registered skill repository · beta');
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('held retirement preserves a different row selected before completion', async () => {
+  const f = await fixture({ withSettings: true, holdCatalogStatusChange: true });
+  const { keys, visible } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('Manage registered catalog skills · reversible retirement');
+    keys('d'); await waitFor(() => f.requests.some(request => request.method === 'skills.retireRepository'));
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 50));
+    f.releaseCatalogStatusChange();
+    await waitFor(() => f.requests.filter(request => request.method === 'skills.list').length >= 2);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    keys('d');
+    await waitFor(() => f.requests.filter(request => request.method === 'skills.retireRepository').length === 2);
+    expect(f.requests.filter(request => request.method === 'skills.retireRepository')[1]?.params.name).toBe('beta');
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
+test('unified repository registration is available from Skills settings with no agents', async () => {
   const f = await fixture({ withSettings: true, localImport: true, noAgents: true });
   const { keys, visible, screen } = f.ui;
   try {
     await visible('No active agents'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
-    keys('\x1b[B'.repeat(3)); await visible('L  Register local skill'); keys('\r'); await visible('Register local server skill');
-    keys('/tmp/orphan skill'); keys('\r'); await visible('Confirm local skill registration'); keys('\x1b[B\r');
-    await visible('Local skill registered and catalog refreshed');
-    expect(f.requests.filter(r => r.method === 'skills.addFromPath').map(r => r.params)).toEqual([{ path: '/tmp/orphan skill' }]);
+    keys('a'); await visible('Add skill repository · one source locator');
+    keys('/tmp/orphan skill'); keys('\r'); await visible('Confirm skill repository registration'); keys('\x1b[B\r');
+    await visible('Registered alpha in this organization');
+    expect(f.requests.filter(r => r.method === 'skills.registerRepository').map(r => r.params)).toEqual([{ source: '/tmp/orphan skill' }]);
     expect(f.requests.filter(r => ['agent.create', 'agent.modify'].includes(r.method))).toHaveLength(0);
     expect(screen()).toContain('Skills · server-wide');
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
-test('in-flight local registration does not steal focus after Escape navigation', async () => {
+test('in-flight unified registration does not steal focus after Escape navigation', async () => {
   const f = await fixture({ withSettings: true, localImport: true, holdLocalImport: true });
   const { keys, visible, screen } = f.ui;
   try {
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
-    keys('L'); await visible('Register local server skill'); keys('/tmp/local skill'); keys('\r'); await visible('Confirm local skill registration'); keys('y');
-    await waitFor(() => f.requests.some(r => r.method === 'skills.addFromPath'));
+    keys('a'); await visible('Add skill repository · one source locator'); keys('/tmp/local skill'); keys('\r'); await visible('Confirm skill repository registration'); keys('y');
+    await waitFor(() => f.requests.some(r => r.method === 'skills.registerRepository'));
     keys('\x1b'); await visible('worker');
-    f.releaseLocalImport(); await visible('Local skill registered and catalog refreshed');
+    f.releaseLocalImport(); await new Promise(resolve => setTimeout(resolve, 100));
     expect(screen()).toContain('worker');
     expect(screen()).not.toContain('Skills · server-wide');
+    expect(screen()).not.toContain('Registered alpha in this organization');
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
@@ -167,16 +314,16 @@ test('delayed catalog refresh cannot replace a newer view or notice', async () =
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
-test('delayed strict catalog failure cannot overwrite local-import uncertainty notice', async () => {
+test('delayed strict catalog failure cannot replace unified registration uncertainty feedback', async () => {
   const f = await fixture({ withSettings: true, localImport: true, holdCatalogRefresh: true, malformedLocalImport: true, malformedHeldCatalog: true });
   const { keys, visible, screen } = f.ui;
   try {
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
     keys('c'); await waitFor(() => f.requests.filter(r => r.method === 'skills.list').length === 2);
-    keys('L'); await visible('Register local server skill'); keys('/tmp/local'); keys('\r'); await visible('Confirm local skill registration'); keys('y');
-    await visible('Local skill registration returned an invalid response; outcome is unknown');
+    keys('a'); await visible('Add skill repository · one source locator'); keys('/tmp/local'); keys('\r'); await visible('Confirm skill repository registration'); keys('y');
+    await visible('malformed result; outcome is unknown');
     f.releaseCatalogRefresh(); await new Promise(resolve => setTimeout(resolve, 100));
-    expect(screen()).toContain('Local skill registration returned an invalid response; outcome is unknown');
+    expect(screen()).toContain('malformed result; outcome is unknown');
     expect(screen()).not.toContain('Skills catalog response was invalid');
     expect(screen()).toContain('Skills · server-wide');
   } finally { await f.ui.close(); await f.mock.close(); }
@@ -221,16 +368,16 @@ test('local registration and catalog refresh controls fail closed without Skills
   try {
     const { keys, visible, screen } = missingCapability.ui;
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
-    expect(screen()).not.toContain('L register local skill');
-    expect(missingCapability.requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(0);
+    expect(screen()).toContain('Add skill repository unavailable');
+    expect(missingCapability.requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(0);
   } finally { await missingCapability.ui.close(); await missingCapability.mock.close(); }
 
   const wrongEndpoint = await fixture({ withSettings: true, localImport: true, wrongImportEndpoint: true });
   try {
     const { keys, visible, screen } = wrongEndpoint.ui;
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
-    expect(screen()).not.toContain('L register local skill');
-    expect(wrongEndpoint.requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(0);
+    expect(screen()).toContain('Add skill repository unavailable');
+    expect(wrongEndpoint.requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(0);
   } finally { await wrongEndpoint.ui.close(); await wrongEndpoint.mock.close(); }
 });
 
@@ -400,35 +547,21 @@ test('skills descriptions fit narrow terminal rows', async () => {
   } finally { await f.ui.close(); await f.mock.close(); }
 });
 
-test('server repository record edits and confirmed immediate save show preparing status without restart marker', async () => {
-  const initial = [
-    { name: 'alpha', gitUrl: 'https://github.com/org/alpha' },
-    { name: 'beta', gitUrl: 'https://github.com/org/beta' },
-  ];
-  const cancelled = await fixture({ withSettings: true, repositories: initial });
+test('legacy seed add/edit form is hidden and unrelated saves preserve hidden seed values', async () => {
+  const seeds = [{ name: 'alpha', gitUrl: 'https://github.com/org/alpha' }, { name: 'beta', gitUrl: 'https://github.com/org/beta' }];
+  const f = await fixture({ withSettings: true, repositories: seeds });
   try {
-    const { keys, visible } = cancelled.ui;
+    const { keys, visible, screen } = f.ui;
     await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
-    keys('\r'); await visible('Skills · server-wide · revision 3'); keys('\r'); await visible('Repositories');
-    keys('d'); keys('\x1b'); await visible('Skills · server-wide · revision 3');
-    expect(cancelled.ui.screen()).toContain('[2 entries; edit to inspect]');
-    expect(cancelled.changes).toHaveLength(0);
-  } finally { await cancelled.ui.close(); await cancelled.mock.close(); }
-
-  const edited = await fixture({ withSettings: true, repositories: initial });
-  try {
-    const { keys, visible } = edited.ui;
-    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
-    keys('\r'); await visible('Skills · server-wide · revision 3'); keys('\r'); await visible('Repositories');
-    keys('\r'); await visible('Repositories: alpha');
-    keys('\x1b[B\r'); await visible('HTTPS Git URL · text');
-    keys('\x15https://github.com/org/alpha-v2\r'); await visible('Repositories: alpha');
-    keys('S'); await visible('Repositories'); expect(edited.changes).toHaveLength(0);
-    keys('\x1b[B'); keys('d'); keys('S'); await visible('Skills · server-wide · revision 3');
-    keys('S'); await visible('Confirm server-wide'); keys('y'); await visible('preparing');
-    expect(edited.ui.screen()).not.toContain('RESTART REQUIRED');
-    expect(edited.changes).toEqual([{ namespace: 'skills', expectedRevision: 3, patch: { repositories: [{ name: 'alpha', gitUrl: 'https://github.com/org/alpha-v2' }] }, reset: [] }]);
-  } finally { await edited.ui.close(); await edited.mock.close(); }
+    keys('\r'); await visible('Skills · server-wide · revision 3');
+    expect(screen()).toContain('Legacy configured seeds: 2');
+    expect(screen()).not.toContain('HTTPS Git URL');
+    expect(screen()).not.toContain('Skill name');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\x1b[B\r'); await visible('Git timeout · number'); keys('\x15'); keys('50000\r'); await visible('Git timeout: 50000');
+    keys('S'); await visible('Confirm server-wide'); keys('y'); await visible('Saved on server');
+    expect(f.changes).toEqual([{ namespace: 'skills', expectedRevision: 3, patch: { gitTimeoutMs: 50000 }, reset: [] }]);
+    expect(f.group.values.repositories).toEqual(seeds);
+  } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
 test('server settings exposes explicit skill retry without resaving configuration', async () => {
@@ -458,24 +591,15 @@ test('repository reconciliation failure identifies the repository and retains it
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
-test('server settings repository add stages without a write until revision-confirmed save', async () => {
-  const f = await fixture({ withSettings: true });
-  const { keys, visible } = f.ui;
+test('Add is the only Skills repository entry point; no name/URL TUI form remains', async () => {
+  const f = await fixture({ withSettings: true, localImport: true });
   try {
-    await visible('worker');
-    keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings');
-    keys('\r'); await visible('Skills · server-wide · revision 3');
-    keys('\r'); await visible('Repositories');
-    keys('\r'); await visible('No configurations. Press a to add.');
-    keys('a'); await visible('Repositories: New entry');
-    keys('\r'); await visible('Skill name · text'); keys('alpha\r'); await visible('Repositories: New entry');
-    keys('\x1b[B\r'); await visible('HTTPS Git URL · text'); keys('https://github.com/org/alpha\r'); await visible('Repositories: New entry');
+    const { keys, visible, screen } = f.ui;
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    expect(screen()).toContain('Add skill repository…');
+    expect(screen()).not.toContain('HTTPS Git URL');
+    expect(screen()).not.toContain('Skill name');
+    expect(f.requests.filter(request => ['skills.add', 'skills.addFromPath', 'skills.registerRepository'].includes(request.method))).toHaveLength(0);
     expect(f.changes).toHaveLength(0);
-    keys('S'); await visible('Repositories'); expect(f.changes).toHaveLength(0);
-    keys('S'); await visible('Skills · server-wide · revision 3'); expect(f.changes).toHaveLength(0);
-    keys('S'); await visible('Confirm server-wide'); keys('y'); await visible('Saved on server');
-    await waitFor(() => f.changes.length === 1);
-    expect(f.changes[0]).toEqual({ namespace: 'skills', expectedRevision: 3,
-      patch: { repositories: [{ name: 'alpha', gitUrl: 'https://github.com/org/alpha' }] }, reset: [] });
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);

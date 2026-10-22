@@ -11,6 +11,29 @@ export type LifecycleMethod = 'agent.create' | 'agent.modify' | 'agent.stop' | '
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const done = (operation: Operation) => ['completed', 'failed', 'stopped'].includes(operation.status);
+type RepositorySourceKind = 'https' | 'server-path';
+interface SkillRepositoryRegistrationCapability { namespace: string; listEndpoint: string; endpoint: 'skills.registerRepository'; sourceKinds: RepositorySourceKind[] }
+interface SkillCatalogManagementSupport { namespace: string; listEndpoint: string; retireEndpoint: 'skills.retireRepository'; restoreEndpoint: 'skills.restoreRepository'; deleteEndpoint?: 'skills.deleteRepository' }
+function skillCatalogManagementSupport(value: unknown): SkillCatalogManagementSupport | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const capability = value as any, management = capability.catalogManagement, endpoints = capability.endpoints;
+  if (capability.version !== 1 || typeof capability.settingsNamespace !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.settingsNamespace) ||
+      endpoints?.list !== 'skills.list' || endpoints?.retireRepository !== 'skills.retireRepository' || endpoints?.restoreRepository !== 'skills.restoreRepository' ||
+      management?.version !== 1 || management.semantics !== 'reversible-retirement-v1' || management.sourceIdentity !== 'name+source-v1') return undefined;
+  return { namespace: capability.settingsNamespace, listEndpoint: endpoints.list, retireEndpoint: endpoints.retireRepository, restoreEndpoint: endpoints.restoreRepository,
+    ...(endpoints.deleteRepository === 'skills.deleteRepository' ? { deleteEndpoint: endpoints.deleteRepository } : {}) };
+}
+function skillRepositoryRegistrationCapability(value: unknown): SkillRepositoryRegistrationCapability | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const capability = value as any, registration = capability.repositoryRegistration, endpoints = capability.endpoints;
+  if (capability.version !== 1 || typeof capability.settingsNamespace !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.settingsNamespace) ||
+      endpoints?.list !== 'skills.list' || endpoints?.registerRepository !== 'skills.registerRepository' ||
+      registration?.version !== 1 || registration.history !== 'preserve-v1' || !Array.isArray(registration.sourceKinds) ||
+      registration.sourceKinds.length < 1 || registration.sourceKinds.some((kind: unknown) => kind !== 'https' && kind !== 'server-path') ||
+      new Set(registration.sourceKinds).size !== registration.sourceKinds.length || !registration.sourceKinds.includes('https')) return undefined;
+  return { namespace: capability.settingsNamespace, listEndpoint: endpoints.list, endpoint: endpoints.registerRepository,
+    sourceKinds: registration.sourceKinds as RepositorySourceKind[] };
+}
 
 interface ChatWindow {
   seqs: Set<number>; hasMore: boolean; following: boolean; valid: boolean; loading?: Promise<void>;
@@ -21,12 +44,18 @@ export class Session extends EventEmitter {
   status = 'connecting';
   skillsEnabled = false;
   skillCatalog: Skill[] = [];
+  managedSkillCatalog: Skill[] = [];
   retainedSkills: SkillRetained[] = [];
   skillReconciliation?: SkillReconciliation;
   private skillsReconcileEndpoint?: string;
   private skillsListEndpoint?: string;
-  private skillsAddFromPathEndpoint?: string;
-  get localSkillImportAvailable(): boolean { return !!this.skillsAddFromPathEndpoint && this.skillsEnabled; }
+  private skillsRegisterRepositoryEndpoint?: string;
+  private skillRepositoryRegistration?: SkillRepositoryRegistrationCapability;
+  private skillCatalogManagement?: SkillCatalogManagementSupport;
+  get skillRepositoryRegistrationAvailable(): boolean { return !!this.skillsRegisterRepositoryEndpoint && this.skillsEnabled; }
+  get skillCatalogManagementAvailable(): boolean { return !!this.skillCatalogManagement && this.skillsEnabled; }
+  get skillCatalogDeletionAvailable(): boolean { return !!this.skillCatalogManagement?.deleteEndpoint && this.skillsEnabled; }
+  get skillRepositorySourceKinds(): string[] { return this.skillRepositoryRegistration?.sourceKinds ?? []; }
   get skillsReconcileEndpointAvailable(): boolean { return !!this.skillsReconcileEndpoint; }
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
@@ -186,13 +215,13 @@ export class Session extends EventEmitter {
     this.podmanImages = podman?.endpoints?.images ?? '';
     this.podmanDefaults = podman?.endpoints?.defaults ?? '';
     if (this.podmanEnabled && podman?.modelDiscovery !== true) this.modelDiscovery = [];
-    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; localImport?: unknown; endpoints?: { list?: unknown; reconcile?: unknown; addFromPath?: unknown } } | undefined;
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; reconcile?: unknown; addFromPath?: unknown; registerRepository?: unknown }; repositoryRegistration?: { version?: unknown; sourceKinds?: unknown; history?: unknown } } | undefined;
     const namespace = capability?.settingsNamespace;
     const list = capability?.endpoints?.list;
     const supported = (capability?.version === undefined || capability.version === 1) && typeof namespace === 'string' && /^[a-z][a-z0-9.-]*$/.test(namespace) && typeof list === 'string' && /^[a-z][a-z0-9.-]*$/.test(list);
     if (!supported) {
       if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest) {
-        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = []; this.retainedSkills = []; this.skillReconciliation = undefined; this.skillsReconcileEndpoint = undefined; this.skillsListEndpoint = undefined; this.skillsAddFromPathEndpoint = undefined;
+        this.skillsEnabled = false; this.skillsNamespace = 'skills'; this.skillCatalog = []; this.managedSkillCatalog = []; this.retainedSkills = []; this.skillReconciliation = undefined; this.skillsReconcileEndpoint = undefined; this.skillsListEndpoint = undefined; this.skillsRegisterRepositoryEndpoint = undefined; this.skillRepositoryRegistration = undefined; this.skillCatalogManagement = undefined;
       }
       return;
     }
@@ -201,12 +230,15 @@ export class Session extends EventEmitter {
     const reconcileEndpoint = typeof capability?.endpoints?.reconcile === 'string' && /^[a-z][a-z0-9.-]*$/.test(capability.endpoints.reconcile) ? capability.endpoints.reconcile : undefined;
     this.skillsListEndpoint = endpoint;
     this.skillsReconcileEndpoint = reconcileEndpoint;
-    this.skillsAddFromPathEndpoint = capability?.localImport === true && capability?.endpoints?.addFromPath === 'skills.addFromPath' ? 'skills.addFromPath' : undefined;
+    const registration = skillRepositoryRegistrationCapability(capability);
+    this.skillRepositoryRegistration = registration;
+    this.skillsRegisterRepositoryEndpoint = registration?.endpoint;
+    this.skillCatalogManagement = skillCatalogManagementSupport(capability);
     await this.refreshSkillCatalog(client, endpoint, namespace as string, skillsRequest);
   }
   private async refreshSkillCatalog(client: RpcClient, endpoint: string, namespace = this.skillsNamespace, request = ++this.skillsRequest, throwOnFailure = false, requireCurrent = false): Promise<void> {
-    let catalog: { skills?: unknown; retained?: unknown; reconciliation?: unknown };
-    try { catalog = await client.request<{ skills?: unknown; retained?: unknown; reconciliation?: unknown }>(endpoint, {}); }
+    let catalog: { skills?: unknown; managed?: unknown; retained?: unknown; reconciliation?: unknown };
+    try { catalog = await client.request<{ skills?: unknown; managed?: unknown; retained?: unknown; reconciliation?: unknown }>(endpoint, {}); }
     catch (error) {
       if (client === this.client && !this.stopped && request === this.skillsRequest) {
         this.skillsEnabled = true; this.skillsNamespace = namespace; this.skillCatalog = [];
@@ -224,10 +256,17 @@ export class Session extends EventEmitter {
       typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
       typeof (skill as Skill).description === 'string') ?? [];
     const invalidCatalog = catalogSkills === undefined || validSkills.length !== catalogSkills.length;
-    if (requireCurrent && invalidCatalog) throw new Error('Invalid skills catalog response');
+    const managedSkills = catalog && typeof catalog === 'object' && Array.isArray(catalog.managed) ? catalog.managed as unknown[] : undefined;
+    const validManagedSkills = managedSkills?.filter((skill): skill is Skill => !!skill && typeof skill === 'object' &&
+      typeof (skill as Skill).name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((skill as Skill).name) &&
+      typeof (skill as Skill).description === 'string' && ['ready', 'retired'].includes((skill as Skill).status ?? '')) ?? [];
+    const invalidManaged = this.skillCatalogManagement ? managedSkills === undefined || validManagedSkills.length !== managedSkills.length :
+      managedSkills !== undefined && validManagedSkills.length !== managedSkills.length;
+    if (requireCurrent && (invalidCatalog || invalidManaged)) throw new Error('Invalid skills catalog response');
     const entries = validSkills.filter(skill => skill.status === undefined || skill.status === 'ready');
     this.skillsEnabled = true; this.skillsNamespace = namespace;
     this.skillCatalog = entries;
+    this.managedSkillCatalog = validManagedSkills;
     this.retainedSkills = Array.isArray(catalog?.retained) ? catalog.retained.filter((item): item is SkillRetained => !!item && typeof item === 'object' && typeof (item as SkillRetained).name === 'string') : [];
     const reconciliation = catalog?.reconciliation;
     this.skillReconciliation = reconciliation && typeof reconciliation === 'object' && ['pending', 'running', 'ready', 'error'].includes((reconciliation as SkillReconciliation).state)
@@ -235,28 +274,104 @@ export class Session extends EventEmitter {
     if (invalidCatalog) this.emit('notice', 'Skills catalog response was invalid; malformed entries were ignored.');
     this.store.emit('change');
   }
-  async importLocalSkill(path: string): Promise<void> {
-    const client = this.client, endpoint = this.skillsAddFromPathEndpoint;
-    if (!client || !this.skillsEnabled || !endpoint || endpoint !== 'skills.addFromPath' || !this.status.startsWith('connected')) throw new Error('Local skill import is not available');
-    // Recheck the currently installed snapshot-derived capability immediately before mutation.
+  async registerSkillRepository(source: string): Promise<{ record: Skill; refreshed: boolean; refreshError?: string }> {
+    const client = this.client, endpoint = this.skillsRegisterRepositoryEndpoint;
+    if (!client || !this.skillsEnabled || !endpoint || endpoint !== 'skills.registerRepository' || !this.status.startsWith('connected')) throw new Error('Unified skill repository registration is not available');
+    const isUrlLike = /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith('//') || /^[^/\s]+@[^:\s]+:/.test(source);
+    const sourceKind = isUrlLike ? 'https' : 'server-path';
+    if (!this.skillRepositorySourceKinds.includes(sourceKind)) throw new Error('This server does not advertise support for that repository source kind');
     const snapshot = await client.request<Snapshot>('organization.snapshot', {});
-    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; localImport?: unknown; endpoints?: { list?: unknown; addFromPath?: unknown } } | undefined;
-    if (client !== this.client || this.stopped || !this.status.startsWith('connected')) throw new Error('Server disconnected before registering skill');
-    if (!capability || (capability.version !== undefined && capability.version !== 1) || typeof capability.settingsNamespace !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.settingsNamespace) || typeof capability.endpoints?.list !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.endpoints.list) || capability.localImport !== true || capability.endpoints.addFromPath !== 'skills.addFromPath' || this.skillsAddFromPathEndpoint !== 'skills.addFromPath') throw new Error('Local skill import is no longer supported by this server');
+    const capability = snapshot.capabilities?.plugins?.skills as { version?: unknown; settingsNamespace?: unknown; endpoints?: { list?: unknown; registerRepository?: unknown }; repositoryRegistration?: { version?: unknown; sourceKinds?: unknown; history?: unknown } } | undefined;
+    if (client !== this.client || this.stopped || !this.status.startsWith('connected')) throw new Error('Server disconnected before registering repository');
+    const currentRegistration = skillRepositoryRegistrationCapability(capability);
+    if (!currentRegistration || currentRegistration.namespace !== this.skillsNamespace || currentRegistration.listEndpoint !== this.skillsListEndpoint ||
+        currentRegistration.endpoint !== endpoint || !currentRegistration.sourceKinds.includes(sourceKind) ||
+        this.skillsRegisterRepositoryEndpoint !== endpoint || this.skillRepositoryRegistration?.namespace !== currentRegistration.namespace ||
+        this.skillRepositoryRegistration?.listEndpoint !== currentRegistration.listEndpoint || this.skillRepositoryRegistration?.sourceKinds.join(',') !== currentRegistration.sourceKinds.join(','))
+      throw new Error('Unified skill repository registration is no longer supported by this server');
     let result: unknown;
-    try { result = await client.request<unknown>(endpoint, { path }, 120_000); }
+    try { result = await client.request<unknown>(endpoint, { source }, 120_000); }
     catch (error) {
-      if (error instanceof ApiError) throw new Error(`Local skill registration failed: ${error.message}`);
-      throw new Error(`Local skill registration outcome is unknown (${(error as Error).message}). Do not retry; refresh the catalog to check whether it registered.`);
+      if (error instanceof ApiError) throw new Error(`Skill repository registration failed: ${error.message}`);
+      throw new Error(`Registration outcome is unknown (${(error as Error).message}). Do not retry; refresh the catalog to check.`);
     }
-    const registeredSkill = result && typeof result === 'object' && !Array.isArray(result)
-      ? ('skill' in result ? (result as { skill?: unknown }).skill : result) : undefined;
-    if (!registeredSkill || typeof registeredSkill !== 'object' || Array.isArray(registeredSkill) ||
-      typeof (registeredSkill as { name?: unknown }).name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test((registeredSkill as { name: string }).name))
-      throw new Error('Local skill registration returned an invalid response; outcome is unknown. Do not retry; refresh the catalog to check whether it registered.');
-    if (client !== this.client || this.stopped) throw new Error('Skill may be registered, but the server disconnected before catalog refresh. Refresh the catalog; do not retry registration.');
-    try { await this.refreshSkills(true); }
-    catch (error) { throw new Error(`Skill registered, but catalog refresh failed: ${(error as Error).message}. Refresh the catalog; do not retry registration.`); }
+    const candidate = result && typeof result === 'object' && !Array.isArray(result) ? result as Skill : undefined;
+    const sourceInfo = candidate?.source, history = candidate?.history;
+    const sourceValid = sourceKind === 'https' ? sourceInfo?.kind === 'git' && typeof sourceInfo.gitUrl === 'string' && history?.mode === 'git-preserved' :
+      sourceInfo?.kind === 'local' && typeof sourceInfo.path === 'string' && ['git-preserved', 'directory-initialized'].includes(history?.mode ?? '');
+    const valid = !!candidate && typeof candidate.name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(candidate.name) &&
+      typeof candidate.description === 'string' && typeof candidate.path === 'string' && typeof candidate.createdAt === 'string' && candidate.origin === 'manual' &&
+      !!sourceValid && (history?.mode !== 'git-preserved' || history.scope === 'branches-tags-head-v1' && typeof history.selectedCommit === 'string');
+    if (!valid) throw new Error('Registration returned a malformed result; outcome is unknown. Do not retry; refresh the catalog to check.');
+    const record = candidate!;
+    if (client !== this.client || this.stopped) return { record, refreshed: false, refreshError: 'Server disconnected after registration.' };
+    try { await this.refreshSkills(true); return { record, refreshed: true }; }
+    catch (error) { return { record, refreshed: false, refreshError: (error as Error).message }; }
+  }
+  async updateSkillCatalogRetirement(skill: Skill, retired: boolean): Promise<{ record: Skill; refreshed: boolean; refreshError?: string }> {
+    const client = this.client, support = this.skillCatalogManagement;
+    if (!client || !this.skillsEnabled || !support || !this.status.startsWith('connected') || !skill.source)
+      throw new Error('Registered catalog management is not available');
+    const expectedStatus = retired ? 'ready' : 'retired';
+    if (skill.status !== expectedStatus) throw new Error(`Catalog entry is no longer ${expectedStatus}; refresh before managing it`);
+    const snapshot = await client.request<Snapshot>('organization.snapshot', {});
+    if (client !== this.client || this.stopped || !this.status.startsWith('connected')) throw new Error('Server disconnected before changing catalog status');
+    const capability = snapshot.capabilities?.plugins?.skills;
+    const current = skillCatalogManagementSupport(capability);
+    const sameManagement = (a?: SkillCatalogManagementSupport, b?: SkillCatalogManagementSupport) => !!a && !!b &&
+      a.namespace === b.namespace && a.listEndpoint === b.listEndpoint && a.retireEndpoint === b.retireEndpoint && a.restoreEndpoint === b.restoreEndpoint && a.deleteEndpoint === b.deleteEndpoint;
+    if (!this.skillsEnabled || !sameManagement(this.skillCatalogManagement, support) || !sameManagement(current, support) ||
+        current!.namespace !== this.skillsNamespace || current!.listEndpoint !== this.skillsListEndpoint)
+      throw new Error('Catalog management capability is no longer supported by this server');
+    const endpoint = retired ? current!.retireEndpoint : current!.restoreEndpoint;
+    let response: unknown;
+    try {
+      response = await client.request<unknown>(endpoint, { name: skill.name, source: skill.source, expectedStatus });
+    } catch (error) {
+      if (error instanceof ApiError) throw new Error(`Catalog status change failed: ${error.message}`);
+      throw new Error(`Catalog status outcome is unknown (${(error as Error).message}); refresh catalog before retrying.`);
+    }
+    const result = response && typeof response === 'object' && !Array.isArray(response) ? response as { skill?: Skill; status?: unknown } : undefined;
+    const sameSource = (a: Skill['source'], b: Skill['source']) => !!a && !!b && a.kind === b.kind &&
+      (a.kind === 'git' ? b.kind === 'git' && a.gitUrl === b.gitUrl : b.kind === 'local' && a.path === b.path);
+    if (!result?.skill || result.skill.name !== skill.name || !sameSource(result.skill.source, skill.source) || result.status !== (retired ? 'retired' : 'ready'))
+      throw new Error('Catalog status response was malformed; refresh catalog to verify before retrying.');
+    const record = { ...result.skill, status: result.status } as Skill;
+    if (client !== this.client || this.stopped) return { record, refreshed: false, refreshError: 'Server disconnected after catalog status change.' };
+    try { await this.refreshSkills(true); return { record, refreshed: true }; }
+    catch (error) { return { record, refreshed: false, refreshError: (error as Error).message }; }
+  }
+  async deleteSkillRepository(skill: Skill): Promise<{ removedAssignments: number; removedInstallations: number; refreshed: boolean; refreshError?: string }> {
+    const client = this.client, support = this.skillCatalogManagement, endpoint = support?.deleteEndpoint;
+    if (!client || !this.skillsEnabled || !support || !endpoint || !this.status.startsWith('connected') || !skill.source)
+      throw new Error('Permanent registered-catalog deletion is not available');
+    const expectedStatus = skill.status;
+    if (expectedStatus !== 'ready' && expectedStatus !== 'retired') throw new Error('Catalog entry has no valid status; refresh before deleting it');
+    const snapshot = await client.request<Snapshot>('organization.snapshot', {});
+    if (client !== this.client || this.stopped || !this.status.startsWith('connected')) throw new Error('Server disconnected before deleting catalog skill');
+    const current = skillCatalogManagementSupport(snapshot.capabilities?.plugins?.skills);
+    const sameManagement = (a?: SkillCatalogManagementSupport, b?: SkillCatalogManagementSupport) => !!a && !!b &&
+      a.namespace === b.namespace && a.listEndpoint === b.listEndpoint && a.retireEndpoint === b.retireEndpoint &&
+      a.restoreEndpoint === b.restoreEndpoint && a.deleteEndpoint === b.deleteEndpoint;
+    if (!this.skillsEnabled || !sameManagement(this.skillCatalogManagement, support) || !sameManagement(current, support) ||
+        current!.namespace !== this.skillsNamespace || current!.listEndpoint !== this.skillsListEndpoint || current!.deleteEndpoint !== endpoint)
+      throw new Error('Permanent catalog deletion capability is no longer supported by this server');
+    let response: unknown;
+    try { response = await client.request<unknown>(endpoint, { name: skill.name, source: skill.source, expectedStatus }, 120_000); }
+    catch (error) {
+      if (error instanceof ApiError) throw new Error(`Permanent skill deletion failed: ${error.message}`);
+      throw new Error(`Permanent skill deletion outcome is unknown (${(error as Error).message}); refresh the catalog before retrying.`);
+    }
+    const result = response && typeof response === 'object' && !Array.isArray(response) ? response as { name?: unknown; source?: Skill['source']; status?: unknown; removedAssignments?: unknown; removedInstallations?: unknown } : undefined;
+    const sameSource = (a: Skill['source'], b: Skill['source']) => !!a && !!b && a.kind === b.kind &&
+      (a.kind === 'git' ? b.kind === 'git' && a.gitUrl === b.gitUrl : b.kind === 'local' && a.path === b.path);
+    if (result?.name !== skill.name || !sameSource(result.source, skill.source) || result.status !== 'deleted' ||
+        !Number.isInteger(result.removedAssignments) || (result.removedAssignments as number) < 0 ||
+        !Number.isInteger(result.removedInstallations) || (result.removedInstallations as number) < 0)
+      throw new Error('Deletion returned a malformed result; refresh the catalog to verify before retrying.');
+    if (client !== this.client || this.stopped) return { removedAssignments: result.removedAssignments as number, removedInstallations: result.removedInstallations as number, refreshed: false, refreshError: 'Server disconnected after deletion.' };
+    try { await this.refreshSkills(true); return { removedAssignments: result.removedAssignments as number, removedInstallations: result.removedInstallations as number, refreshed: true }; }
+    catch (error) { return { removedAssignments: result.removedAssignments as number, removedInstallations: result.removedInstallations as number, refreshed: false, refreshError: (error as Error).message }; }
   }
   async refreshSkills(requireCurrent = false): Promise<void> {
     const client = this.client, list = this.skillsListEndpoint;

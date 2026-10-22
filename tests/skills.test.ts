@@ -2,6 +2,11 @@ import { expect, test } from 'bun:test';
 import { Session } from '../src/session.js';
 import { agent, mockServer, respond, send, waitFor } from './helpers.js';
 
+function registrationRecord(name: string) {
+  return { name, description: 'Local repository', path: `/managed/${name}`, createdAt: '2025-01-01T00:00:00.000Z', origin: 'manual',
+    source: { kind: 'local', path: '/srv/skill' }, history: { mode: 'git-preserved', scope: 'branches-tags-head-v1', selectedCommit: 'a'.repeat(40) } };
+}
+
 test('skills catalog discovery is capability-gated, refreshable and independent of selection mutations', async () => {
   let enabled = true;
   const requests: any[] = [];
@@ -28,42 +33,42 @@ test('skills catalog discovery is capability-gated, refreshable and independent 
   } finally { session.close(); await running; await mock.close(); }
 });
 
-test('local skill import requires exact advertised capability, sends only path once, and refreshes catalog', async () => {
+test('unified repository registration requires the exact capability, sends only source once, and refreshes catalog', async () => {
   const requests: any[] = [];
   let added = false;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { cwd: '/srv' , plugins: { skills: { version: 1, settingsNamespace: 'managed', localImport: true, endpoints: { list: 'skills.list', addFromPath: 'skills.addFromPath' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { cwd: '/srv', plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: added ? [{ name: 'local-tool', description: 'Local' }] : [] });
-    else if (request.method === 'skills.addFromPath') { added = true; respond(socket, request.id, { name: 'local-tool' }); }
+    else if (request.method === 'skills.registerRepository') { added = true; respond(socket, request.id, registrationRecord('local-tool')); }
     else send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'METHOD_NOT_FOUND', message: request.method } });
   });
   const session = new Session(mock.path);
   const running = session.run();
   try {
     await waitFor(() => session.status === 'connected' && session.skillsEnabled);
-    expect(session.localSkillImportAvailable).toBe(true);
-    await session.importLocalSkill('/srv/my local skill/SKILL.md');
-    expect(requests.filter(r => r.method === 'skills.addFromPath').map(r => r.params)).toEqual([{ path: '/srv/my local skill/SKILL.md' }]);
+    expect(session.skillRepositoryRegistrationAvailable).toBe(true);
+    await session.registerSkillRepository('/srv/my local skill/SKILL.md');
+    expect(requests.filter(r => r.method === 'skills.registerRepository').map(r => r.params)).toEqual([{ source: '/srv/my local skill/SKILL.md' }]);
     expect(session.skillCatalog.map(skill => skill.name)).toEqual(['local-tool']);
-    expect(requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(1);
+    expect(requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(1);
   } finally { session.close(); await running; await mock.close(); }
 });
 
-test('malformed successful addFromPath responses are unknown outcomes and never retried', async () => {
+test('malformed successful registrations are unknown outcomes and never retried', async () => {
   const requests: any[] = [];
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', localImport: true, endpoints: { list: 'skills.list', addFromPath: 'skills.addFromPath' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: [] });
-    else if (request.method === 'skills.addFromPath') respond(socket, request.id, null);
+    else if (request.method === 'skills.registerRepository') respond(socket, request.id, null);
   });
   const session = new Session(mock.path);
   const running = session.run();
   try {
     await waitFor(() => session.status === 'connected' && session.skillsEnabled);
-    await expect(session.importLocalSkill('/skill')).rejects.toThrow(/outcome is unknown.*Do not retry/i);
-    expect(requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(1);
+    await expect(session.registerSkillRepository('/skill')).rejects.toThrow(/outcome is unknown.*Do not retry/i);
+    expect(requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(1);
     expect(requests.filter(r => r.method === 'skills.list')).toHaveLength(1);
   } finally { session.close(); await running; await mock.close(); }
 });
@@ -73,16 +78,18 @@ test('invalid explicit post-registration catalog refresh rejects as registered-b
   let added = false;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', localImport: true, endpoints: { list: 'skills.list', addFromPath: 'skills.addFromPath' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, added ? { skills: null } : { skills: [] });
-    else if (request.method === 'skills.addFromPath') { added = true; respond(socket, request.id, { name: 'local-skill' }); }
+    else if (request.method === 'skills.registerRepository') { added = true; respond(socket, request.id, registrationRecord('local-skill')); }
   });
   const session = new Session(mock.path);
   const running = session.run();
   try {
     await waitFor(() => session.status === 'connected' && session.skillsEnabled);
-    await expect(session.importLocalSkill('/skill')).rejects.toThrow(/Skill registered, but catalog refresh failed: Invalid skills catalog response/i);
-    expect(requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(1);
+    const result = await session.registerSkillRepository('/skill');
+    expect(result.refreshed).toBe(false);
+    expect(result.refreshError).toMatch(/Invalid skills catalog response/i);
+    expect(requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(1);
     expect(requests.filter(r => r.method === 'skills.list')).toHaveLength(2);
   } finally { session.close(); await running; await mock.close(); }
 });
@@ -107,25 +114,27 @@ test('superseded post-registration catalog refresh cannot report success', async
   let staleRead: { socket: any; id: string } | undefined;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', localImport: true, endpoints: { list: 'skills.list', addFromPath: 'skills.addFromPath' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') {
       catalogReads++;
       if (catalogReads === 2) staleRead = { socket, id: request.id };
       else respond(socket, request.id, { skills: [{ name: 'fresh-skill', description: 'Fresh catalog' }] });
     }
-    else if (request.method === 'skills.addFromPath') respond(socket, request.id, { name: 'fresh-skill' });
+    else if (request.method === 'skills.registerRepository') respond(socket, request.id, registrationRecord('fresh-skill'));
   });
   const session = new Session(mock.path);
   const running = session.run();
   try {
     await waitFor(() => session.status === 'connected' && session.skillsEnabled);
-    const importing = session.importLocalSkill('/skill');
+    const importing = session.registerSkillRepository('/skill');
     await waitFor(() => !!staleRead);
     await session.refreshSkills();
     respond(staleRead!.socket, staleRead!.id, { skills: [{ name: 'stale-skill', description: 'Stale response' }] });
-    await expect(importing).rejects.toThrow(/registered, but catalog refresh failed: Skills catalog refresh was superseded/i);
+    const result = await importing;
+    expect(result.refreshed).toBe(false);
+    expect(result.refreshError).toMatch(/Skills catalog refresh was superseded/i);
     expect(session.skillCatalog.map(skill => skill.name)).toEqual(['fresh-skill']);
-    expect(requests.filter(r => r.method === 'skills.addFromPath')).toHaveLength(1);
+    expect(requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(1);
   } finally { session.close(); await running; await mock.close(); }
 });
 
@@ -152,6 +161,85 @@ test('organization skills settings and per-agent skill selections remain separat
     expect(session.serverSettingsCatalog?.groups.map(group => group.namespace)).toEqual(['skills']);
     expect(session.store.agents.get('root')?.settings.extensions?.managed).toEqual({ alpha: 'available' });
     expect(requests.some(request => request.method === 'organization.settings.update')).toBe(false);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
+test('repository registration fails closed when its advertised capability is revoked or malformed', async () => {
+  const requests: any[] = [];
+  let snapshots = 0;
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') {
+      snapshots++;
+      const registration = { version: 1, sourceKinds: ['https', 'server-path'], history: snapshots === 1 ? 'preserve-v1' : 'history-dropped' };
+      respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: registration, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
+    } else if (request.method === 'skills.list') respond(socket, request.id, { skills: [] });
+    else if (request.method === 'skills.registerRepository') respond(socket, request.id, { name: 'should-not-register' });
+  });
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected' && session.skillRepositoryRegistrationAvailable);
+    await expect(session.registerSkillRepository('/srv/skill')).rejects.toThrow(/no longer supported/i);
+    expect(requests.filter(r => r.method === 'skills.registerRepository')).toHaveLength(0);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
+test('catalog retirement does not dispatch after management capability is revoked during preflight', async () => {
+  const requests: any[] = [];
+  let snapshots = 0;
+  let preflight: { socket: any; id: string } | undefined;
+  const capability = { version: 1, settingsNamespace: 'managed', catalogManagement: { version: 1, semantics: 'reversible-retirement-v1', sourceIdentity: 'name+source-v1' },
+    repositoryRegistration: { version: 1, sourceKinds: ['https'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', retireRepository: 'skills.retireRepository', restoreRepository: 'skills.restoreRepository', registerRepository: 'skills.registerRepository' } };
+  const skill = { name: 'alpha', description: 'Alpha', source: { kind: 'git', gitUrl: 'https://github.com/org/alpha' }, status: 'ready' };
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') {
+      snapshots++;
+      if (snapshots === 2) preflight = { socket, id: request.id };
+      else respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: capability } } });
+    } else if (request.method === 'skills.list') respond(socket, request.id, { skills: [skill], managed: [skill] });
+    else if (request.method === 'skills.retireRepository' || request.method === 'skills.restoreRepository') respond(socket, request.id, { skill, status: 'retired' });
+  });
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected' && session.skillCatalogManagementAvailable);
+    const retiring = session.updateSkillCatalogRetirement(skill as any, true);
+    await waitFor(() => !!preflight);
+    (session as any).skillCatalogManagement = undefined;
+    respond(preflight!.socket, preflight!.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: capability } } });
+    await expect(retiring).rejects.toThrow(/capability is no longer supported/i);
+    expect(requests.filter(request => request.method === 'skills.retireRepository' || request.method === 'skills.restoreRepository')).toHaveLength(0);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
+test('catalog retirement works with management capability and no repository-registration capability', async () => {
+  const requests: any[] = [];
+  let catalogStatus: 'ready' | 'retired' = 'ready';
+  const capability = { version: 1, settingsNamespace: 'managed', catalogManagement: { version: 1, semantics: 'reversible-retirement-v1', sourceIdentity: 'name+source-v1' },
+    endpoints: { list: 'skills.list', retireRepository: 'skills.retireRepository', restoreRepository: 'skills.restoreRepository' } };
+  const skill = { name: 'alpha', description: 'Alpha', source: { kind: 'git', gitUrl: 'https://github.com/org/alpha' } };
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: capability } } });
+    else if (request.method === 'skills.list') respond(socket, request.id, {
+      skills: catalogStatus === 'ready' ? [skill] : [], managed: [{ ...skill, status: catalogStatus }],
+    });
+    else if (request.method === 'skills.retireRepository' || request.method === 'skills.restoreRepository') {
+      catalogStatus = request.method === 'skills.retireRepository' ? 'retired' : 'ready';
+      respond(socket, request.id, { skill, status: catalogStatus });
+    }
+  });
+  const session = new Session(mock.path);
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected' && session.skillCatalogManagementAvailable);
+    expect(session.skillRepositoryRegistrationAvailable).toBe(false);
+    await session.updateSkillCatalogRetirement(session.managedSkillCatalog[0]!, true);
+    await session.updateSkillCatalogRetirement(session.managedSkillCatalog[0]!, false);
+    expect(requests.filter(request => request.method === 'skills.retireRepository' || request.method === 'skills.restoreRepository').map(request => request.method))
+      .toEqual(['skills.retireRepository', 'skills.restoreRepository']);
   } finally { session.close(); await running; await mock.close(); }
 });
 
