@@ -32,10 +32,10 @@ export interface ServerEvent {
   data: unknown;
 }
 export interface ExtendedDiff { prefix: string; before: string; after: string }
-export interface EventRendering { rendererId: string; subtype?: string; canonicalTool?: string; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail'; summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff }
+export interface EventRendering { rendererId: string; subtype?: string; canonicalTool?: string; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail'; toolSymbol?: string; toolTarget?: string; summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff }
 export interface RendererMetadata {
-  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string; aliases?: string[]; aliasExamples?: Record<string, Array<{ type: string; summary: string; extended: string; full: string; raw: string; subtype?: string; extendedDiff?: ExtendedDiff }>>; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail';
-  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; subtype?: string; extendedDiff?: ExtendedDiff }>;
+  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string; aliases?: string[]; aliasExamples?: Record<string, Array<{ type: string; summary: string; extended: string; full: string; raw: string; subtype?: string; extendedDiff?: ExtendedDiff; toolSymbol?: string; toolTarget?: string }>>; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail';
+  examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; subtype?: string; extendedDiff?: ExtendedDiff; toolSymbol?: string; toolTarget?: string }>;
 }
 export interface RenderingCapability { version: number; catalog: string }
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -45,6 +45,8 @@ export function validEventRendering(value: unknown): value is EventRendering {
   if (value.subtype !== undefined && typeof value.subtype !== 'string' || value.canonicalTool !== undefined && typeof value.canonicalTool !== 'string') return false;
   if (value.updateMode !== undefined && !['semantic','streaming'].includes(value.updateMode)) return false;
   if (value.extendedLayout !== undefined && value.extendedLayout !== 'header-detail') return false;
+  if (value.toolSymbol !== undefined && (typeof value.toolSymbol !== 'string' || value.toolSymbol.length < 1 || value.toolSymbol.length > 8)) return false;
+  if (value.toolTarget !== undefined && (typeof value.toolTarget !== 'string' || value.toolTarget.length < 1 || value.toolTarget.length > 256)) return false;
   if (value.extendedDiff !== undefined && (!object(value.extendedDiff) || !['prefix','before','after'].every(key => typeof value.extendedDiff[key] === 'string'))) return false;
   return true;
 }

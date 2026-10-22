@@ -157,6 +157,20 @@ test('only tool symbols use lifecycle colors; commands, filenames and output sta
   }
 });
 
+test('AgentOrg tools use the triangle marker and prompt targets get an independent configurable accent', () => {
+  const target = '@child-7';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} Review this change`, extended: `${target} Review this change\nReturned status: queued`, full: `${target} Review this change\n\nTool: prompt_subagent`, toolSymbol: '∴', toolTarget: target, extendedLayout: 'header-detail' };
+  for (const [type, status, lifecycleColor] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32']]) {
+    const e = event(1, type, { title: 'mcp__agentorg__prompt_subagent', status });
+    for (const level of [1, 2, 3] as const) {
+      const text = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+      expect(text).toStartWith(`\x1b[${lifecycleColor}m∴\x1b[0m \x1b[35m${target}\x1b[0m Review this change`);
+      if (level < 3) expect(stripAnsi(text)).not.toContain('prompt_subagent');
+    }
+    expect(stripAnsi(renderEvent(e, 4, 100, presentation))).toContain('mcp__agentorg__prompt_subagent');
+  }
+});
+
 test('edit filenames stay plain while only the symbol and signed line counts carry color', () => {
   const presentation: EventRendering = { rendererId: 'pi/edit', subtype: 'edit', summary: 'Δ file-2.ts · +3 / -2', extended: 'Δ file-2.ts · +3 / -2', full: 'Δ file-2.ts · +3 / -2' };
   for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31']]) {

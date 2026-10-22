@@ -12,13 +12,13 @@ export const COLOR_SETTINGS = {
   selectionBg: 'Selection background', selectionFg: 'Selection text', title: 'Title', headings: 'Table headings',
   notice: 'Notices', footerBg: 'Footer background', footerFg: 'Footer text', border: 'Borders',
   eventHeading: 'Event headings', eventCode: 'Event code', eventLink: 'Event links', toolCall: 'Tool call',
-  toolUpdate: 'Tool update', toolSuccess: 'Tool success', toolFailure: 'Tool failure', diffAdd: 'Diff additions', diffRemove: 'Diff deletions',
+  toolUpdate: 'Tool update', toolSuccess: 'Tool success', toolFailure: 'Tool failure', agentTarget: 'Agent target', diffAdd: 'Diff additions', diffRemove: 'Diff deletions',
 } as const;
 export type ColorSetting = keyof typeof COLOR_SETTINGS;
 export const DEFAULT_COLORS: Record<ColorSetting, string> = {
   selectionBg: 'blue', selectionFg: 'white', title: 'cyan', headings: 'gray', notice: 'yellow',
   footerBg: 'white', footerFg: 'black', border: 'cyan', eventHeading: 'cyan', eventCode: 'yellow',
-  eventLink: 'blue', toolCall: 'yellow', toolUpdate: 'orange', toolSuccess: 'green', toolFailure: 'red',
+  eventLink: 'blue', toolCall: 'yellow', toolUpdate: 'orange', toolSuccess: 'green', toolFailure: 'red', agentTarget: 'cyan',
   diffAdd: 'green', diffRemove: 'red',
 };
 export const ANSI_COLORS: Record<string, string> = { default: '39', black: '30', red: '31', green: '32', yellow: '33', orange: '38;5;208', blue: '34', magenta: '35', cyan: '36', white: '37', gray: '90' };
