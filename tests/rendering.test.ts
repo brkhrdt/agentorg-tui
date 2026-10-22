@@ -171,6 +171,25 @@ test('AgentOrg tools use the triangle marker and prompt targets get an independe
   }
 });
 
+test('prompt_subagent levels bound summaries/details and preserve full Markdown prompts', () => {
+  const prompt = '**Review the change** and inspect `src/main.ts`. '.repeat(9) + 'Keep the final recommendation concise.';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `@Reviewer ${prompt}`, extended: `@Reviewer ${prompt}`, full: `@Reviewer ${prompt}`, toolSymbol: '∴', toolTarget: '@Reviewer', toolPrompt: prompt };
+  const e = event(1, 'tool.call', { title: 'mcp__agentorg__prompt_subagent', status: 'pending', rawInput: { agentId: 'session-1', text: prompt } });
+  const summary = renderEvent(e, 1, 42, presentation);
+  expect(summary.split('\n')).toHaveLength(1);
+  expect(stringWidth(stripAnsi(summary))).toBeLessThanOrEqual(42);
+  expect(stripAnsi(summary)).toContain('…');
+  const extended = renderEvent(e, 2, 42, presentation);
+  expect(extended.split('\n')).toHaveLength(2);
+  expect(extended).toContain('…');
+  expect(stripAnsi(extended)).toContain('src/main.ts');
+  const full = renderEvent(e, 3, 42, presentation);
+  expect(stripAnsi(full)).toMatch(/Keep the final\s+recommendation concise\./);
+  expect(full).toContain('\x1b[1mReview the change\x1b[0m');
+  expect(full).toContain('\x1b[33m∴\x1b[0m');
+  expect(stripAnsi(renderEvent(e, 4, 10000, presentation))).toBe(JSON.stringify(e, null, 2));
+});
+
 test('edit filenames stay plain while only the symbol and signed line counts carry color', () => {
   const presentation: EventRendering = { rendererId: 'pi/edit', subtype: 'edit', summary: 'Δ file-2.ts · +3 / -2', extended: 'Δ file-2.ts · +3 / -2', full: 'Δ file-2.ts · +3 / -2' };
   for (const [type, status, color] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32'], ['tool.result', 'failed', '31']]) {

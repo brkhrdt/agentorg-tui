@@ -50,12 +50,13 @@ test.skipIf(!coreModule)('real semantic statuses stay visible at feasible narrow
   }
 });
 
-test.skipIf(!coreModule)('semantic full output clips only the header and shows status before long identity/input bodies', () => {
-  const e = { ...event('mcp__agentorg__prompt_subagent', { status: 'running' }, { agentId: 'child', text: 'very long prompt '.repeat(100) }), type: 'tool.update' };
+test.skipIf(!coreModule)('prompt_subagent full level shows the complete prompt without operation-status detail', () => {
+  const prompt = 'very long prompt '.repeat(100);
+  const e = { ...event('mcp__agentorg__prompt_subagent', { status: 'running' }, { agentId: 'child', text: prompt }), type: 'tool.update' };
   const rendering = registry().render(e, 'pi', 'core.tools')!;
   const output = stripAnsi(renderEvent(e, 3, 40, rendering)).split('\n');
-  expect(output.slice(0, 4).join('\n')).toContain('running');
   expect(output.join('\n')).toContain('very long prompt');
+  expect(output.join('\n')).not.toContain('running');
 });
 
 test.skipIf(!coreModule)('MCP lifecycle colors describe invocation errors, not a domain isError/status field', () => {

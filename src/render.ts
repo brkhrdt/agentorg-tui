@@ -210,6 +210,27 @@ function label(event: ServerEvent): string {
   if (event.type === 'prompt.queued') return 'prompt.queued · user';
   return event.type;
 }
+/** Render AgentOrg delegated prompt text with a bounded summary/detail and complete Markdown view. */
+function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: number, rendering: EventRendering, colors: RenderColors): string {
+  const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
+  const targetText = rendering.toolTarget ? clean(rendering.toolTarget) : '';
+  const target = targetText ? paint(targetText, 'agentTarget', colors) : '';
+  const prefix = `${symbol}${target ? ` ${target}` : ''} `;
+  const prefixWidth = stringWidth(stripAnsi(prefix));
+  const bodyWidth = Math.max(1, width - prefixWidth);
+  const prompt = rendering.toolPrompt ?? (targetText && rendering.summary.startsWith(targetText) ? rendering.summary.slice(targetText.length).trimStart() : rendering.summary);
+  if (level === 1) return clipStyled(prefix + markdown(prompt.replace(/\s+/g, ' ').trim(), bodyWidth, true, colors), width);
+  const formatted = markdown(prompt, bodyWidth, false, colors);
+  const bodyRows = logicalLines(formatted).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
+  const indent = ' '.repeat(Math.min(prefixWidth, Math.max(0, width - 1)));
+  const rows = bodyRows.map((line, index) => clipStyled((index === 0 ? prefix : indent) + line, width));
+  if (level === 3) return rows.join('\n');
+  if (rows.length <= 2) return rows.join('\n');
+  const tailWidth = Math.max(1, width - stringWidth(' …'));
+  const tail = wrapAnsi(rows[1]!, tailWidth, { hard: true, trim: false }).split('\n')[0]!;
+  return [rows[0]!, clipStyled(`${tail} …`, width)].join('\n');
+}
+
 /** Tree previews render Markdown, but remain exactly one terminal-width-aware line. */
 export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   if (width <= 0) return '';
@@ -222,6 +243,7 @@ export function renderTreeEvent(event: ServerEvent, width: number, rendering?: E
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   width = Math.max(1, width);
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
+  if (rendering?.toolPrompt !== undefined && isTool(event)) return renderAgentPrompt(event, level, width, rendering, colors);
   if (!rendering && isTool(event)) {
     const full = eventText(event), data = object(event.data);
     const output = data.rawOutput ?? data.content;
