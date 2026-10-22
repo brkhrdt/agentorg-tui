@@ -335,6 +335,30 @@ test('Session negotiates server rendering, installs history sidecars and dispatc
   } finally { session.close(); await running; await mock.close(); }
 });
 
+test('terminal level selector displays examples for the real Pi-prefixed AgentOrg MCP identity', async () => {
+  const emitted = 'mcp__agentorg__get_operation';
+  const example = (type: string) => ({ type, summary: `AgentOrg example ${emitted}`, extended: `AgentOrg example ${emitted} · operation status running`, full: `AgentOrg example ${emitted} · operation details`, raw: JSON.stringify({ kind: 'event', seq: 0, time: '2026-01-01T00:00:00.000Z', type, data: { title: emitted, status: 'completed', rawInput: { operationId: 'operation-1' }, rawOutput: { content: [{ type: 'text', text: '{"status":"running"}' }], isError: false } } }, null, 2), subtype: emitted });
+  const renderer = { id: 'core.mcp-get-operation', name: 'Inspect operation · AgentOrg MCP', eventTypes: ['tool.call', 'tool.update', 'tool.result'], tool: 'get_operation', aliases: [emitted], examples: ['tool.call', 'tool.update', 'tool.result'].map(type => ({ ...example(type), subtype: undefined })), aliasExamples: { [emitted]: ['tool.call', 'tool.update', 'tool.result'].map(example) } };
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { rendering: { version: 1, catalog: 'events.renderers' } } });
+    else if (request.method === 'events.renderers') respond(socket, request.id, { version: 1, renderers: [renderer] });
+    else if (request.method === 'subscribe') respond(socket, request.id, { seq: 0, liveOnly: true });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory);
+  try {
+    await tui.visible('connected');
+    tui.keys('vl'); await tui.visible('Event rendering levels');
+    const type = `tool.result:${emitted}`;
+    const index = new Settings().types([type]).indexOf(type);
+    tui.keys('\x1b[B'.repeat(index));
+    await tui.visible(type);
+    await tui.visible(`AgentOrg example ${emitted}`);
+    expect(tui.screen()).toContain('Synthetic examples');
+    expect(tui.screen()).not.toContain('No examples available');
+  } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
 test('terminal level selector previews renderer examples, saves subtype overrides, and tree/raw chat stay independent', async () => {
   const mock = await renderingServer(), tui = terminalClient(mock.path, mock.directory);
   try {
