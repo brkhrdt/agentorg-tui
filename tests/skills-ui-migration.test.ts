@@ -164,6 +164,24 @@ test('v → s → Skills has one source-only Add flow and preserves a dirty runt
   } finally { await f.ui.close(); await f.mock.close(); }
 }, 20_000);
 
+test('confirmed registration with failed refresh is inspectable only inside Manage and stays read-only', async () => {
+  const f = await fixture({ withSettings: true, localImport: true, skillCatalog: [], holdCatalogRefresh: true, malformedHeldCatalog: true });
+  const { keys, visible, screen } = f.ui;
+  try {
+    await visible('worker'); keys('v'); await visible('CLIENT ONLY'); keys('s'); await visible('Server settings'); keys('\r'); await visible('Skills · server-wide');
+    keys('a'); await visible('Add skill repository · one source locator'); keys('/tmp/skill\r'); await visible('Confirm skill repository registration'); keys('y');
+    await waitFor(() => f.requests.filter(request => request.method === 'skills.list').length === 2);
+    f.releaseCatalogRefresh(); await visible('Registered alpha, but catalog refresh failed');
+    expect(screen()).not.toContain('CONFIRMED · alpha');
+    keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40)); keys('\r'); await visible('CONFIRMED · alpha · catalog refresh required');
+    keys('d'); keys('r'); keys('x'); keys('\r'); await visible('Registered skill repository · alpha');
+    expect(screen()).toContain('Source: /tmp/skill');
+    expect(screen()).toContain('Managed location: /managed/alpha');
+    expect(f.requests.filter(request => ['skills.retireRepository', 'skills.restoreRepository', 'skills.deleteRepository', endpoints.update, 'agent.modify'].includes(request.method))).toHaveLength(0);
+    expect(f.requests.filter(request => request.method === 'skills.registerRepository')).toHaveLength(1);
+  } finally { await f.ui.close(); await f.mock.close(); }
+}, 20_000);
+
 test('catalog Enter opens narrow scrollable details with full source and managed path', async () => {
   const description = Array.from({ length: 45 }, (_, index) => `Detailed instruction paragraph ${index + 1} with enough text to span the narrow terminal display.`).join('\n');
   const skill = { ...skills[0]!, description } as Skill;

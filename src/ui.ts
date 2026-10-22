@@ -152,6 +152,7 @@ export class UI {
   private pendingAction?: { method: LifecycleMethod; agentId: string; label: string };
   private skillPicker?: { editor: AgentEditor; states: SkillStates; choices: SkillChoice[]; returnIndex: number; filter: string };
   private localSkillPath = '';
+  private unrefreshedRegistration?: Skill;
   private skillDetailsFocus?: Skill;
   private skillDetailsReturnIndex = 0;
   private skillDetailsReturnView: 'catalog-manager' = 'catalog-manager';
@@ -420,7 +421,7 @@ export class UI {
         if (command?.key === 'c') void this.refreshSkillsCatalog(); else if (command?.key === 'R') void this.retrySkills();
       }
     } else if (this.view === 'catalog-manager') {
-      const skill = this.session.managedSkillCatalog[this.menuIndex];
+      const skill = this.catalogManagerEntries()[this.menuIndex];
       if (skill) this.openSkillDetails(skill);
     } else if (this.view === 'catalog-delete-confirm') {
       if (this.menuIndex === 1) void this.deleteManagedCatalogSkill(); else this.cancelCatalogDelete();
@@ -784,6 +785,14 @@ export class UI {
     this.screen.render();
   }
   private skillDetails(skill: Skill): string { return formatSkillDetails(skill); }
+  private catalogManagerEntries(): Skill[] {
+    const entries = this.session.managedSkillCatalog;
+    const confirmed = this.unrefreshedRegistration;
+    // Keep confirmed admission details inspectable when discovery fails, but
+    // never make this fallback row eligible for management or agent grants.
+    return confirmed && !entries.some(skill => skill.name === confirmed.name)
+      ? [...entries, { ...confirmed, status: undefined }] : entries;
+  }
   private openCatalogManager(): void {
     this.catalogManagerReturnIndex = this.menuIndex;
     this.setView('catalog-manager');
@@ -1247,7 +1256,10 @@ export class UI {
     const ownsContext = () => !this.closing && request === this.skillsCatalogUiRequest && navigation === this.navigationGeneration && this.view === 'server-group' && this.serverEditor === editor;
     try {
       await this.session.refreshSkills(true);
-      if (ownsContext()) this.showNotice('Skills catalog refreshed; settings draft was not changed.');
+      if (ownsContext()) {
+        this.unrefreshedRegistration = undefined;
+        this.showNotice('Skills catalog refreshed; settings draft was not changed.');
+      }
     } catch (error) {
       if (ownsContext()) this.showNotice(`Skills catalog refresh failed: ${(error as Error).message}`);
     }
@@ -1267,6 +1279,7 @@ export class UI {
     try {
       const outcome = await this.session.registerSkillRepository(source);
       if (ownsContext()) {
+        this.unrefreshedRegistration = outcome.refreshed ? undefined : outcome.record;
         this.returnLocalSkill();
         this.showNotice(outcome.refreshed
           ? `Registered ${outcome.record.name} in this organization's shared skill catalog. Source: ${outcome.record.source?.kind === 'git' ? outcome.record.source.gitUrl : outcome.record.source?.path}. Not assigned or installed.`
@@ -1604,13 +1617,17 @@ export class UI {
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' Press shown key to act · ↑↓ browse · Enter choose · Esc back');
     } else if (this.view === 'catalog-manager') {
-      const entries = this.session.managedSkillCatalog;
+      const entries = this.catalogManagerEntries();
       this.updating = true;
-      this.menu.setItems(entries.length ? entries.map(skill => clip(`${skill.status === 'retired' ? 'RETIRED' : 'READY'} · ${skill.name} · ${skill.description}`, width - 1)) : ['No manually registered catalog skills. Configured seeds are managed separately.']);
+      this.menu.setItems(entries.length ? entries.map((skill, index) => clip(index >= this.session.managedSkillCatalog.length
+        ? `CONFIRMED · ${skill.name} · catalog refresh required`
+        : `${skill.status === 'retired' ? 'RETIRED' : 'READY'} · ${skill.name} · ${skill.description}`, width - 1)) : ['No manually registered catalog skills. Configured seeds are managed separately.']);
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.session.skillCatalogManagementAvailable
-        ? ` ↑↓ select  Enter details  d retire  r restore${this.session.skillCatalogDeletionAvailable ? '  x permanently delete' : ''}  Esc Skills settings`
-        : 'Read-only · management capability unsupported  Enter details  Esc Skills settings');
+      this.footer.setContent(entries[this.menuIndex] && this.menuIndex >= this.session.managedSkillCatalog.length
+        ? ' Read-only confirmation · refresh catalog from Skills settings before managing · Enter details  Esc back'
+        : this.session.skillCatalogManagementAvailable
+          ? ` ↑↓ select  Enter details  d retire  r restore${this.session.skillCatalogDeletionAvailable ? '  x permanently delete' : ''}  Esc Skills settings`
+          : 'Read-only · management capability unsupported  Enter details  Esc Skills settings');
     } else if (this.view === 'catalog-delete-confirm') {
       this.updating = true;
       this.menu.setItems([
