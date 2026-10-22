@@ -1,7 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
-import type { Agent, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
+import type { Agent, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering, RendererMetadata } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, TABLE_FIELDS, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
@@ -1530,9 +1530,16 @@ export class UI {
       if (currentType) this.menuIndex = Math.max(0, this.menuTypes.indexOf(currentType));
       const type = this.menuTypes[this.menuIndex] ?? '';
       const [parent, subtype] = type.split(':');
-      const candidates = this.session.renderers.filter(renderer => renderer.eventTypes.includes(parent!) && (!renderer.tool || renderer.tool === subtype || renderer.aliases?.includes(subtype ?? '')))
-        .sort((a, b) => Number(b.harness === agent?.settings.harness) - Number(a.harness === agent?.settings.harness));
-      const preview = candidates[this.previewIndex % Math.max(1, candidates.length)] ?? genericPreview(parent!);
+      const candidates = this.session.renderers.filter(renderer => renderer.eventTypes.includes(parent!) && (!renderer.tool || renderer.tool === subtype || renderer.aliases?.includes(subtype ?? '')));
+      const identityMatch = (renderer: RendererMetadata) => !!subtype && (renderer.tool === subtype || renderer.aliases?.includes(subtype));
+      const harnessMatch = (renderer: RendererMetadata) => !!agent && renderer.harness === agent.settings.harness;
+      const orderedCandidates = [
+        ...candidates.filter(renderer => identityMatch(renderer) && harnessMatch(renderer)),
+        ...candidates.filter(renderer => identityMatch(renderer) && !harnessMatch(renderer)),
+        ...candidates.filter(renderer => !identityMatch(renderer) && harnessMatch(renderer)),
+        ...candidates.filter(renderer => !identityMatch(renderer) && !harnessMatch(renderer)),
+      ];
+      const preview = orderedCandidates[this.previewIndex % Math.max(1, orderedCandidates.length)] ?? genericPreview(parent!);
       const height = Number(this.screen.height);
       const showPreview = this.view === 'levels' && preview && width >= 60 && height >= 16;
       const menuWidth = showPreview && width >= 90 ? Math.floor(width / 2) : width;
