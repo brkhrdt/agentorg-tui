@@ -32,12 +32,29 @@ export interface ServerEvent {
   data: unknown;
 }
 export interface ExtendedDiff { prefix: string; before: string; after: string }
-export interface EventRendering { rendererId: string; subtype?: string; summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff }
+export interface EventRendering { rendererId: string; subtype?: string; canonicalTool?: string; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail'; summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff }
 export interface RendererMetadata {
-  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string;
+  id: string; name: string; harness?: string; eventTypes: string[]; tool?: string; aliases?: string[]; updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail';
   examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; extendedDiff?: ExtendedDiff }>;
 }
 export interface RenderingCapability { version: number; catalog: string }
+const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
+export function validEventRendering(value: unknown): value is EventRendering {
+  if (!object(value) || typeof value.rendererId !== 'string' || value.rendererId.length > 256 || !['summary','extended','full'].every(key => typeof value[key] === 'string')) return false;
+  if (value.summary.length > 8192 || value.extended.length > 16384 || value.full.length > 2 * 1024 * 1024) return false;
+  if (value.subtype !== undefined && typeof value.subtype !== 'string' || value.canonicalTool !== undefined && typeof value.canonicalTool !== 'string') return false;
+  if (value.updateMode !== undefined && !['semantic','streaming'].includes(value.updateMode)) return false;
+  if (value.extendedLayout !== undefined && value.extendedLayout !== 'header-detail') return false;
+  if (value.extendedDiff !== undefined && (!object(value.extendedDiff) || !['prefix','before','after'].every(key => typeof value.extendedDiff[key] === 'string'))) return false;
+  return true;
+}
+export function validRendererMetadata(value: unknown): value is RendererMetadata {
+  if (!object(value) || typeof value.id !== 'string' || value.id.length > 256 || typeof value.name !== 'string' || value.name.length > 128 || !Array.isArray(value.eventTypes) || value.eventTypes.length < 1 || value.eventTypes.length > 64 || !value.eventTypes.every((x: unknown) => typeof x === 'string' && x.length <= 128) || !Array.isArray(value.examples) || value.examples.length < 1 || value.examples.length > 8) return false;
+  if (value.tool !== undefined && typeof value.tool !== 'string' || value.harness !== undefined && typeof value.harness !== 'string') return false;
+  if (value.aliases !== undefined && (!Array.isArray(value.aliases) || !value.aliases.every((x: unknown) => typeof x === 'string'))) return false;
+  if (value.updateMode !== undefined && !['semantic','streaming'].includes(value.updateMode) || value.extendedLayout !== undefined && value.extendedLayout !== 'header-detail') return false;
+  return value.examples.every((example: unknown) => object(example) && typeof example.type === 'string' && typeof example.raw === 'string' && example.raw.length <= 2 * 1024 * 1024 && validEventRendering({ ...example, rendererId: value.id }));
+}
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
 export interface Skill { name: string; description: string; gitUrl?: string; [key: string]: unknown }
@@ -165,10 +182,9 @@ export class RpcClient extends EventEmitter {
         const frame = JSON.parse(line);
         if (frame.kind === 'event' && Number.isSafeInteger(frame.seq) && typeof frame.type === 'string') {
           this.emit('event', frame as ServerEvent);
-        } else if (frame.kind === 'presentation' && Number.isSafeInteger(frame.seq) &&
-          typeof frame.rendering?.rendererId === 'string' && ['summary', 'extended', 'full'].every(level => typeof frame.rendering[level] === 'string') &&
-          (frame.rendering.subtype === undefined || typeof frame.rendering.subtype === 'string')) {
-          this.emit('presentation', frame.seq, frame.rendering as EventRendering);
+        } else if (frame.kind === 'presentation') {
+          if (Number.isSafeInteger(frame.seq) && validEventRendering(frame.rendering)) this.emit('presentation', frame.seq, frame.rendering as EventRendering);
+          else this.emit('diagnostic', 'Ignored malformed presentation sidecar');
         } else if (frame.kind === 'response') {
           if (frame.id === null) {
             this.emit('diagnostic', `${frame.error?.code ?? 'PROTOCOL'}: ${frame.error?.message ?? 'Uncorrelated response'}`);

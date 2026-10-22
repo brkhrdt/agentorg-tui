@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type SkillReconciliation, type SkillRetained, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type SkillReconciliation, type SkillRetained, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability, validEventRendering, validRendererMetadata } from './protocol.js';
 import { Store } from './store.js';
 import { DEFAULT_HISTORY, historySettings, type HistorySettings } from './settings.js';
 import type { ImageScope } from './agent-editor.js';
@@ -159,7 +159,7 @@ export class Session extends EventEmitter {
     this.renderers = [];
     if (this.renderingCapability) {
       const catalog = await client.request<{ version: number; renderers: RendererMetadata[] }>(this.renderingCapability.catalog, {});
-      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest && catalog.version === 1) this.renderers = catalog.renderers;
+      if (client === this.client && !this.stopped && skillsRequest === this.skillsRequest && catalog?.version === 1 && Array.isArray(catalog.renderers)) this.renderers = catalog.renderers.filter(validRendererMetadata);
     }
     const serverSettings = snapshot.capabilities?.serverSettings;
     this.serverSettingsCapability = serverSettings?.version === 1 && ['list', 'get', 'update'].every(key => typeof serverSettings.endpoints?.[key as keyof typeof serverSettings.endpoints] === 'string') ? serverSettings : undefined;
@@ -365,7 +365,7 @@ export class Session extends EventEmitter {
           window.seqs.add(event.seq);
           this.store.ingest(event, 'history');
           const rendering = page.renderings?.[event.seq];
-          if (rendering && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
+          if (validEventRendering(rendering) && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
         }
         received += events.length;
         bytes += Buffer.byteLength(JSON.stringify(page));
@@ -526,7 +526,7 @@ export class Session extends EventEmitter {
       for (const event of events) {
         this.store.ingest(event);
         const rendering = page.renderings?.[event.seq];
-        if (rendering && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
+        if (validEventRendering(rendering) && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
       }
       received += events.length;
       bytes += Buffer.byteLength(JSON.stringify(page));

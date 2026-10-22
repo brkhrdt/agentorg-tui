@@ -1,8 +1,17 @@
 import { describe, expect, test } from 'bun:test';
-import { ApiError, RpcClient, type ServerEvent } from '../src/protocol.js';
+import { ApiError, RpcClient, validEventRendering, validRendererMetadata, type ServerEvent } from '../src/protocol.js';
 import { event, mockServer, respond, send, waitFor } from './helpers.js';
 
 describe('Unix JSONL transport', () => {
+  test('presentation sidecars validate all additive semantic metadata and reject malformed hints', () => {
+    const base = { rendererId: 'core', summary: 'head', extended: 'head\\nstatus', full: 'full' };
+    expect(validEventRendering({ ...base, subtype: 'mcp__agentorg__get_operation', canonicalTool: 'get_operation', updateMode: 'semantic', extendedLayout: 'header-detail' })).toBe(true);
+    expect(validEventRendering({ ...base, updateMode: 'tail' })).toBe(false);
+    expect(validEventRendering({ ...base, extendedLayout: 'header-first' })).toBe(false);
+    expect(validEventRendering({ ...base, extendedDiff: { prefix: 'a', before: 1, after: 'b' } })).toBe(false);
+    expect(validRendererMetadata({ id: 'core', name: 'Core', eventTypes: ['tool.result'], tool: 'get_operation', aliases: ['mcp__agentorg__get_operation'], updateMode: 'semantic', extendedLayout: 'header-detail', examples: [{ type: 'tool.result', ...base, raw: '{}' }] })).toBe(true);
+    expect(validRendererMetadata({ id: 'core', name: 'Core', eventTypes: 'tool.result', examples: [] })).toBe(false);
+  });
   test('fragmented UTF-8, CRLF, U+2028, events before responses and out-of-order replies', async () => {
     const requests: any[] = [];
     const mock = await mockServer((socket, request) => {

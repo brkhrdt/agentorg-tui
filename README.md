@@ -417,8 +417,9 @@ not a server configuration change. The panel hides below 60 columns/16 rows;
 level controls still work. Full/raw previews are explicitly bounded excerpts,
 not limits on actual chat content. Older servers use local generic examples.
 
-Server precedence is harness renderer → configured server default → generic.
-Pi initially supplies distinct read/bash/edit/write call/update/result styles:
+Tool-event precedence is exact harness emitted-identity renderer → canonical per-tool renderer → configured server default → generic. Explicit harness aliases (for example Pi's `mcp__agentorg__get_operation`) affect matching only; displayed/raw identity and subtype preferences remain emitted names. Core renders AgentOrg's fourteen public MCP tools with stable action headings and domain status/count details; Pi owns its native formatting. MCP headings describe requests, not implicit success, and distinguish tool invocation status from returned operation/agent/batch status. Semantic updates keep their priority detail instead of using the shell streaming tail.
+
+Pi supplies distinct read/bash/edit/write call/update/result styles:
 paths/ranges and line counts, shell commands/exit information, edit diffs, and
 write sizes/content. Headers are compact: **`$` bash**, **`<` read**, **`>` write**,
 **`Δ` edit**, and **`• toolname`** for unknown/MCP tools. There is no `tool.call:`

@@ -52,6 +52,21 @@ test('extended output truncates wrapped overflow with an ellipsis after two term
   for (const row of rendered.split('\n')) expect(stringWidth(row)).toBeLessThanOrEqual(20);
 });
 
+test('MCP update previews preserve semantic renderer details instead of replacing them with rolling output', () => {
+  const update = event(1, 'tool.update', { title: 'wait_operation', status: 'in_progress', rawInput: { operationId: 'op-1' }, rawOutput: { status: 'running', progress: 3 } });
+  const presentation: EventRendering = { rendererId: 'core.tools', subtype: 'wait_operation', updateMode: 'semantic', extendedLayout: 'header-detail', summary: '• Wait operation op-1', extended: `• Wait operation op-1\nstatus running · 3 steps`, full: `• Wait operation op-1\n\nstatus running · 3 steps` };
+  expect(stripAnsi(renderEvent(update, 2, 80, presentation))).toContain('status running · 3 steps');
+  expect(stripAnsi(renderEvent(update, 3, 80, presentation))).toContain('status running · 3 steps');
+  const narrow = stripAnsi(renderEvent(update, 2, 12, { ...presentation, summary: '• Wait operation with an exceptionally long operation identifier', extended: `• Wait operation with an exceptionally long operation identifier\nterminal status: stopped` }));
+  expect(narrow.split('\n')[1]).toContain('terminal');
+  for (const width of [1, 2, 3, 5, 6, 12, 20, 23, 24, 25]) {
+    const result = stripAnsi(renderEvent(update, 2, width, { ...presentation, summary: '• Wait operation ' + 'x'.repeat(80), extended: `• Wait operation ${'x'.repeat(80)}\nstopped · returned status` })).split('\n');
+    expect(result).toHaveLength(2);
+    if (width >= 8) expect(result[1]).toContain('stopped');
+    for (const row of result) expect(stringWidth(row)).toBeLessThanOrEqual(width);
+  }
+});
+
 test('tool updates show the latest output row in extended and five rows in full', () => {
   const update = event(1, 'tool.update', { title: 'bash', status: 'in_progress', rawInput: { command: 'long-running' }, rawOutput: { content: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive\nsix' }], details: {} } });
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ long-running', extended: '$ long-running\nsix', full: '$ long-running\n\n```\none\ntwo\nthree\nfour\nfive\nsix\n```' };

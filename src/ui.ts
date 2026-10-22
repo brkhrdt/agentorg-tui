@@ -1525,12 +1525,12 @@ export class UI {
       this.footer.setContent(' ↑↓ field  Space toggle  ←→ reorder  1–9/0 position  z defaults  ? keys  Esc tree');
     } else if (this.view === 'filters' || this.view === 'levels') {
       const currentType = this.menuTypes[this.menuIndex];
-      const subtypes = this.session.renderers.flatMap(renderer => renderer.tool ? renderer.eventTypes.map(type => `${type}:${renderer.tool}`) : []);
+      const subtypes = this.session.renderers.flatMap(renderer => [...new Set([renderer.tool, ...(renderer.aliases ?? [])].filter((tool): tool is string => !!tool))].flatMap(tool => renderer.eventTypes.map(type => `${type}:${tool}`)));
       this.menuTypes = this.settings.types([...store.discovered, ...(this.view === 'levels' ? subtypes : [])]).filter(type => this.view === 'levels' || !type.includes(':'));
       if (currentType) this.menuIndex = Math.max(0, this.menuTypes.indexOf(currentType));
       const type = this.menuTypes[this.menuIndex] ?? '';
       const [parent, subtype] = type.split(':');
-      const candidates = this.session.renderers.filter(renderer => renderer.eventTypes.includes(parent!) && (!renderer.tool || renderer.tool === subtype))
+      const candidates = this.session.renderers.filter(renderer => renderer.eventTypes.includes(parent!) && (!renderer.tool || renderer.tool === subtype || renderer.aliases?.includes(subtype ?? '')))
         .sort((a, b) => Number(b.harness === agent?.settings.harness) - Number(a.harness === agent?.settings.harness));
       const preview = candidates[this.previewIndex % Math.max(1, candidates.length)] ?? genericPreview(parent!);
       const height = Number(this.screen.height);

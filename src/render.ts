@@ -225,7 +225,7 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     const data = object(event.data);
     const output = data.rawOutput ?? data.content;
     // A renderer's extended text may be a diff or status, not streamed output.
-    if (event.type === 'tool.update' && output !== undefined && (level === 2 || level === 3)) {
+    if (event.type === 'tool.update' && output !== undefined && rendering.updateMode !== 'semantic' && (level === 2 || level === 3)) {
       const text = textContent(output);
       const lines = text === '' ? [] : logicalLines(text).map(clean);
       if (lines.length > 1 && lines.at(-1) === '') lines.pop();
@@ -244,6 +244,12 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     }
     if (level === 1) return renderTreeEvent(event, width, rendering, colors);
     if (level === 2) {
+      if (rendering.extendedLayout === 'header-detail') {
+        const [detail] = logicalLines(rendering.extended).slice(1);
+        const heading = clipStyled(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors), width);
+        const priority = clipStyled(markdown(detail ?? 'Status unavailable', width, true, colors), width);
+        return `${heading}\n${priority}`;
+      }
       const diff = rendering.extendedDiff;
       if (isTool(event) && diff && [diff.prefix, diff.before, diff.after].every(text => typeof text === 'string')) {
         const prefix = clean(diff.prefix).replace(/\s+/g, ' ').trim();
