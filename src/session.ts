@@ -450,7 +450,7 @@ export class Session extends EventEmitter {
     if (before === undefined) return this.followChat(agentId);
     window.following = false;
     this.store.setActiveChat(this.activeChat, true, before);
-    return this.loadChat(agentId, window, before);
+    return this.loadChat(agentId, window, before, true);
   }
   pauseChat(agentId: string, anchorSeq?: number): void {
     const window = this.chats.get(agentId);
@@ -469,7 +469,7 @@ export class Session extends EventEmitter {
     this.chats.delete(agentId);
     return this.openChat(agentId);
   }
-  private loadChat(agentId: string, window: ChatWindow, before: number): Promise<void> {
+  private loadChat(agentId: string, window: ChatWindow, before: number, olderPage = false): Promise<void> {
     const client = this.client;
     if (!client || this.stopped) { window.valid = false; return Promise.reject(new Error('Server is not connected')); }
     const work = async () => {
@@ -487,7 +487,7 @@ export class Session extends EventEmitter {
         if (!events.length) { window.hasMore = false; break; }
         for (const event of events) {
           window.seqs.add(event.seq);
-          this.store.ingest(event, 'history');
+          this.store.ingest(event, olderPage ? 'chat-history' : 'history');
           const rendering = page.renderings?.[event.seq];
           if (validEventRendering(rendering) && this.store.events.has(event.seq)) this.store.present(event.seq, rendering);
         }

@@ -3,7 +3,7 @@ import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
-import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
+import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, TABLE_FIELDS, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
 import { genericPreview, rendererPreview, rendererCandidates, rendererSubtypes } from './renderer-preview.js';
@@ -15,18 +15,9 @@ import type { TreeRow } from './store.js';
 import { enablePathKeys, type PathCandidate } from './path-input.js';
 import { filterVolumes, type VolumeChoice } from './volume-input.js';
 import { renderAgentInfo } from './agent-info.js';
+import { layoutChatParts, resolveChatAnchor, visibleChatOrigin, type ChatBlockLayout, type ChatLayoutPart, type ChatViewportAnchor } from './chat-viewport.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
-type ChatBlockLayout = { identity: string; seq: number; startRow: number; rows: number };
-type ChatViewportAnchor = { identity: string; seq: number; rowOffset: number };
-
-function chatBlockIdentity(event: ServerEvent): string {
-  const data = event.data && typeof event.data === 'object' ? event.data as Record<string, any> : {};
-  const prefix = `${event.agentId ?? ''}\0${event.generation ?? ''}\0`;
-  if (event.type === 'agent.message' && typeof data.messageId === 'string') return `${prefix}message\0${data.messageId}`;
-  if (['tool.call', 'tool.update', 'tool.result'].includes(event.type) && typeof data.toolCallId === 'string') return `${prefix}tool\0${data.toolCallId}`;
-  return `${prefix}${event.type}\0${event.seq}`;
-}
 
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
@@ -332,11 +323,12 @@ export class UI {
     this.tree.focus();
     this.draw();
   }
+  private chatGroupIdentity(event: ServerEvent): string { return chatGroupIdentity(event); }
   private chatAtBottom(): boolean {
     const viewport = Math.max(0, Number(this.chat.height));
     return this.chat.getScrollHeight() <= viewport || this.chat.getScrollPerc() >= 100;
   }
-  private captureChatAnchor(scroll = this.chat.getScroll()): ChatViewportAnchor | undefined {
+  private captureChatAnchor(scroll = visibleChatOrigin(this.chat)): ChatViewportAnchor | undefined {
     if (!this.chatLayout.length) return undefined;
     const row = Math.max(0, Math.floor(scroll));
     const block = this.chatLayout.find(item => row >= item.startRow && row < item.startRow + item.rows) ??
@@ -344,11 +336,9 @@ export class UI {
     return block ? { identity: block.identity, seq: block.seq, rowOffset: Math.max(0, row - block.startRow) } : undefined;
   }
   private restoreChatAnchor(anchor: ChatViewportAnchor | undefined, layout: ChatBlockLayout[]): number {
-    if (!anchor || !layout.length) return 0;
-    const exact = layout.find(item => item.identity === anchor.identity);
-    const fallback = exact ?? layout.find(item => item.seq >= anchor.seq) ?? layout.at(-1);
-    this.chatAnchorLost = !exact;
-    return fallback ? fallback.startRow + Math.min(anchor.rowOffset, fallback.rows - 1) : 0;
+    const result = resolveChatAnchor(anchor, layout);
+    this.chatAnchorLost = result.lost;
+    return result.row;
   }
   private updateChatViewport(): void {
     if (this.view !== 'chat' || this.adjustingChatViewport) return;
@@ -1374,7 +1364,7 @@ export class UI {
   }
   private loadOlderChat(): void {
     const id = this.chatAgent;
-    if (this.view !== 'chat' || !id || this.chat.getScroll() > 0 || this.session.chatLoading(id) || !this.session.chatHasMore(id)) return;
+    if (this.view !== 'chat' || !id || visibleChatOrigin(this.chat) > 0 || this.session.chatLoading(id) || !this.session.chatHasMore(id)) return;
     const anchor = this.captureChatAnchor();
     const scrollGeneration = this.chatScrollGeneration;
     void this.session.olderChat(id).then(() => {
@@ -1397,6 +1387,7 @@ export class UI {
   private resizeComposer(): void {
     if (this.view !== 'prompt' && this.view !== 'chat') return;
     const previous = Number(this.composer.height);
+    const anchor = this.view === 'chat' && !this.follow ? this.captureChatAnchor() : undefined;
     const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - 7));
     this.promptTop.bottom = rows + 3;
     this.tree.bottom = rows + 4;
@@ -1404,6 +1395,11 @@ export class UI {
     if (rows !== previous) {
       if (this.view === 'prompt') this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
       else if (this.follow) this.chat.setScrollPerc(100);
+      else if (anchor) {
+        this.adjustingChatViewport = true;
+        this.chat.setScroll(this.restoreChatAnchor(anchor, this.chatLayout));
+        this.adjustingChatViewport = false;
+      }
     }
   }
   private setView(view: View): void {
@@ -1885,7 +1881,7 @@ export class UI {
       } else {
         const tailReserve = Math.min(Math.floor(displayLimit / 3), 64 * 1024);
         for (let index = groups.length - 1; index >= 0 && used < tailReserve; index--) renderBlock(index, Math.min(displayLimit - used, tailReserve - used));
-        const anchorIndex = anchor ? groups.findIndex(event => chatBlockIdentity(event) === anchor.identity) : -1;
+        const anchorIndex = anchor ? groups.findIndex(event => this.chatGroupIdentity(event) === anchor.identity) : -1;
         if (anchorIndex >= 0) renderBlock(anchorIndex, displayLimit - used);
         if (anchorIndex >= 0) {
           for (let distance = 1; distance < groups.length && used < displayLimit; distance++) {
@@ -1904,27 +1900,19 @@ export class UI {
         ...(this.session.chatCoverageIncomplete(this.chatAgent!) ? ['[Chat window has gaps; scroll to the latest to reload retained history.]'] : []),
       ];
       const ordered = [...selected.entries()].sort((a, b) => a[0] - b[0]);
-      const anchorRetained = !anchor || ordered.some(([, block]) => chatBlockIdentity(block.event) === anchor.identity);
+      const anchorRetained = !anchor || ordered.some(([, block]) => this.chatGroupIdentity(block.event) === anchor.identity);
       this.chatAnchorLost = !!anchor && !anchorRetained;
       if (this.chatAnchorLost) headers.push('[View moved to the nearest retained message; the previous anchor was evicted.]');
-      const parts: Array<{ text: string; event?: ServerEvent }> = headers.map(text => ({ text }));
+      const parts: ChatLayoutPart[] = headers.map(text => ({ text }));
       let previousIndex = -1;
       for (const [index, block] of ordered) {
         if (previousIndex >= 0 && index > previousIndex + 1) parts.push({ text: '[Messages omitted to keep the displayed history within its budget.]' });
-        parts.push({ text: block.text, event: block.event });
+        parts.push({ text: block.text, event: block.event, identity: this.chatGroupIdentity(block.event) });
         previousIndex = index;
       }
       if (!parts.length) parts.push({ text: 'No tracked events yet.' });
       const content = parts.map(part => part.text).join('\n\n');
-      const nextLayout: ChatBlockLayout[] = [];
-      let row = 0;
-      for (let index = 0; index < parts.length; index++) {
-        const part = parts[index]!;
-        if (index) row += 2;
-        const rows = part.text.split('\n').length;
-        if (part.event) nextLayout.push({ identity: chatBlockIdentity(part.event), seq: part.event.seq, startRow: row, rows });
-        row += rows;
-      }
+      const nextLayout = layoutChatParts(parts, Math.max(1, width - 1));
       if (content !== this.lastChat) {
         this.adjustingChatViewport = true;
         this.chat.setContent(content); this.lastChat = content;

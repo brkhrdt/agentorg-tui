@@ -105,7 +105,7 @@ test('startup fetches only a recent tail; chat loads its own tail and older page
     await session.olderChat('worker');
     expect(session.store.events.size).toBeLessThanOrEqual(policy.recentEvents);
     const retained = session.chatEvents('worker').map(e => e.seq);
-    expect(retained).toEqual([45, 46, 47, 48, 49, 50]);
+    expect(retained).toEqual([43, 44, 45, 46, 49, 50]);
     expect(retained).toEqual([...retained].sort((a, b) => a - b));
     expect(session.chatCoverageIncomplete('worker')).toBe(true);
     session.leaveChat();
@@ -119,6 +119,41 @@ test('startup fetches only a recent tail; chat loads its own tail and older page
     for (const socket of mock.sockets) socket.destroy();
     await waitFor(() => requests.filter(r => r.method === 'organization.snapshot').length >= 2 && session.status === 'connected');
     expect(requests.filter(r => r.method === 'events.history' && !r.params.agentId).every(r => r.params.before === 101)).toBe(true);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
+test('older-page traversal advances past cache capacity while preserving the bounded live tail', async () => {
+  const history = Array.from({ length: 30 }, (_, i) => event(i + 1, 'agent.message', { content: { text: `message ${i + 1}` } }, { agentId: 'root' }));
+  const requests: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 30, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') {
+      const { after = 0, before = Infinity, limit, agentId } = request.params;
+      const matches = history.filter(item => item.seq > after && item.seq < before && (!agentId || item.agentId === agentId));
+      respond(socket, request.id, { events: matches.slice(-limit), hasMore: matches.length > limit, oldestSeq: 1, latestSeq: 30, expired: false });
+    }
+  });
+  const session = new Session(mock.path, { history: policy });
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    await session.openChat('root');
+    const cursors: number[] = [];
+    for (let page = 0; page < 20 && session.chatHasMore('root'); page++) {
+      const before = session.chatEvents('root')[0]?.seq;
+      expect(before).toBeDefined();
+      cursors.push(before!);
+      await session.olderChat('root');
+      expect(session.store.events.size).toBeLessThanOrEqual(policy.recentEvents);
+    }
+    expect(cursors.length).toBeGreaterThan(6);
+    expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1]!)).toBe(true);
+    expect(session.chatEvents('root').some(item => item.seq === 1)).toBe(true);
+    expect(session.chatEvents('root').slice(-2).map(item => item.seq)).toEqual([29, 30]);
+    expect(session.store.events.has(30)).toBe(true);
+    expect(session.store.events.size).toBeLessThanOrEqual(policy.recentEvents);
+    expect(requests.filter(request => request.method === 'events.history' && request.params.agentId === 'root').length).toBeGreaterThan(6);
   } finally { session.close(); await running; await mock.close(); }
 });
 

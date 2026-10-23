@@ -49,6 +49,8 @@ function compactPreview(event: ServerEvent): ServerEvent {
 }
 export interface TreeRow { agent: Agent; depth: number }
 
+type HistoryCacheEntry = { bytes: number; recent: boolean; loadedAt?: number; pending?: boolean; older?: boolean };
+
 export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
   operations = new Map<string, Operation>();
@@ -69,7 +71,7 @@ export class Store extends EventEmitter {
   private latestIndexedSeq = -1;
   private latestDirty = false;
   private policy: HistorySettings = { ...DEFAULT_HISTORY };
-  private cache = new Map<number, { bytes: number; recent: boolean; loadedAt?: number; pending?: boolean }>();
+  private cache = new Map<number, HistoryCacheEntry>();
   // Keep sequence IDs even when pinned history displaces live payloads, so old
   // chat records cannot remain "recent" forever merely by staying protected.
   private recentSequences = new Set<number>();
@@ -204,11 +206,18 @@ export class Store extends EventEmitter {
       return;
     }
     const activeTail = new Set([...this.cache.keys()].filter(active).sort((a, b) => b - a).slice(0, Math.max(2, this.policy.chatPageSize)));
-    const priority = (seq: number, entry: { recent: boolean; loadedAt?: number; pending?: boolean }) =>
+    const priority = (seq: number, entry: HistoryCacheEntry) =>
       active(seq) && entry.loadedAt !== undefined
-        ? seq === this.activeAnchorSeq ? 4 : activeTail.has(seq) ? 3 : 2
+        ? seq === this.activeAnchorSeq ? 5 : activeTail.has(seq) ? 4 : this.browsingOlder && entry.older ? 3 : 2
         : entry.recent || entry.pending ? 1 : 0;
-    const candidates = [...this.cache].sort(([a, x], [b, y]) => priority(a, x) - priority(b, y) || a - b);
+    const candidates = [...this.cache].sort(([a, x], [b, y]) => {
+      const rank = priority(a, x) - priority(b, y);
+      if (rank) return rank;
+      // During older paging, discard the high end of a historical band first:
+      // the newly fetched lower page can then advance the next before cursor.
+      if (this.browsingOlder && (priority(a, x) === 2 || priority(a, x) === 3)) return b - a;
+      return a - b;
+    });
     for (const [seq] of candidates) {
       if (this.cache.size <= this.policy.recentEvents && this.cachedBytes <= this.policy.cacheBytes) break;
       this.forget(seq); changed = true;
@@ -253,7 +262,7 @@ export class Store extends EventEmitter {
     this.latestDirty = true;
     this.emit('change');
   }
-  ingest(event: ServerEvent, source: 'live' | 'history' | 'chat-live' = 'live'): void {
+  ingest(event: ServerEvent, source: 'live' | 'history' | 'chat-history' | 'chat-live' = 'live'): void {
     const stateEvent = event;
     if (Buffer.byteLength(JSON.stringify(event)) > this.policy.cacheBytes) {
       const data = JSON.stringify(event.data ?? null);
@@ -261,7 +270,8 @@ export class Store extends EventEmitter {
     }
     const entry = this.cache.get(event.seq) ?? { bytes: 0, recent: false };
     entry.pending = false;
-    if (source !== 'history') this.recentSequences.add(event.seq);
+    if (source === 'chat-history') entry.older = true;
+    if (source !== 'history' && source !== 'chat-history') this.recentSequences.add(event.seq);
     entry.recent ||= this.recentSequences.has(event.seq);
     if (source !== 'live') entry.loadedAt = Date.now();
     this.cache.set(event.seq, entry);

@@ -29,6 +29,10 @@ export function cell(value: string, width: number): string {
 }
 const pretty = (value: unknown) => JSON.stringify(value, null, 2) ?? String(value);
 const isTool = (event: ServerEvent) => ['tool.call', 'tool.update', 'tool.result'].includes(event.type);
+const chatGroupIdentities = new WeakMap<ServerEvent, string>();
+export function chatGroupIdentity(event: ServerEvent): string {
+  return chatGroupIdentities.get(event) ?? `${event.agentId ?? ''}\0${event.generation ?? ''}\0${event.type}\0${event.seq}`;
+}
 export type RenderColors = Partial<Record<ColorSetting, string>>;
 const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: RenderColors = {}) => {
   const code = color === '38;5;250' ? color
@@ -332,6 +336,16 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
 /** Coalesce compatible text chunks and, optionally, replace tool lifecycle phases in chat. */
 export function chatGroups(events: ServerEvent[], settings: Settings, renderings: Map<number, EventRendering> = new Map()): ServerEvent[] {
   const groups: ServerEvent[] = [];
+  const identities = new Map<number, string>();
+  const add = (event: ServerEvent, identity = `${event.agentId ?? ''}\0${event.generation ?? ''}\0${event.type}\0${event.seq}`) => {
+    const index = groups.push(event) - 1;
+    identities.set(index, identity); chatGroupIdentities.set(event, identity);
+    return index;
+  };
+  const replace = (index: number, event: ServerEvent) => {
+    const identity = identities.get(index) ?? `${event.agentId ?? ''}\0${event.generation ?? ''}\0${event.type}\0${event.seq}`;
+    groups[index] = event; identities.set(index, identity); chatGroupIdentities.set(event, identity);
+  };
   const toolCalls = new Map<string, number>();
   let adjacent = false;
   for (const event of events) {
@@ -345,10 +359,10 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
     else if (callId) {
       const priorIndex = toolCalls.get(callId);
       if (settings.tracked(event.type)) {
-        if (priorIndex !== undefined) groups[priorIndex] = event;
+        if (priorIndex !== undefined) replace(priorIndex, event);
         else {
-          toolCalls.set(callId, groups.length);
-          groups.push(event);
+          const identity = `${event.agentId}\0${event.generation ?? ''}\0tool\0${data.toolCallId}\0${event.seq}`;
+          toolCalls.set(callId, add(event, identity));
         }
       }
       if (event.type === 'tool.result') toolCalls.delete(callId);
@@ -358,9 +372,8 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
     if (!settings.tracked(event.type)) { adjacent = false; continue; }
     const previous = adjacent ? groups[groups.length - 1] : undefined;
     const merged = !raw && !rendering && !(previous && renderings.has(previous.seq)) ? appendMessageChunk(previous, event) : undefined;
-    if (merged && previous) {
-      groups[groups.length - 1] = { ...previous, data: merged.data };
-    } else groups.push(event);
+    if (merged && previous) replace(groups.length - 1, { ...previous, data: merged.data });
+    else add(event);
     adjacent = true;
   }
   return groups;
