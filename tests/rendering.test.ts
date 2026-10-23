@@ -52,6 +52,21 @@ test('extended output truncates wrapped overflow with an ellipsis after two term
   for (const row of rendered.split('\n')) expect(stringWidth(row)).toBeLessThanOrEqual(20);
 });
 
+test('MCP update previews preserve semantic renderer details instead of replacing them with rolling output', () => {
+  const update = event(1, 'tool.update', { title: 'wait_operation', status: 'in_progress', rawInput: { operationId: 'op-1' }, rawOutput: { status: 'running', progress: 3 } });
+  const presentation: EventRendering = { rendererId: 'core.tools', subtype: 'wait_operation', updateMode: 'semantic', extendedLayout: 'header-detail', summary: '• Wait operation op-1', extended: `• Wait operation op-1\nstatus running · 3 steps`, full: `• Wait operation op-1\n\nstatus running · 3 steps` };
+  expect(stripAnsi(renderEvent(update, 2, 80, presentation))).toContain('status running · 3 steps');
+  expect(stripAnsi(renderEvent(update, 3, 80, presentation))).toContain('status running · 3 steps');
+  const narrow = stripAnsi(renderEvent(update, 2, 12, { ...presentation, summary: '• Wait operation with an exceptionally long operation identifier', extended: `• Wait operation with an exceptionally long operation identifier\nterminal status: stopped` }));
+  expect(narrow.split('\n')[1]).toContain('terminal');
+  for (const width of [1, 2, 3, 5, 6, 12, 20, 23, 24, 25]) {
+    const result = stripAnsi(renderEvent(update, 2, width, { ...presentation, summary: '• Wait operation ' + 'x'.repeat(80), extended: `• Wait operation ${'x'.repeat(80)}\nstopped · returned status` })).split('\n');
+    expect(result).toHaveLength(2);
+    if (width >= 8) expect(result[1]).toContain('stopped');
+    for (const row of result) expect(stringWidth(row)).toBeLessThanOrEqual(width);
+  }
+});
+
 test('tool updates show the latest output row in extended and five rows in full', () => {
   const update = event(1, 'tool.update', { title: 'bash', status: 'in_progress', rawInput: { command: 'long-running' }, rawOutput: { content: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive\nsix' }], details: {} } });
   const presentation: EventRendering = { rendererId: 'core.tools', summary: '$ long-running', extended: '$ long-running\nsix', full: '$ long-running\n\n```\none\ntwo\nthree\nfour\nfive\nsix\n```' };
@@ -140,6 +155,56 @@ test('only tool symbols use lifecycle colors; commands, filenames and output sta
     expect(stripAnsi(renderEvent(e, 3, 100))).not.toContain('tool.call');
     expect(stripAnsi(renderEvent(e, 3, 100))).not.toContain('pending');
   }
+});
+
+test('AgentOrg tools use the triangle marker and prompt targets get an independent configurable accent', () => {
+  const target = '@child-7';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} Review this change`, extended: `${target} Review this change\nReturned status: queued`, full: `${target} Review this change\n\nTool: prompt_subagent`, toolSymbol: '∴', toolTarget: target, extendedLayout: 'header-detail' };
+  for (const [type, status, lifecycleColor] of [['tool.call', 'pending', '33'], ['tool.update', 'in_progress', '38;5;208'], ['tool.result', 'completed', '32']]) {
+    const e = event(1, type, { title: 'mcp__agentorg__prompt_subagent', status });
+    for (const level of [1, 2, 3] as const) {
+      const text = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+      expect(text).toStartWith(`\x1b[${lifecycleColor}m∴\x1b[0m \x1b[35m${target}\x1b[0m Review this change`);
+      if (level < 3) expect(stripAnsi(text)).not.toContain('prompt_subagent');
+    }
+    expect(stripAnsi(renderEvent(e, 4, 100, presentation))).toContain('mcp__agentorg__prompt_subagent');
+  }
+});
+
+test('long prompt targets do not steal or clip the prompt body at narrow widths', () => {
+  const target = '@research-worker-with-a-long-name', prompt = 'FIRST second';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} ${prompt}`, extended: `${target} ${prompt}`, full: `${target} ${prompt}`, toolSymbol: '∴', toolTarget: target, toolPrompt: prompt };
+  const e = event(1, 'tool.call', { title: 'mcp__agentorg__prompt_subagent', status: 'pending', rawInput: { agentId: 'session-1', text: prompt } });
+  for (const width of [20, 32]) {
+    const full = renderEvent(e, 3, width, presentation);
+    expect(stripAnsi(full)).toMatch(/FIRST\s+second/);
+    for (const line of full.split('\n')) expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(width);
+    const summary = renderEvent(e, 1, width, presentation);
+    expect(stripAnsi(summary)).toContain('F');
+    expect(stringWidth(stripAnsi(summary))).toBeLessThanOrEqual(width);
+    const extended = renderEvent(e, 2, width, presentation);
+    expect(stripAnsi(extended)).toMatch(/FIRST\s+second/);
+    expect(extended.split('\n').length).toBeLessThanOrEqual(2);
+  }
+});
+
+test('prompt_subagent levels bound summaries/details and preserve full Markdown prompts', () => {
+  const prompt = '**Review the change** and inspect `src/main.ts`. '.repeat(9) + 'Keep the final recommendation concise.';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `@Reviewer ${prompt}`, extended: `@Reviewer ${prompt}`, full: `@Reviewer ${prompt}`, toolSymbol: '∴', toolTarget: '@Reviewer', toolPrompt: prompt };
+  const e = event(1, 'tool.call', { title: 'mcp__agentorg__prompt_subagent', status: 'pending', rawInput: { agentId: 'session-1', text: prompt } });
+  const summary = renderEvent(e, 1, 42, presentation);
+  expect(summary.split('\n')).toHaveLength(1);
+  expect(stringWidth(stripAnsi(summary))).toBeLessThanOrEqual(42);
+  expect(stripAnsi(summary)).toContain('…');
+  const extended = renderEvent(e, 2, 42, presentation);
+  expect(extended.split('\n')).toHaveLength(2);
+  expect(extended).toContain('…');
+  expect(stripAnsi(extended)).toContain('src/main.ts');
+  const full = renderEvent(e, 3, 42, presentation);
+  expect(stripAnsi(full)).toMatch(/Keep the final\s+recommendation concise\./);
+  expect(full).toContain('\x1b[1mReview the change\x1b[0m');
+  expect(full).toContain('\x1b[33m∴\x1b[0m');
+  expect(stripAnsi(renderEvent(e, 4, 10000, presentation))).toBe(JSON.stringify(e, null, 2));
 });
 
 test('edit filenames stay plain while only the symbol and signed line counts carry color', () => {
@@ -266,6 +331,25 @@ test('presentation sidecars select tree summaries independently of chat subtype 
   store.reset(); expect(store.renderings.size).toBe(0);
 });
 
+test('MCP level previews select alias-specific Pi examples and retain emitted identity for all public tools', () => {
+  const names = ['create_subagent', 'prompt_subagent', 'get_subagent', 'snapshot_organization', 'stop_subagent', 'restart_subagent', 'restart_subagent_subtree', 'replace_subagent_session', 'remove_subagent', 'modify_subagent', 'get_completion', 'get_operation', 'wait_operation', 'cancel_operation'];
+  for (const tool of names) {
+    const emitted = `mcp__agentorg__${tool}`;
+    const example = (identity: string, subtype?: string) => {
+      const raw = JSON.stringify({ kind: 'event', seq: 0, time: '2026-01-01T00:00:00.000Z', type: 'tool.result', data: { title: identity, status: 'completed', rawInput: { example: tool }, rawOutput: { content: [{ type: 'text', text: '{"status":"completed"}' }], isError: false } } }, null, 2);
+      return { type: 'tool.result', summary: `Example ${identity}`, extended: `Example ${identity} · returned completed`, full: `Example ${identity} · details`, raw, ...(subtype && { subtype }) };
+    };
+    const canonical = example(tool), aliased = example(emitted, emitted);
+    const metadata: RendererMetadata = { id: `core.mcp-${tool}`, name: tool, eventTypes: ['tool.call', 'tool.update', 'tool.result'], tool, aliases: [emitted], examples: [canonical], aliasExamples: { [emitted]: [aliased] } };
+    for (const level of [1, 2, 3, 4] as const) {
+      const preview = rendererPreview(metadata, 'tool.result', level, 120, 40, {}, emitted);
+      expect(preview).toContain(`Example ${emitted}`);
+      if (level === 4) expect(preview).toContain(`"title": "${emitted}"`);
+      expect(preview).not.toContain(`"title": "${tool}"`);
+    }
+  }
+});
+
 test('examples show all four levels when space allows, only the selected level on small terminals', () => {
   const large = rendererPreview(metadata, 'tool.result', 3, 55, 24);
   for (const text of ['1 summary', '2 extended', '3 full', '4 raw', 'Pi read', 'Custom read complete']) expect(large).toContain(text);
@@ -300,6 +384,84 @@ test('Session negotiates server rendering, installs history sidecars and dispatc
     expect(session.store.events.get(2)).not.toHaveProperty('rendering');
   } finally { session.close(); await running; await mock.close(); }
 });
+
+test('terminal level selector displays examples for the real Pi-prefixed AgentOrg MCP identity', async () => {
+  const emitted = 'mcp__agentorg__create_subagent';
+  const example = (type: string, identity = emitted) => ({ type, summary: `AgentOrg example ${identity}`, extended: `AgentOrg example ${identity} · operation status running`, full: `AgentOrg example ${identity} · operation details`, raw: JSON.stringify({ kind: 'event', seq: 0, time: '2026-01-01T00:00:00.000Z', type, data: { title: identity, status: 'completed', rawInput: { operationId: 'operation-1' }, rawOutput: { content: [{ type: 'text', text: '{"status":"running"}' }], isError: false } } }, null, 2), ...(identity === emitted && { subtype: emitted }) });
+  const renderer = { id: 'core.mcp-create-subagent', name: 'Create child · AgentOrg MCP', eventTypes: ['tool.call', 'tool.update', 'tool.result'], tool: 'create_subagent', aliases: [emitted], examples: ['tool.call', 'tool.update', 'tool.result'].map(type => example(type, 'create_subagent')), aliasExamples: { [emitted]: ['tool.call', 'tool.update', 'tool.result'].map(type => example(type)) } };
+  const generic = { id: 'core.tools', name: 'Core generic tool fallback', eventTypes: ['tool.call', 'tool.update', 'tool.result'], examples: ['tool.call', 'tool.update', 'tool.result'].map(type => ({ type, summary: 'unknown', extended: 'unknown', full: 'unknown', raw: JSON.stringify({ kind: 'event', seq: 0, time: '2026-01-01T00:00:00.000Z', type, data: { title: 'unknown', rawInput: { pattern: 'hello' } } }) })) };
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { rendering: { version: 1, catalog: 'events.renderers' } } });
+    else if (request.method === 'events.renderers') respond(socket, request.id, { version: 1, renderers: [generic, renderer] });
+    else if (request.method === 'subscribe') respond(socket, request.id, { seq: 0, liveOnly: true });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory);
+  try {
+    await tui.visible('connected');
+    tui.keys('vl'); await tui.visible('Event rendering levels');
+    const type = `tool.result:${emitted}`;
+    const subtypes = ['tool.call', 'tool.update', 'tool.result'].flatMap(phase => [`${phase}:create_subagent`, `${phase}:${emitted}`]);
+    const index = new Settings().types(subtypes).indexOf(type);
+    tui.keys('\x1b[B'.repeat(index));
+    await tui.visible(type);
+    await tui.visible(`AgentOrg example ${emitted}`);
+    expect(tui.screen()).toContain('Synthetic examples');
+    expect(tui.screen()).not.toContain('No examples available');
+    const canonicalType = 'tool.result:create_subagent';
+    const canonicalIndex = new Settings().types(subtypes).indexOf(canonicalType);
+    const steps = canonicalIndex - index;
+    tui.keys(steps < 0 ? '\x1b[A'.repeat(-steps) : '\x1b[B'.repeat(steps));
+    await tui.visible(canonicalType);
+    await tui.visible('AgentOrg example create_subagent');
+    expect(tui.screen()).not.toContain('Core generic tool fallback');
+  } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
+test('z inheritance for default Pi subtypes survives save/reload and follows the parent level', async () => {
+  const cases = [
+    { phase: 'tool.call', canonical: 'prompt_subagent', parentLevel: 1, defaultLevel: 3 },
+    { phase: 'tool.result', canonical: 'get_operation', parentLevel: 4, defaultLevel: 2 },
+  ] as const;
+  for (const item of cases) {
+    const emitted = `mcp__agentorg__${item.canonical}`, type = `${item.phase}:${emitted}`;
+    const renderer = {
+      id: `core.mcp-${item.canonical}`, name: `${item.canonical} · AgentOrg MCP`, tool: item.canonical,
+      aliases: [emitted], eventTypes: ['tool.call', 'tool.update', 'tool.result'], updateMode: 'semantic', extendedLayout: 'header-detail',
+      examples: ['tool.call', 'tool.update', 'tool.result'].map(phase => ({ type: phase, summary: `Example ${item.canonical}`, extended: `Example ${item.canonical}\nStatus`, full: `Example ${item.canonical}`, raw: JSON.stringify({ kind: 'event', seq: 0, time: 'now', type: phase, data: { title: item.canonical } }) })),
+      aliasExamples: { [emitted]: ['tool.call', 'tool.update', 'tool.result'].map(phase => ({ type: phase, subtype: emitted, summary: `Example ${emitted}`, extended: `Example ${emitted}\nStatus`, full: `Example ${emitted}`, raw: JSON.stringify({ kind: 'event', seq: 0, time: 'now', type: phase, data: { title: emitted } }) })) },
+    };
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { rendering: { version: 1, catalog: 'events.renderers' } } });
+      else if (request.method === 'events.renderers') respond(socket, request.id, { version: 1, renderers: [renderer] });
+      else if (request.method === 'subscribe') respond(socket, request.id, { seq: 0, liveOnly: true });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    });
+    const config = join(mock.directory, 'config.json');
+    const initial = new Settings();
+    if (item.parentLevel !== 1) initial.levels[item.phase] = item.parentLevel;
+    await initial.save(config);
+    const tui = terminalClient(mock.path, mock.directory);
+    try {
+      await tui.visible('connected');
+      const phases = ['tool.call', 'tool.update', 'tool.result'];
+      const subtypes = phases.flatMap(phase => [`${phase}:${item.canonical}`, `${phase}:${emitted}`]);
+      const index = (await Settings.load(config)).types(subtypes).indexOf(type);
+      tui.keys('vl'); await tui.visible('Event rendering levels');
+      tui.keys('\x1b[B'.repeat(index)); await tui.visible(type);
+      expect((await Settings.load(config)).level(item.phase, emitted)).toBe(item.defaultLevel);
+      tui.keys('z');
+      await tui.visible(`Saved ${config}`);
+      const persisted = JSON.parse(await readFile(config, 'utf8'));
+      expect(persisted.inheritedLevels).toContain(type);
+      expect(persisted.levels[type]).toBeUndefined();
+      const reloaded = await Settings.load(config);
+      expect(reloaded.levels[type]).toBeUndefined();
+      expect(reloaded.inheritedLevels.has(type)).toBe(true);
+      expect(reloaded.level(item.phase, emitted)).toBe(item.parentLevel);
+    } finally { await tui.close(); await mock.close(); }
+  }
+}, 15000);
 
 test('terminal level selector previews renderer examples, saves subtype overrides, and tree/raw chat stay independent', async () => {
   const mock = await renderingServer(), tui = terminalClient(mock.path, mock.directory);

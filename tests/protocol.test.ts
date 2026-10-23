@@ -1,8 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { ApiError, RpcClient, type ServerEvent } from '../src/protocol.js';
+import { ApiError, RpcClient, validEventRendering, validRendererMetadata, type ServerEvent } from '../src/protocol.js';
 import { event, mockServer, respond, send, waitFor } from './helpers.js';
 
 describe('Unix JSONL transport', () => {
+  test('presentation sidecars validate all additive semantic metadata and reject malformed hints', () => {
+    const base = { rendererId: 'core', summary: 'head', extended: 'head\\nstatus', full: 'full' };
+    expect(validEventRendering({ ...base, subtype: 'mcp__agentorg__get_operation', canonicalTool: 'get_operation', updateMode: 'semantic', extendedLayout: 'header-detail', toolSymbol: '∴', toolTarget: '@child-1', toolPrompt: '**review**' })).toBe(true);
+    expect(validEventRendering({ ...base, toolSymbol: 'way-too-long-symbol', toolTarget: '@child-1' })).toBe(false);
+    expect(validEventRendering({ ...base, updateMode: 'tail' })).toBe(false);
+    expect(validEventRendering({ ...base, extendedLayout: 'header-first' })).toBe(false);
+    expect(validEventRendering({ ...base, extendedDiff: { prefix: 'a', before: 1, after: 'b' } })).toBe(false);
+    const emitted = 'mcp__agentorg__get_operation';
+    const aliasExample = { type: 'tool.result', ...base, raw: JSON.stringify({ kind: 'event', type: 'tool.result', data: { title: emitted } }), subtype: emitted };
+    expect(validRendererMetadata({ id: 'core', name: 'Core', eventTypes: ['tool.result'], tool: 'get_operation', aliases: [emitted], aliasExamples: { [emitted]: [aliasExample] }, updateMode: 'semantic', extendedLayout: 'header-detail', examples: [{ type: 'tool.result', ...base, raw: '{}' }] })).toBe(true);
+    expect(validRendererMetadata({ id: 'core', name: 'Core', eventTypes: ['tool.result'], aliases: [emitted], aliasExamples: { 'mcp__other__get_operation': [aliasExample] }, examples: [{ type: 'tool.result', ...base, raw: '{}' }] })).toBe(false);
+    expect(validRendererMetadata({ id: 'core', name: 'Core', eventTypes: 'tool.result', examples: [] })).toBe(false);
+  });
   test('fragmented UTF-8, CRLF, U+2028, events before responses and out-of-order replies', async () => {
     const requests: any[] = [];
     const mock = await mockServer((socket, request) => {

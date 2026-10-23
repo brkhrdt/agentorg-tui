@@ -35,18 +35,25 @@ const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: 
     : ansiColor(color in DEFAULT_COLORS ? resolveColor(colors, color as ColorSetting) : color);
   return `\x1b[${code}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${code}m`)}\x1b[0m`;
 };
-function toolColor(event: ServerEvent, tool?: string): ColorSetting | 'gray' {
+function toolColor(event: ServerEvent, tool?: string, invocationError?: boolean): ColorSetting | 'gray' {
   if (event.type === 'tool.call') return 'toolCall';
   if (event.type === 'tool.update') return 'toolUpdate';
   const data = object(event.data), result = object(data.rawOutput);
   const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
     ((tool ?? data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/\bexit(?:ed)?(?: with)? (?:code|status):?\s*(-?\d+)/i)?.[1] : undefined);
-  if (['failed', 'cancelled', 'canceled'].includes(data.status) || result.isError === true || (exit !== undefined && Number(exit) !== 0)) return 'toolFailure';
+  const failedOutput = invocationError ?? (result.isError === true || (exit !== undefined && Number(exit) !== 0));
+  if (failedOutput || ['failed', 'cancelled', 'canceled'].includes(data.status)) return 'toolFailure';
   return data.status === 'completed' ? 'toolSuccess' : 'gray';
 }
 /** Only the symbol carries lifecycle color; edit's signed counts have independent diff colors. */
-function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}): string {
-  const plain = stripAnsi(text);
+function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}, rendering?: Pick<EventRendering, 'toolSymbol' | 'toolTarget' | 'invocationError'>): string {
+  const plain = clean(text);
+  if (rendering?.toolSymbol) {
+    const symbol = clean(rendering.toolSymbol).replace(/\s/g, '');
+    const target = rendering.toolTarget && clean(rendering.toolTarget);
+    const body = target && plain.startsWith(target) ? paint(target, 'agentTarget', colors) + plain.slice(target.length) : plain;
+    return paint(symbol, toolColor(event, tool, rendering.invocationError), colors) + (body ? ` ${body}` : '');
+  }
   const match = /^([\s]*)([$<>Δ•])(?=\s|$)(.*)$/u.exec(plain);
   if (!match) return plain;
   let rest = match[3]!;
@@ -203,6 +210,39 @@ function label(event: ServerEvent): string {
   if (event.type === 'prompt.queued') return 'prompt.queued · user';
   return event.type;
 }
+/** Render AgentOrg delegated prompt text with a bounded summary/detail and complete Markdown view. */
+function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: number, rendering: EventRendering, colors: RenderColors): string {
+  const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
+  const targetText = rendering.toolTarget ? clean(rendering.toolTarget) : '';
+  const target = targetText ? paint(targetText, 'agentTarget', colors) : '';
+  // Keep a very long recipient from taking the entire prompt column. The target
+  // may be abbreviated, but prompt text always gets the remaining width.
+  const prefixBudget = Math.min(Math.max(0, width - 1), Math.floor(width * 0.4));
+  const targetBudget = Math.max(0, prefixBudget - stringWidth(stripAnsi(symbol)) - 2);
+  const visibleTarget = target && targetBudget > 0 ? clipStyled(target, targetBudget) : '';
+  const prompt = rendering.toolPrompt ?? (targetText && rendering.summary.startsWith(targetText) ? rendering.summary.slice(targetText.length).trimStart() : rendering.summary);
+  let prefix = `${symbol}${visibleTarget ? ` ${visibleTarget}` : ''} `;
+  let prefixWidth = stringWidth(stripAnsi(prefix));
+  let bodyWidth = Math.max(1, width - prefixWidth);
+  // At tiny widths the decoration can leave less room than a wide glyph needs;
+  // full mode must never clip away prompt characters to preserve a marker.
+  if (level === 3 && bodyWidth < 2) {
+    prefix = '';
+    prefixWidth = 0;
+    bodyWidth = width;
+  }
+  if (level === 1) return clipStyled(prefix + markdown(prompt.replace(/\s+/g, ' ').trim(), bodyWidth, true, colors), width);
+  const formatted = markdown(prompt, bodyWidth, false, colors);
+  const bodyRows = logicalLines(formatted).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
+  const indent = ' '.repeat(Math.min(prefixWidth, Math.max(0, width - 1)));
+  const rows = bodyRows.map((line, index) => clipStyled((index === 0 ? prefix : indent) + line, width));
+  if (level === 3) return rows.join('\n');
+  if (rows.length <= 2) return rows.join('\n');
+  const tailWidth = Math.max(1, width - stringWidth(' …'));
+  const tail = wrapAnsi(rows[1]!, tailWidth, { hard: true, trim: false }).split('\n')[0]!;
+  return [rows[0]!, clipStyled(`${tail} …`, width)].join('\n');
+}
+
 /** Tree previews render Markdown, but remain exactly one terminal-width-aware line. */
 export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   if (width <= 0) return '';
@@ -210,11 +250,12 @@ export function renderTreeEvent(event: ServerEvent, width: number, rendering?: E
   const prefix = assistant || isTool(event) ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
   const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
   const preview = prefix + markdown(text, Math.max(1, width), true, colors);
-  return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors) : preview, width);
+  return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   width = Math.max(1, width);
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
+  if (rendering?.toolPrompt !== undefined && isTool(event)) return renderAgentPrompt(event, level, width, rendering, colors);
   if (!rendering && isTool(event)) {
     const full = eventText(event), data = object(event.data);
     const output = data.rawOutput ?? data.content;
@@ -225,14 +266,14 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     const data = object(event.data);
     const output = data.rawOutput ?? data.content;
     // A renderer's extended text may be a diff or status, not streamed output.
-    if (event.type === 'tool.update' && output !== undefined && (level === 2 || level === 3)) {
+    if (event.type === 'tool.update' && output !== undefined && rendering.updateMode !== 'semantic' && (level === 2 || level === 3)) {
       const text = textContent(output);
       const lines = text === '' ? [] : logicalLines(text).map(clean);
       if (lines.length > 1 && lines.at(-1) === '') lines.pop();
       const lineCount = lines.length;
       const maxRows = level === 2 ? 1 : 5;
       const tail = terminalOutputTail(lines, width, maxRows, colors);
-      const heading = clipStyled(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors), width);
+      const heading = clipStyled(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors, rendering), width);
       const count = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'} received${tail.hidden ? ` · showing last ${maxRows} ${maxRows === 1 ? 'row' : 'rows'}` : ''}`;
       const countLine = paint(clip(count, width), '38;5;250', colors);
       if (level === 2) {
@@ -244,23 +285,31 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
     }
     if (level === 1) return renderTreeEvent(event, width, rendering, colors);
     if (level === 2) {
+      if (rendering.extendedLayout === 'header-detail') {
+        const [detail] = logicalLines(rendering.extended).slice(1);
+        const heading = clipStyled(toolHeader(markdown(rendering.summary, width, true, colors), event, rendering.subtype, colors, rendering), width);
+        const priority = clipStyled(markdown(detail ?? 'Status unavailable', width, true, colors), width);
+        return `${heading}\n${priority}`;
+      }
       const diff = rendering.extendedDiff;
       if (isTool(event) && diff && [diff.prefix, diff.before, diff.after].every(text => typeof text === 'string')) {
         const prefix = clean(diff.prefix).replace(/\s+/g, ' ').trim();
         const before = clean(diff.before).replace(/\s+/g, ' '), after = clean(diff.after).replace(/\s+/g, ' ');
-        const first = toolHeader(prefix, event, rendering.subtype, colors) + ' ' + paint(before, 'diffRemove', colors);
+        const first = toolHeader(prefix, event, rendering.subtype, colors, rendering) + ' ' + paint(before, 'diffRemove', colors);
         const second = ' '.repeat((stringWidth(prefix) + 1) % width) + paint(after, 'diffAdd', colors);
         return extendedRows([first, second], width);
       }
       const lines = logicalLines(rendering.extended).map((line, index) => {
         const text = markdown(line, width, true, colors);
-        return isTool(event) && index === 0 ? toolHeader(text, event, rendering.subtype, colors) : text;
+        return isTool(event) && index === 0 ? toolHeader(text, event, rendering.subtype, colors, rendering) : text;
       });
       return extendedRows(lines, width);
     }
     if (isTool(event)) {
       const [heading, ...body] = logicalLines(rendering.full);
-      return wrapAnsi(toolHeader(markdown(heading ?? '', width, true, colors), event, rendering.subtype, colors), width, { hard: true, trim: false }) +
+      const header = toolHeader(markdown(heading ?? '', width, true, colors), event, rendering.subtype, colors, rendering);
+      // Semantic status follows immediately, even with an unusually long target/prompt.
+      return (rendering.extendedLayout === 'header-detail' ? clipStyled(header, width) : wrapAnsi(header, width, { hard: true, trim: false })) +
         (body.join('\n').trim() ? '\n' + markdown(body.join('\n'), width, false, colors) : '');
     }
     return `${paint(clip(`${event.time} · ${label(event)}`, width), 'gray', colors)}\n${markdown(rendering.full, width, false, colors)}`;

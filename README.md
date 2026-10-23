@@ -371,7 +371,7 @@ The registration action appears only when the server advertises `repositoryRegis
 
 Use ↑/↓ to select a component, then Space, Enter or → to cycle colors; ← cycles
 backward. `z` restores defaults and Escape returns to the tree. Preferences cover
-selection, headers, borders, notices, footer, Markdown, tool phases and diffs.
+selection, headers, borders, notices, footer, Markdown, tool phases, AgentOrg target accents and diffs.
 `default` uses the terminal's own foreground/background; orange uses xterm color
 208. Changes are saved automatically in the client config and never affect the
 server. Renderer examples use the same palette as tree and chat.
@@ -417,8 +417,9 @@ not a server configuration change. The panel hides below 60 columns/16 rows;
 level controls still work. Full/raw previews are explicitly bounded excerpts,
 not limits on actual chat content. Older servers use local generic examples.
 
-Server precedence is harness renderer → configured server default → generic.
-Pi initially supplies distinct read/bash/edit/write call/update/result styles:
+Tool-event precedence is exact harness emitted-identity renderer → canonical per-tool renderer → configured server default → generic. Explicit harness aliases (for example Pi's `mcp__agentorg__get_operation`) affect matching only; displayed/raw identity and subtype preferences remain emitted names. Core renders AgentOrg's fourteen public MCP tools with stable action headings and domain status/count details; the `∴` marker identifies them. `prompt_subagent` summaries use `∴ @child prompt`; the child target has an independent configurable accent color. Pi owns its native formatting. MCP headings describe requests, not implicit success, and distinguish tool invocation status from returned operation/agent/batch status. Semantic updates keep their priority detail instead of using the shell streaming tail. Header/detail layouts reserve one row for each: the actual returned state precedes labels and truncation warnings, including narrow panes. Full semantic headers are clipped so status is not buried behind a long target/prompt. Alias catalog entries carry harness scope and emitted-identity examples; previews inherit the same semantic hints as live/history rendering.
+
+Pi supplies distinct read/bash/edit/write call/update/result styles:
 paths/ranges and line counts, shell commands/exit information, edit diffs, and
 write sizes/content. Headers are compact: **`$` bash**, **`<` read**, **`>` write**,
 **`Δ` edit**, and **`• toolname`** for unknown/MCP tools. There is no `tool.call:`

@@ -6,7 +6,7 @@ import type { SkillChoice } from './skill-selection.js';
 import { chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, TABLE_FIELDS, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
-import { genericPreview, rendererPreview } from './renderer-preview.js';
+import { genericPreview, rendererPreview, rendererCandidates, rendererSubtypes } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, PODMAN_FIELDS, type AgentField, type ImageScope } from './agent-editor.js';
 import { ServerSettingsEditor } from './server-settings-editor.js';
@@ -363,6 +363,7 @@ export class UI {
   private changeLevel(delta: number, absolute?: Level): void {
     const type = this.menuTypes[this.menuIndex];
     if (!type) return;
+    this.settings.inheritedLevels.delete(type);
     this.settings.levels[type] = absolute ?? ((this.settings.level(type) - 1 + delta + 4) % 4 + 1) as Level;
     this.saveSettings(); this.draw();
   }
@@ -590,8 +591,13 @@ export class UI {
       action('r', 'Next renderer example (does not change server selection)', () => { this.previewIndex++; this.draw(); }),
       action('z', 'Inherit parent / default rendering level', () => {
         const type = this.menuTypes[this.menuIndex];
-        if (type?.includes(':')) delete this.settings.levels[type];
-        else if (type) this.settings.levels[type] = new Settings().level(type);
+        if (type?.includes(':')) {
+          delete this.settings.levels[type];
+          this.settings.inheritedLevels.add(type);
+        } else if (type) {
+          this.settings.inheritedLevels.delete(type);
+          this.settings.levels[type] = new Settings().level(type);
+        }
         this.saveSettings(); this.draw();
       }),
       action('left', 'Previous level', () => this.changeLevel(-1)), action('right', 'Next level', () => this.changeLevel(1)), action('space', 'Cycle level', () => this.changeLevel(1)), action('enter', 'Cycle level', () => this.changeLevel(1)), back,
@@ -1764,13 +1770,12 @@ export class UI {
       this.footer.setContent(' ↑↓ field  Space toggle  ←→ reorder  1–9/0 position  z defaults  ? keys  Esc tree');
     } else if (this.view === 'filters' || this.view === 'levels') {
       const currentType = this.menuTypes[this.menuIndex];
-      const subtypes = this.session.renderers.flatMap(renderer => renderer.tool ? renderer.eventTypes.map(type => `${type}:${renderer.tool}`) : []);
+      const subtypes = rendererSubtypes(this.session.renderers, agent?.settings.harness);
       this.menuTypes = this.settings.types([...store.discovered, ...(this.view === 'levels' ? subtypes : [])]).filter(type => this.view === 'levels' || !type.includes(':'));
       if (currentType) this.menuIndex = Math.max(0, this.menuTypes.indexOf(currentType));
       const type = this.menuTypes[this.menuIndex] ?? '';
       const [parent, subtype] = type.split(':');
-      const candidates = this.session.renderers.filter(renderer => renderer.eventTypes.includes(parent!) && (!renderer.tool || renderer.tool === subtype))
-        .sort((a, b) => Number(b.harness === agent?.settings.harness) - Number(a.harness === agent?.settings.harness));
+      const candidates = rendererCandidates(this.session.renderers, parent!, subtype, agent?.settings.harness);
       const preview = candidates[this.previewIndex % Math.max(1, candidates.length)] ?? genericPreview(parent!);
       const height = Number(this.screen.height);
       const showPreview = this.view === 'levels' && preview && width >= 60 && height >= 16;
@@ -1785,7 +1790,7 @@ export class UI {
         this.preview.width = side ? '50%' : '100%';
         this.preview.top = side ? 2 : height - 11;
         this.preview.show();
-        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 4 : 9) - 2), this.settings.colors));
+        this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 4 : 9) - 2), this.settings.colors, subtype));
       } else this.menu.bottom = 2;
       this.updating = true;
       this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?
