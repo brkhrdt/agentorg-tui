@@ -507,7 +507,7 @@ includes the entire prompt. Resizing the terminal rewraps the draft.
 
 - **Enter** sends the message. Every send explicitly uses `queue: false`: it
   cancels queued prompts and interrupts active work before the new prompt runs.
-- **Page Up / Page Down** scroll history and pause auto-follow. Page Up (or mouse-wheel up) at the loaded top fetches another older page for this agent.
+- **Page Up / Page Down** scroll history; actual movement into history pauses auto-follow. Page Down at the bottom (including when the transcript is shorter than the viewport) is a no-op and keeps live updates following. Page Up (or mouse-wheel up) at the loaded top fetches another older page for this agent.
 - **Ctrl+Home** jumps to the loaded top and can load an older page; **Ctrl+End** reloads the latest chat window and resumes auto-follow. Loading older pages slides a bounded window rather than accumulating all history.
 - **Ctrl+U** clears the draft and collapses the input back to one row.
 - **Escape** returns to the tree without sending the input.

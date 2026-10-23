@@ -123,6 +123,58 @@ test('reconnect restores the active chat window and subsequent live events appen
   } finally { session.close(); await running; await mock.close(); }
 });
 
+test('same-agent generation replacement preserves agent routing without merging old-session chunks', async () => {
+  const first = chatEvent(1, 'root', 'OLD_GENERATION ', 'g1');
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 1, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, page([first], request));
+  });
+  const session = new Session(mock.path, { replayHistory: false, history });
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    await session.openChat('root');
+    for (const socket of mock.sockets) send(socket, event(2, 'agent.state', { state: 'running' }, { agentId: 'root', generation: 'g2' }));
+    await waitFor(() => session.store.agents.get('root')?.generation === 'g2');
+    const replacement = chatEvent(3, 'root', 'NEW_GENERATION', 'g2');
+    for (const socket of mock.sockets) send(socket, replacement);
+    await waitFor(() => session.chatEvents('root').some(item => item.seq === 3));
+    expect(session.chatEvents('root').map(item => item.generation)).toEqual(['g1', 'g2', 'g2']);
+    expect(session.chatEvents('root').map(item => item.seq)).toEqual([1, 2, 3]);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
+test('late older page for agent A cannot pause or replace active agent B chat', async () => {
+  let held: { socket: Socket; id: string; request: any } | undefined;
+  const records = [
+    chatEvent(1, 'root', 'A_1'), chatEvent(2, 'root', 'A_2'), chatEvent(3, 'root', 'A_3'),
+    chatEvent(4, 'other', 'B_4'), chatEvent(5, 'other', 'B_5'),
+  ];
+  let latest = 5;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: latest, agents: [agent('root'), agent('other')], operations: [] });
+    else if (request.method === 'events.history' && request.params.agentId === 'root' && request.params.before === 2) held = { socket, id: request.id, request };
+    else if (request.method === 'events.history') respond(socket, request.id, page(records, request));
+  });
+  const session = new Session(mock.path, { replayHistory: false, history: { ...history, chatPageSize: 2 } });
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    await session.openChat('root');
+    const oldPage = session.olderChat('root');
+    await waitFor(() => !!held);
+    await session.openChat('other');
+    const bBefore = session.chatEvents('other').map(item => item.seq);
+    respond(held!.socket, held!.id, page(records, held!.request));
+    await oldPage;
+    expect(session.chatEvents('other').map(item => item.seq)).toEqual(bBefore);
+    latest = 6;
+    for (const socket of mock.sockets) send(socket, chatEvent(6, 'other', 'B_LIVE_AFTER_LATE_A'));
+    await waitFor(() => session.chatEvents('other').some(item => item.seq === 6));
+    expect(session.chatEvents('other').map(item => item.seq)).toContain(6);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
 test('paused historical chat stays stable until followChat reloads tail and resumes live appends', async () => {
   const records = Array.from({ length: 12 }, (_, index) => chatEvent(index + 1, 'root', `HISTORY_${index + 1}`));
   let latest = 12;

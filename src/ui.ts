@@ -284,11 +284,18 @@ export class UI {
         this.follow = true;
         if (this.chatAgent) void this.session.followChat(this.chatAgent).catch(error => this.showNotice(error.message));
         this.chat.setScrollPerc(100);
+      } else if (key.name === 'pagedown') {
+        const before = this.chat.getScroll();
+        this.chat.scroll(Math.max(1, Number(this.chat.height) - 2));
+        if (this.chat.getScroll() !== before) {
+          this.follow = false;
+          if (this.chatAgent) this.session.pauseChat(this.chatAgent);
+        }
       } else {
         this.follow = false;
         if (this.chatAgent) this.session.pauseChat(this.chatAgent);
         if (key.full === 'C-home') this.chat.setScroll(0);
-        else this.chat.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.chat.height) - 2));
+        else this.chat.scroll(-Math.max(1, Number(this.chat.height) - 2));
         if (key.name === 'pageup' || key.full === 'C-home') this.loadOlderChat();
       }
       this.screen.render();
