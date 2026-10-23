@@ -17,6 +17,17 @@ import { filterVolumes, type VolumeChoice } from './volume-input.js';
 import { renderAgentInfo } from './agent-info.js';
 
 type KeyAction = { key: string; label: string; run: () => void };
+type ChatBlockLayout = { identity: string; seq: number; startRow: number; rows: number };
+type ChatViewportAnchor = { identity: string; seq: number; rowOffset: number };
+
+function chatBlockIdentity(event: ServerEvent): string {
+  const data = event.data && typeof event.data === 'object' ? event.data as Record<string, any> : {};
+  const prefix = `${event.agentId ?? ''}\0${event.generation ?? ''}\0`;
+  if (event.type === 'agent.message' && typeof data.messageId === 'string') return `${prefix}message\0${data.messageId}`;
+  if (['tool.call', 'tool.update', 'tool.result'].includes(event.type) && typeof data.toolCallId === 'string') return `${prefix}tool\0${data.toolCallId}`;
+  return `${prefix}${event.type}\0${event.seq}`;
+}
+
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
@@ -179,6 +190,10 @@ export class UI {
   private closing = false;
   private lastTreeItems: string[] = [];
   private lastChat = '';
+  private chatLayout: ChatBlockLayout[] = [];
+  private chatAnchorLost = false;
+  private chatScrollGeneration = 0;
+  private adjustingChatViewport = false;
   private renderedEvents = new Map<number, { event: ServerEvent; rendering?: EventRendering; level: number; width: number; colors: string; budget: number; text: string }>();
   private historyField?: keyof HistorySettings;
 
@@ -281,30 +296,31 @@ export class UI {
     this.composer.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
       if (key.full === 'C-end') {
-        this.follow = true;
+        this.chatScrollGeneration++; this.follow = true; this.chatAnchorLost = false;
         if (this.chatAgent) void this.session.followChat(this.chatAgent).catch(error => this.showNotice(error.message));
-        this.chat.setScrollPerc(100);
+        this.adjustingChatViewport = true; this.chat.setScrollPerc(100); this.adjustingChatViewport = false;
       } else if (key.name === 'pagedown') {
-        const before = this.chat.getScroll();
         this.chat.scroll(Math.max(1, Number(this.chat.height) - 2));
-        if (this.chat.getScroll() !== before) {
-          this.follow = false;
-          if (this.chatAgent) this.session.pauseChat(this.chatAgent);
-        }
-      } else {
+        this.updateChatViewport();
+      } else if (key.full === 'C-home') {
+        this.chatScrollGeneration++;
+        this.adjustingChatViewport = true; this.chat.setScroll(0); this.adjustingChatViewport = false;
         this.follow = false;
-        if (this.chatAgent) this.session.pauseChat(this.chatAgent);
-        if (key.full === 'C-home') this.chat.setScroll(0);
-        else this.chat.scroll(-Math.max(1, Number(this.chat.height) - 2));
-        if (key.name === 'pageup' || key.full === 'C-home') this.loadOlderChat();
+        if (this.chatAgent) this.session.pauseChat(this.chatAgent, this.captureChatAnchor()?.seq);
+        this.loadOlderChat();
+      } else {
+        this.chat.scroll(-Math.max(1, Number(this.chat.height) - 2));
+        this.updateChatViewport();
+        if (key.name === 'pageup') this.loadOlderChat();
       }
       this.screen.render();
     });
+    this.chat.on('scroll', () => this.updateChatViewport());
     this.chat.on('wheelup', () => {
-      this.follow = false;
-      if (this.chatAgent) this.session.pauseChat(this.chatAgent);
+      this.updateChatViewport();
       this.loadOlderChat();
     });
+    this.chat.on('wheeldown', () => this.updateChatViewport());
     this.screen.key('C-c', () => this.close());
     this.screen.on('resize', () => {
       this.lastTreeItems = []; this.lastChat = ''; this.renderedEvents.clear();
@@ -315,6 +331,32 @@ export class UI {
     this.session.on('notice', (message: string) => this.showNotice(message));
     this.tree.focus();
     this.draw();
+  }
+  private chatAtBottom(): boolean {
+    const viewport = Math.max(0, Number(this.chat.height));
+    return this.chat.getScrollHeight() <= viewport || this.chat.getScrollPerc() >= 100;
+  }
+  private captureChatAnchor(scroll = this.chat.getScroll()): ChatViewportAnchor | undefined {
+    if (!this.chatLayout.length) return undefined;
+    const row = Math.max(0, Math.floor(scroll));
+    const block = this.chatLayout.find(item => row >= item.startRow && row < item.startRow + item.rows) ??
+      this.chatLayout.find(item => item.startRow >= row) ?? this.chatLayout.at(-1);
+    return block ? { identity: block.identity, seq: block.seq, rowOffset: Math.max(0, row - block.startRow) } : undefined;
+  }
+  private restoreChatAnchor(anchor: ChatViewportAnchor | undefined, layout: ChatBlockLayout[]): number {
+    if (!anchor || !layout.length) return 0;
+    const exact = layout.find(item => item.identity === anchor.identity);
+    const fallback = exact ?? layout.find(item => item.seq >= anchor.seq) ?? layout.at(-1);
+    this.chatAnchorLost = !exact;
+    return fallback ? fallback.startRow + Math.min(anchor.rowOffset, fallback.rows - 1) : 0;
+  }
+  private updateChatViewport(): void {
+    if (this.view !== 'chat' || this.adjustingChatViewport) return;
+    this.chatScrollGeneration++;
+    this.follow = this.chatAtBottom();
+    if (!this.chatAgent) return;
+    if (this.follow) this.session.resumeChat(this.chatAgent);
+    else this.session.pauseChat(this.chatAgent, this.captureChatAnchor()?.seq);
   }
   private scheduleDraw(): void {
     if (this.drawTimer || this.closing) return;
@@ -1325,7 +1367,7 @@ export class UI {
     if (this.sending) return;
     const agent = this.selected();
     if (!agent) return;
-    this.chatAgent = agent.id; this.follow = true; this.lastChat = ''; this.renderedEvents.clear();
+    this.chatAgent = agent.id; this.follow = true; this.chatAnchorLost = false; this.chatLayout = []; this.chatScrollGeneration++; this.lastChat = ''; this.renderedEvents.clear();
     this.composer.setValue('');
     this.setView('chat');
     void this.session.openChat(agent.id).catch(error => this.showNotice(`Chat history: ${error.message}`));
@@ -1333,13 +1375,15 @@ export class UI {
   private loadOlderChat(): void {
     const id = this.chatAgent;
     if (this.view !== 'chat' || !id || this.chat.getScroll() > 0 || this.session.chatLoading(id) || !this.session.chatHasMore(id)) return;
-    const anchor = this.chat.getScreenLines().slice(0, 2).join('\n');
+    const anchor = this.captureChatAnchor();
+    const scrollGeneration = this.chatScrollGeneration;
     void this.session.olderChat(id).then(() => {
-      if (this.view !== 'chat' || this.chatAgent !== id) return;
+      if (this.view !== 'chat' || this.chatAgent !== id || this.follow || scrollGeneration !== this.chatScrollGeneration) return;
       this.draw();
-      const lines = this.chat.getScreenLines();
-      const index = anchor ? lines.findIndex((_, i) => lines.slice(i, i + 2).join('\n') === anchor) : 0;
-      this.chat.setScroll(Math.max(0, index - Math.max(1, Number(this.chat.height) - 2)));
+      this.adjustingChatViewport = true;
+      this.chat.setScroll(this.restoreChatAnchor(anchor, this.chatLayout));
+      this.adjustingChatViewport = false;
+      if (this.chatAgent) this.session.pauseChat(this.chatAgent, this.captureChatAnchor()?.seq);
       this.screen.render();
     }).catch(error => this.showNotice(error.message));
   }
@@ -1367,7 +1411,9 @@ export class UI {
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     if (this.view === 'chat' && view !== 'chat') {
       this.session.leaveChat();
-      this.chat.setContent(''); this.lastChat = ''; this.renderedEvents.clear();
+      this.adjustingChatViewport = true;
+      this.chat.setContent(''); this.lastChat = ''; this.chatLayout = []; this.renderedEvents.clear();
+      this.adjustingChatViewport = false;
     }
     this.view = view;
     this.menuIndex = 0;
@@ -1808,30 +1854,86 @@ export class UI {
     } else if (this.view === 'chat') {
       const events = this.session.chatEvents(this.chatAgent!);
       const groups = chatGroups(events, this.settings, store.renderings);
-      if (this.follow) groups.reverse();
-      const blocks: string[] = [], retained = new Set<number>();
+      const anchor = this.follow ? undefined : this.captureChatAnchor();
       const colors = JSON.stringify(this.settings.colors);
-      let budget = this.settings.history.cacheBytes;
-      for (const event of groups) {
-        if (budget <= 0) break;
+      const selected = new Map<number, { event: ServerEvent; text: string }>();
+      const retained = new Set<number>();
+      const displayLimit = this.settings.history.cacheBytes;
+      let used = 0;
+      const renderBlock = (index: number, available: number): number => {
+        if (index < 0 || index >= groups.length || selected.has(index) || available < 3) return 0;
+        const event = groups[index]!;
         const rendering = store.renderings.get(event.seq);
         const level = this.settings.level(event.type, rendering?.subtype);
         const cached = this.renderedEvents.get(event.seq);
-        let text = cached?.event === event && cached.rendering === rendering && cached.level === level && cached.width === width && cached.colors === colors && cached.budget === budget ? cached.text :
+        let text = cached?.event === event && cached.rendering === rendering && cached.level === level && cached.width === width && cached.colors === colors && cached.budget === available ? cached.text :
           renderEvent(event, level, Math.max(1, width - 1), rendering, this.settings.colors);
-        if (Buffer.byteLength(text) > budget) text = Buffer.from(text).subarray(0, budget).toString('utf8') + '\n[Display budget reached; raw history remains in the database.]';
-        this.renderedEvents.set(event.seq, { event, rendering, level, width, colors, budget, text });
-        retained.add(event.seq); blocks.push(text); budget -= Buffer.byteLength(text) + 2;
+        const textLimit = available - 2;
+        if (Buffer.byteLength(text) > textLimit) {
+          const suffix = '\n[Display budget reached.]';
+          if (textLimit < Buffer.byteLength(suffix)) return 0;
+          const clipped = Buffer.from(text).subarray(0, textLimit - Buffer.byteLength(suffix)).toString('utf8');
+          text = `${clipped}${suffix}`;
+        }
+        selected.set(index, { event, text }); retained.add(event.seq);
+        used += Buffer.byteLength(text) + 2;
+        this.renderedEvents.set(event.seq, { event, rendering, level, width, colors, budget: available, text });
+        return Buffer.byteLength(text) + 2;
+      };
+      if (this.follow) {
+        for (let index = groups.length - 1; index >= 0 && used < displayLimit; index--) renderBlock(index, displayLimit - used);
+      } else {
+        const tailReserve = Math.min(Math.floor(displayLimit / 3), 64 * 1024);
+        for (let index = groups.length - 1; index >= 0 && used < tailReserve; index--) renderBlock(index, Math.min(displayLimit - used, tailReserve - used));
+        const anchorIndex = anchor ? groups.findIndex(event => chatBlockIdentity(event) === anchor.identity) : -1;
+        if (anchorIndex >= 0) renderBlock(anchorIndex, displayLimit - used);
+        if (anchorIndex >= 0) {
+          for (let distance = 1; distance < groups.length && used < displayLimit; distance++) {
+            renderBlock(anchorIndex - distance, displayLimit - used);
+            renderBlock(anchorIndex + distance, displayLimit - used);
+          }
+        }
+        for (let index = groups.length - 1; index >= 0 && used < displayLimit; index--) renderBlock(index, displayLimit - used);
+        for (let index = 0; index < groups.length && used < displayLimit; index++) renderBlock(index, displayLimit - used);
       }
       for (const seq of this.renderedEvents.keys()) if (!retained.has(seq)) this.renderedEvents.delete(seq);
-      if (this.follow) blocks.reverse();
-      const content = [this.session.chatLoading(this.chatAgent!) ? '[Loading history…]' : '', store.historyGap ? '[History gap: earlier events have expired.]' : '', ...blocks].filter(Boolean).join('\n\n') || 'No tracked events yet.';
-      if (content !== this.lastChat) {
-        const scroll = this.chat.getScroll();
-        this.chat.setContent(content); this.lastChat = content;
-        if (this.follow) this.chat.setScrollPerc(100); else this.chat.setScroll(scroll);
+
+      const headers = [
+        ...(this.session.chatLoading(this.chatAgent!) ? ['[Loading history…]'] : []),
+        ...(store.historyGap ? ['[History gap: earlier events have expired.]'] : []),
+        ...(this.session.chatCoverageIncomplete(this.chatAgent!) ? ['[Chat window has gaps; scroll to the latest to reload retained history.]'] : []),
+      ];
+      const ordered = [...selected.entries()].sort((a, b) => a[0] - b[0]);
+      const anchorRetained = !anchor || ordered.some(([, block]) => chatBlockIdentity(block.event) === anchor.identity);
+      this.chatAnchorLost = !!anchor && !anchorRetained;
+      if (this.chatAnchorLost) headers.push('[View moved to the nearest retained message; the previous anchor was evicted.]');
+      const parts: Array<{ text: string; event?: ServerEvent }> = headers.map(text => ({ text }));
+      let previousIndex = -1;
+      for (const [index, block] of ordered) {
+        if (previousIndex >= 0 && index > previousIndex + 1) parts.push({ text: '[Messages omitted to keep the displayed history within its budget.]' });
+        parts.push({ text: block.text, event: block.event });
+        previousIndex = index;
       }
-      this.footer.setContent(' Text: Enter interrupt/send  PgUp older  PgDn scroll  Ctrl+Home top  Ctrl+End latest/follow  Ctrl+U clear  Esc tree');
+      if (!parts.length) parts.push({ text: 'No tracked events yet.' });
+      const content = parts.map(part => part.text).join('\n\n');
+      const nextLayout: ChatBlockLayout[] = [];
+      let row = 0;
+      for (let index = 0; index < parts.length; index++) {
+        const part = parts[index]!;
+        if (index) row += 2;
+        const rows = part.text.split('\n').length;
+        if (part.event) nextLayout.push({ identity: chatBlockIdentity(part.event), seq: part.event.seq, startRow: row, rows });
+        row += rows;
+      }
+      if (content !== this.lastChat) {
+        this.adjustingChatViewport = true;
+        this.chat.setContent(content); this.lastChat = content;
+        if (this.follow) this.chat.setScrollPerc(100);
+        else this.chat.setScroll(this.restoreChatAnchor(anchor, nextLayout));
+        this.adjustingChatViewport = false;
+      }
+      this.chatLayout = nextLayout;
+      this.footer.setContent(' Text: Enter interrupt/send  PgUp older  PgDn scroll to latest  Ctrl+Home top  Ctrl+End latest/follow  Ctrl+U clear  Esc tree');
     } else if (this.view === 'settings-choice-setup') {
       this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
     } else if (this.view === 'server-field') {

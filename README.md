@@ -218,11 +218,16 @@ Use Enter to edit a positive integer (`cacheBytes` must be at least 1,024),
 Ctrl+U to clear, Escape to cancel, or `z` to restore defaults. Page sizes are
 clamped to the event-cache limit. The byte budget counts serialized events and
 presentations, not total process RSS; rendered output/widget text is bounded too.
-The active chat is preferred under cache pressure, but still obeys both limits.
-Inactive historical reads expire on the periodic sweep (approximately every ten
-seconds), and least-recently-used inactive history is evicted first under pressure.
-Recent events can remain within the global cache after a chat expires. Leaving
-chat clears its rendered-text cache and hidden widget content.
+The active chat's visible anchor and a bounded newest tail are preferred under
+cache pressure, but still obey both limits. While browsing, incoming events keep
+joining the active transcript without forcing a scroll; the widget materializes a
+bounded display slice. If raw/cache or display limits evict older content, the
+chat marks the incomplete window and reaching latest can reload the retained
+server tail. Exact anchor preservation is best-effort when the anchor remains
+within those limits. Inactive historical reads expire on the periodic sweep
+(approximately every ten seconds), and inactive history is evicted first under
+pressure. Recent events can remain within the global cache after a chat expires.
+Leaving chat clears its rendered-text cache and hidden widget content.
 
 Eviction **never deletes SQLite history**. Database retention is separately
 configured under **v → s → Organization / core → maxEvents**: **0 means unlimited**
@@ -507,8 +512,9 @@ includes the entire prompt. Resizing the terminal rewraps the draft.
 
 - **Enter** sends the message. Every send explicitly uses `queue: false`: it
   cancels queued prompts and interrupts active work before the new prompt runs.
-- **Page Up / Page Down** scroll history; actual movement into history pauses auto-follow. Page Down at the bottom (including when the transcript is shorter than the viewport) is a no-op and keeps live updates following. Page Up (or mouse-wheel up) at the loaded top fetches another older page for this agent.
-- **Ctrl+Home** jumps to the loaded top and can load an older page; **Ctrl+End** reloads the latest chat window and resumes auto-follow. Loading older pages slides a bounded window rather than accumulating all history.
+- **Page Up / mouse-wheel up** browse older content and pause viewport auto-scroll only; incoming events still join this chat while its position remains anchored. At the loaded top, Page Up (or wheel-up) fetches another older page for this agent.
+- **Page Down / mouse-wheel down** reveal already-appended events. Reaching the actual bottom resumes auto-follow; a no-op Page Down at the bottom (including when the transcript is shorter than the viewport) keeps following. **Ctrl+Home** jumps to the loaded top; **Ctrl+End** explicitly reloads the latest bounded chat window and resumes auto-follow.
+- Sending while scrolled does not force latest or reload chat. Loading older pages and live events use one bounded window rather than accumulating an unlimited backlog; if the visible anchor is evicted, the chat marks the incomplete window and clamps to retained content.
 - **Ctrl+U** clears the draft and collapses the input back to one row.
 - **Escape** returns to the tree without sending the input.
 

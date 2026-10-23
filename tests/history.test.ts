@@ -46,7 +46,7 @@ test('recent events promoted into a historical viewport also expire after fallin
   const store = new Store();
   store.configureHistory(policy);
   for (let seq = 11; seq <= 16; seq++) store.ingest(event(seq));
-  store.setActiveChat('root', true);
+  store.setActiveChat('root', true, 11);
   store.ingest(event(11), 'history'); store.ingest(event(12), 'history');
   store.ingest(event(1), 'history');
   for (let seq = 17; seq <= 40; seq++) store.ingest(event(seq));
@@ -104,7 +104,10 @@ test('startup fetches only a recent tail; chat loads its own tail and older page
     await session.olderChat('worker');
     await session.olderChat('worker');
     expect(session.store.events.size).toBeLessThanOrEqual(policy.recentEvents);
-    expect(session.chatEvents('worker').map(e => e.seq)).toEqual([43, 44, 45, 46, 47, 48]);
+    const retained = session.chatEvents('worker').map(e => e.seq);
+    expect(retained).toEqual([45, 46, 47, 48, 49, 50]);
+    expect(retained).toEqual([...retained].sort((a, b) => a - b));
+    expect(session.chatCoverageIncomplete('worker')).toBe(true);
     session.leaveChat();
     session.store.pruneHistory(Date.now() + 11 * 60_000);
     expect(session.store.orderedEvents().some(e => e.agentId === 'worker')).toBe(false);

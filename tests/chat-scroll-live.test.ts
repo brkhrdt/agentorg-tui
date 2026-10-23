@@ -44,3 +44,36 @@ test('live events join a deliberately paused chat window exactly once and stay a
     expect(requests.filter(request => request.method === 'events.history' && request.params.agentId === 'root')).toHaveLength(1);
   } finally { session.close(); await running; await mock.close(); }
 });
+
+test('live membership survives an older-page response held in flight', async () => {
+  const records = Array.from({ length: 12 }, (_, index) => message(index + 1, 'root', `HISTORY_${index + 1}`));
+  const requests: any[] = [];
+  let held: { socket: any; request: any } | undefined;
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 12, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') {
+      if (request.params.agentId === 'root' && request.params.before === 7 && !held) { held = { socket, request }; return; }
+      const matches = records.filter(item => item.seq < request.params.before &&
+        (!request.params.agentId || item.agentId === request.params.agentId));
+      respond(socket, request.id, { events: matches.slice(-request.params.limit), hasMore: matches.length > request.params.limit, oldestSeq: 1, latestSeq: 12, expired: false });
+    }
+  });
+  const session = new Session(mock.path, { history: { ...historyPolicy, chatPageSize: 6 } });
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    await session.openChat('root');
+    const older = session.olderChat('root');
+    await waitFor(() => held !== undefined);
+    const live = message(13, 'root', 'LIVE_WHILE_OLDER_PAGE_PENDING'); records.push(live);
+    for (const socket of mock.sockets) send(socket, live);
+    await waitFor(() => session.store.events.has(13));
+    expect(session.chatEvents('root').at(-1)?.seq).toBe(13);
+    respond(held!.socket, held!.request.id, { events: records.filter(item => item.seq < 7), hasMore: false, oldestSeq: 1, latestSeq: 12, expired: false });
+    await older;
+    expect(session.chatEvents('root').map(item => item.seq)).toEqual([...Array.from({ length: 12 }, (_, index) => index + 1), 13]);
+    expect(session.chatEvents('root').filter(item => item.seq === 13)).toHaveLength(1);
+    expect(requests.filter(request => request.method === 'events.history' && request.params.agentId === 'root')).toHaveLength(1);
+  } finally { session.close(); await running; await mock.close(); }
+});

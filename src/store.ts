@@ -75,17 +75,21 @@ export class Store extends EventEmitter {
   private recentSequences = new Set<number>();
   private activeChat?: string;
   private browsingOlder = false;
+  private activeAnchorSeq?: number;
   cachedBytes = 0; // Serialized payloads, not a claim about total process RSS.
 
   configureHistory(settings: HistorySettings): void {
     this.policy = historySettings(settings);
     this.pruneHistory();
   }
-  setActiveChat(agentId?: string, older = false): void {
+  setActiveChat(agentId?: string, older = false, anchorSeq?: number): void {
     const now = Date.now();
     for (const [seq, entry] of this.cache) if (entry.loadedAt !== undefined &&
       [this.activeChat, agentId].includes(this.events.get(seq)?.agentId)) entry.loadedAt = now;
+    if (this.activeChat !== agentId) this.activeAnchorSeq = undefined;
     this.activeChat = agentId; this.browsingOlder = older;
+    if (older && anchorSeq !== undefined) this.activeAnchorSeq = anchorSeq;
+    else if (!older) this.activeAnchorSeq = undefined;
     this.pruneHistory();
   }
   private measure(seq: number): void {
@@ -199,10 +203,12 @@ export class Store extends EventEmitter {
       if (changed) this.emit('change');
       return;
     }
+    const activeTail = new Set([...this.cache.keys()].filter(active).sort((a, b) => b - a).slice(0, Math.max(2, this.policy.chatPageSize)));
     const priority = (seq: number, entry: { recent: boolean; loadedAt?: number; pending?: boolean }) =>
-      active(seq) && entry.loadedAt !== undefined ? 2 : entry.recent || entry.pending ? 1 : 0;
-    const candidates = [...this.cache].sort(([a, x], [b, y]) => priority(a, x) - priority(b, y) ||
-      (priority(a, x) === 2 && this.browsingOlder ? b - a : priority(a, x) === 0 ? (x.loadedAt ?? 0) - (y.loadedAt ?? 0) || a - b : a - b));
+      active(seq) && entry.loadedAt !== undefined
+        ? seq === this.activeAnchorSeq ? 4 : activeTail.has(seq) ? 3 : 2
+        : entry.recent || entry.pending ? 1 : 0;
+    const candidates = [...this.cache].sort(([a, x], [b, y]) => priority(a, x) - priority(b, y) || a - b);
     for (const [seq] of candidates) {
       if (this.cache.size <= this.policy.recentEvents && this.cachedBytes <= this.policy.cacheBytes) break;
       this.forget(seq); changed = true;
@@ -216,7 +222,7 @@ export class Store extends EventEmitter {
     this.livePreviews.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
-    this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined;
+    this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined; this.activeAnchorSeq = undefined; this.browsingOlder = false;
   }
   install(snapshot: Snapshot): void {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));

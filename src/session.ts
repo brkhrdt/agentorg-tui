@@ -422,6 +422,7 @@ export class Session extends EventEmitter {
     });
   }
   chatHasMore(agentId: string): boolean { return this.chats.get(agentId)?.hasMore ?? false; }
+  chatCoverageIncomplete(agentId: string): boolean { return this.chats.get(agentId)?.valid === false; }
   chatLoading(agentId: string): boolean { return !!this.chats.get(agentId)?.loading; }
   leaveChat(): void { this.activeChat = undefined; this.store.setActiveChat(); }
   async openChat(agentId: string): Promise<void> {
@@ -448,13 +449,21 @@ export class Session extends EventEmitter {
     const before = this.chatEvents(agentId)[0]?.seq;
     if (before === undefined) return this.followChat(agentId);
     window.following = false;
-    this.store.setActiveChat(this.activeChat, true);
+    this.store.setActiveChat(this.activeChat, true, before);
     return this.loadChat(agentId, window, before);
   }
-  pauseChat(agentId: string): void {
+  pauseChat(agentId: string, anchorSeq?: number): void {
     const window = this.chats.get(agentId);
     if (window) window.following = false;
-    this.store.setActiveChat(this.activeChat, true);
+    this.store.setActiveChat(this.activeChat, true, anchorSeq);
+  }
+  resumeChat(agentId: string): void {
+    const window = this.chats.get(agentId);
+    if (!window || this.activeChat !== agentId) return;
+    const reload = !window.valid;
+    window.following = true;
+    this.store.setActiveChat(this.activeChat, false);
+    if (reload) void this.followChat(agentId).catch(error => this.emit('notice', `Chat history: ${error.message}`));
   }
   async followChat(agentId: string): Promise<void> {
     this.chats.delete(agentId);
@@ -499,10 +508,10 @@ export class Session extends EventEmitter {
   }
   private live(event: ServerEvent): void {
     const window = event.agentId ? this.chats.get(event.agentId) : undefined;
-    const following = window?.following && event.agentId === this.activeChat;
-    if (following) window.seqs.add(event.seq);
+    const active = !!window && event.agentId === this.activeChat;
+    if (active) window.seqs.add(event.seq);
     else if (window) window.valid = false;
-    this.store.ingest(event, following ? 'chat-live' : 'live');
+    this.store.ingest(event, active ? 'chat-live' : 'live');
   }
   private setStatus(status: string): void { this.status = status; this.emit('status'); }
   private schedulePrune(): void {
