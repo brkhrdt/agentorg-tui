@@ -134,6 +134,49 @@ test('chat appends while scrolled, preserves the viewport and outgoing prompt, t
   } finally { await tui.close(); await mock.close(); }
 }, 20_000);
 
+test('appending preserves the exact screen row when the viewport begins on a blank separator', async () => {
+  const records = Array.from({ length: 24 }, (_, index) => message(index + 1, `MESSAGE_${index + 1}`));
+  let latest = 24;
+  let root = agent('root');
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: latest, agents: [root], operations: [] });
+    else if (request.method === 'events.history') {
+      const matches = records.filter(item => item.seq > request.params.after && item.seq < request.params.before);
+      respond(socket, request.id, { events: matches.slice(-request.params.limit), hasMore: matches.length > request.params.limit, oldestSeq: 1, latestSeq: latest, expired: false });
+    }
+  });
+  await writeFile(join(mock.directory, 'config.json'), JSON.stringify({ excluded: ['agent.modified'], levels: { 'agent.message': 1 }, history: { recentEvents: 100, chatPageSize: 30, cacheBytes: 1_048_576, idleMinutes: 10 } }));
+  const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });
+  const targetRow = () => tui.screen().split('\n').findIndex(line => line.trimStart().startsWith('MESSAGE_2 '));
+  const onSeparator = () => {
+    const lines = tui.screen().split('\n');
+    const row = targetRow();
+    return row > 0 && lines[row - 1]!.replace(/[│\s]/g, '') === '';
+  };
+  try {
+    await tui.visible('LATEST TRACKED EVENT'); tui.keys('?'); await tui.visible('Keys · tree'); tui.keys('\x1b'); await tui.visible('LATEST TRACKED EVENT');
+    tui.keys('c'); await tui.visible('Chat · root'); await tui.visible('MESSAGE_24');
+    for (let page = 0; page < 8 && targetRow() !== 2; page++) {
+      tui.keys('\x1b[5~'); await tui.flush(); await new Promise(resolve => setTimeout(resolve, 60));
+    }
+    expect(targetRow()).toBe(2);
+    expect(onSeparator()).toBe(true);
+    const before = targetRow();
+
+    latest = 26;
+    const incoming = message(25, 'APPENDED_MESSAGE'); records.push(incoming);
+    root = agent('root', null, { name: 'APPEND_DELIVERY_BARRIER' });
+    const barrier = event(26, 'agent.modified', root, { agentId: 'root', generation: 'g1' }); records.push(barrier);
+    for (const socket of mock.sockets) { send(socket, incoming); send(socket, barrier); }
+    await tui.visible('Chat · APPEND_DELIVERY_BARRIER');
+    await tui.flush();
+
+    expect(targetRow()).toBe(before);
+    expect(onSeparator()).toBe(true);
+    expect(tui.screen()).toContain('MESSAGE_2');
+  } finally { await tui.close(); await mock.close(); }
+}, 20_000);
+
 test('prepend plus a newly wrapped gap notice preserves the visible logical anchor', async () => {
   const records = Array.from({ length: 24 }, (_, index) => message(index + 1,
     index + 1 === 19 ? 'PAGE_ANCHOR_19' : `PAGE_HISTORY_${index + 1} ${'body '.repeat(35)}`));

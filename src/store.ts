@@ -214,7 +214,7 @@ export class Store extends EventEmitter {
     const priority = (seq: number, entry: HistoryCacheEntry) =>
       active(seq) && entry.loadedAt !== undefined
         ? seq === newestActiveSeq ? 7
-          : seq === oldestOlderSeq ? 6
+          : seq === oldestOlderSeq ? 8 // Keep the paging cursor moving if the newest tail cannot coexist.
             : seq === this.activeAnchorSeq ? 5
               : activeTail.includes(seq) ? 4
                 : this.browsingOlder && entry.older ? 3 : 2

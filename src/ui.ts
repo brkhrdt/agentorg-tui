@@ -333,7 +333,7 @@ export class UI {
     const row = Math.max(0, Math.floor(scroll));
     const block = this.chatLayout.find(item => row >= item.startRow && row < item.startRow + item.rows) ??
       this.chatLayout.find(item => item.startRow >= row) ?? this.chatLayout.at(-1);
-    return block ? { identity: block.identity, seq: block.seq, rowOffset: Math.max(0, row - block.startRow) } : undefined;
+    return block ? { identity: block.identity, seq: block.seq, rowOffset: row - block.startRow } : undefined;
   }
   private restoreChatAnchor(anchor: ChatViewportAnchor | undefined, layout: ChatBlockLayout[]): number {
     const result = resolveChatAnchor(anchor, layout);
