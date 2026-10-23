@@ -175,7 +175,7 @@ test('late older page for agent A cannot pause or replace active agent B chat', 
   } finally { session.close(); await running; await mock.close(); }
 });
 
-test('paused historical chat stays stable until followChat reloads tail and resumes live appends', async () => {
+test('paused viewport continues live membership and followChat resumes bottom auto-scroll', async () => {
   const records = Array.from({ length: 12 }, (_, index) => chatEvent(index + 1, 'root', `HISTORY_${index + 1}`));
   let latest = 12;
   const mock = await mockServer((socket, request) => {
@@ -188,13 +188,14 @@ test('paused historical chat stays stable until followChat reloads tail and resu
     await waitFor(() => session.status === 'connected');
     await session.openChat('root');
     await session.olderChat('root');
+    session.pauseChat('root');
     const older = session.chatEvents('root').map(item => item.seq);
     latest = 13;
     for (const socket of mock.sockets) send(socket, chatEvent(13, 'root', 'PAUSED_LIVE'));
     await waitFor(() => session.store.events.has(13));
-    expect(session.chatEvents('root').map(item => item.seq)).toEqual(older);
+    expect(session.chatEvents('root').map(item => item.seq)).toEqual([...older, 13]);
     await session.followChat('root');
-    expect(session.chatEvents('root').map(item => item.seq)).toContain(13);
+    expect(session.chatEvents('root').filter(item => item.seq === 13)).toHaveLength(1);
     latest = 14;
     for (const socket of mock.sockets) send(socket, chatEvent(14, 'root', 'FOLLOWING_LIVE'));
     await waitFor(() => session.chatEvents('root').some(item => item.seq === 14));

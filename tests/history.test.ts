@@ -119,7 +119,7 @@ test('startup fetches only a recent tail; chat loads its own tail and older page
   } finally { session.close(); await running; await mock.close(); }
 });
 
-test('an active historical viewport stays bounded under live traffic, and returning to follow reloads the tail', async () => {
+test('active historical chat appends live membership within cache bounds and follow reloads the latest tail', async () => {
   const history = Array.from({ length: 20 }, (_, i) => event(i + 1));
   const mock = await mockServer((socket, request) => {
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: history.length, agents: [agent('root')], operations: [] });
@@ -137,7 +137,9 @@ test('an active historical viewport stays bounded under live traffic, and return
     const old = session.chatEvents('root').map(e => e.seq);
     for (let i = 21; i <= 40; i++) { const next = event(i); history.push(next); for (const socket of mock.sockets) send(socket, next); }
     await waitFor(() => session.store.watermark === 40);
-    expect(session.chatEvents('root').map(e => e.seq)).toEqual(old);
+    expect(session.chatEvents('root').map(e => e.seq).at(-1)).toBe(40);
+    expect(session.chatEvents('root').length).toBeGreaterThan(old.length);
+    expect(session.store.events.has(40)).toBe(true);
     expect(session.store.events.size).toBeLessThanOrEqual(6);
     await session.followChat('root');
     expect(session.chatEvents('root').map(e => e.seq)).toEqual([39, 40]);
