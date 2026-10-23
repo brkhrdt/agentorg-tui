@@ -19,6 +19,34 @@ export function appendMessageChunk(previous: ServerEvent | undefined, event: Ser
   return { ...event, data: { ...data, content: { ...data.content, text: lastData.content.text + data.content.text } } };
 }
 const terminal = (status: string) => ['completed', 'failed', 'stopped'].includes(status);
+const TREE_PREVIEW_MAX_BYTES = 1024;
+const TREE_PREVIEW_TYPES_PER_AGENT = 32;
+function boundedUtf8(value: string, maxBytes: number): string {
+  let bytes = Buffer.from(value).subarray(0, maxBytes);
+  while (bytes.length) {
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { bytes = bytes.subarray(0, bytes.length - 1); }
+  }
+  return '';
+}
+function compactPreview(event: ServerEvent): ServerEvent {
+  const serialized = JSON.stringify(event.data ?? null);
+  const envelope = {
+    ...event,
+    type: boundedUtf8(event.type, 256),
+    time: boundedUtf8(event.time, 64),
+    ...(event.agentId && { agentId: boundedUtf8(event.agentId, 256) }),
+    ...(event.generation && { generation: boundedUtf8(event.generation, 256) }),
+  };
+  if (Buffer.byteLength(serialized) <= TREE_PREVIEW_MAX_BYTES) return { ...envelope, data: JSON.parse(serialized) };
+  let preview = boundedUtf8(serialized, TREE_PREVIEW_MAX_BYTES - 128);
+  let data = { truncated: true, originalBytes: Buffer.byteLength(serialized), preview };
+  while (Buffer.byteLength(JSON.stringify(data)) > TREE_PREVIEW_MAX_BYTES && preview.length) {
+    preview = boundedUtf8(preview, Math.floor(Buffer.byteLength(preview) * 0.75));
+    data = { truncated: true, originalBytes: Buffer.byteLength(serialized), preview };
+  }
+  return { ...envelope, data };
+}
 export interface TreeRow { agent: Agent; depth: number }
 
 export class Store extends EventEmitter {
@@ -33,6 +61,11 @@ export class Store extends EventEmitter {
   private sortedCache?: ServerEvent[];
   private latestByType = new Map<string, Map<string, ServerEvent>>();
   private lastByAgent = new Map<string, ServerEvent>();
+  // Independent, compact candidates for the live tree; raw history remains governed by cache policy.
+  private livePreviews = new Map<string, Map<string, ServerEvent>>();
+  private previewGeneration = new Map<string, string | null | undefined>();
+  private previewFloors = new Map<string, number>();
+  private previewRenderings = new Map<number, EventRendering>();
   private latestIndexedSeq = -1;
   private latestDirty = false;
   private policy: HistorySettings = { ...DEFAULT_HISTORY };
@@ -61,6 +94,79 @@ export class Store extends EventEmitter {
     entry.bytes = (this.events.has(seq) ? Buffer.byteLength(JSON.stringify(this.events.get(seq))) : 0) +
       (this.renderings.has(seq) ? Buffer.byteLength(JSON.stringify(this.renderings.get(seq))) : 0);
     this.cachedBytes += entry.bytes;
+  }
+  private clearLivePreview(agentId: string): void {
+    const candidates = this.livePreviews.get(agentId);
+    if (candidates) for (const event of candidates.values()) this.previewRenderings.delete(event.seq);
+    this.livePreviews.delete(agentId);
+    this.previewGeneration.delete(agentId);
+  }
+  private pruneLivePreviews(): void {
+    for (const [agentId] of this.livePreviews) {
+      const agent = this.agents.get(agentId);
+      if (!agent || agent.removedAt !== null) { this.clearLivePreview(agentId); this.previewFloors.delete(agentId); continue; }
+      const generation = agent.generation;
+      if (generation !== null && generation !== undefined && this.previewGeneration.has(agentId) && this.previewGeneration.get(agentId) !== generation) {
+        this.clearLivePreview(agentId); this.previewFloors.set(agentId, Math.max(this.previewFloors.get(agentId) ?? -1, this.watermark));
+      }
+      this.previewGeneration.set(agentId, generation);
+    }
+  }
+  private compactRendering(rendering: EventRendering): EventRendering {
+    return {
+      rendererId: boundedUtf8(rendering.rendererId, 128),
+      summary: boundedUtf8(rendering.summary, 128), extended: boundedUtf8(rendering.extended, 128), full: boundedUtf8(rendering.full, 128),
+      ...(rendering.subtype && { subtype: boundedUtf8(rendering.subtype, 64) }),
+      ...(rendering.canonicalTool && { canonicalTool: boundedUtf8(rendering.canonicalTool, 64) }),
+      ...(rendering.toolSymbol && { toolSymbol: boundedUtf8(rendering.toolSymbol, 16) }),
+      ...(rendering.toolTarget && { toolTarget: boundedUtf8(rendering.toolTarget, 128) }),
+      ...(rendering.invocationError !== undefined && { invocationError: rendering.invocationError }),
+    };
+  }
+  private rememberLivePreview(event: ServerEvent): void {
+    if (!event.agentId || event.type === 'agent.session_replaced') {
+      if (event.agentId && event.type === 'agent.session_replaced') {
+        this.clearLivePreview(event.agentId); this.previewFloors.set(event.agentId, Math.max(this.previewFloors.get(event.agentId) ?? -1, event.seq));
+      }
+      return;
+    }
+    const agent = this.agents.get(event.agentId);
+    if (!agent || agent.removedAt !== null || Buffer.byteLength(event.type) > 256) return;
+    const generation = event.generation ?? agent.generation;
+    if (event.generation && agent.generation && event.generation !== agent.generation) {
+      this.clearLivePreview(event.agentId); this.previewFloors.set(event.agentId, Math.max(this.previewFloors.get(event.agentId) ?? -1, event.seq));
+      return;
+    }
+    if (generation !== null && generation !== undefined && this.previewGeneration.has(event.agentId) && this.previewGeneration.get(event.agentId) !== generation) {
+      this.clearLivePreview(event.agentId); this.previewFloors.set(event.agentId, Math.max(this.previewFloors.get(event.agentId) ?? -1, event.seq - 1));
+    }
+    if (generation !== null && generation !== undefined) this.previewGeneration.set(event.agentId, generation);
+    const candidates = this.livePreviews.get(event.agentId) ?? new Map<string, ServerEvent>();
+    const previous = candidates.get(event.type);
+    const joined = previous && !this.previewRenderings.has(previous.seq) && !this.renderings.has(event.seq)
+      ? appendMessageChunk(previous, event) : undefined;
+    const candidate = compactPreview(joined ?? event);
+    if (previous) this.previewRenderings.delete(previous.seq);
+    candidates.set(event.type, candidate);
+    if (candidates.size > TREE_PREVIEW_TYPES_PER_AGENT) {
+      const oldest = [...candidates.entries()].sort((a, b) => a[1].seq - b[1].seq)[0];
+      if (oldest) { candidates.delete(oldest[0]); this.previewRenderings.delete(oldest[1].seq); }
+    }
+    this.livePreviews.set(event.agentId, candidates);
+    const rendering = this.renderings.get(event.seq);
+    if (rendering) this.previewRenderings.set(candidate.seq, this.compactRendering(rendering));
+  }
+  get treePreviewBytes(): number {
+    let bytes = 0;
+    for (const candidates of this.livePreviews.values()) for (const event of candidates.values()) {
+      bytes += Buffer.byteLength(JSON.stringify(event));
+      const rendering = this.previewRenderings.get(event.seq);
+      if (rendering) bytes += Buffer.byteLength(JSON.stringify(rendering));
+    }
+    return bytes;
+  }
+  treeRenderings(): Map<number, EventRendering> {
+    return new Map([...this.renderings, ...this.previewRenderings]);
   }
   private forget(seq: number): void {
     const entry = this.cache.get(seq);
@@ -107,6 +213,7 @@ export class Store extends EventEmitter {
   reset(): void {
     this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
+    this.livePreviews.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
     this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined;
@@ -115,8 +222,11 @@ export class Store extends EventEmitter {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
     this.operations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
     this.watermark = snapshot.seq;
+    this.pruneLivePreviews();
     // The snapshot is for state only; older buffered events still belong in chat.
     for (const event of this.orderedEvents()) if (event.seq > snapshot.seq) this.reduce(event);
+    for (const event of this.orderedEvents()) if (this.recentSequences.has(event.seq)) this.rememberLivePreview(event);
+    this.pruneLivePreviews();
     this.emit('change');
   }
   present(seq: number, rendering: EventRendering): void {
@@ -128,6 +238,12 @@ export class Store extends EventEmitter {
     this.pruneHistory();
     const event = this.events.get(seq);
     if (event && rendering.subtype) this.discovered.add(`${event.type}:${rendering.subtype}`);
+    for (const candidates of this.livePreviews.values()) {
+      if ([...candidates.values()].some(candidate => candidate.seq === seq)) {
+        this.previewRenderings.set(seq, this.compactRendering(rendering));
+        break;
+      }
+    }
     this.latestDirty = true;
     this.emit('change');
   }
@@ -156,6 +272,8 @@ export class Store extends EventEmitter {
     const subtype = this.renderings.get(event.seq)?.subtype;
     if (subtype) this.discovered.add(`${event.type}:${subtype}`);
     if (this.watermark >= 0 && stateEvent.seq > this.watermark) this.reduce(stateEvent);
+    if (source !== 'history') this.rememberLivePreview(stateEvent);
+    this.pruneLivePreviews();
     this.pruneHistory();
     this.emit('change');
   }
@@ -229,8 +347,17 @@ export class Store extends EventEmitter {
     }
     const latest = new Map<string, ServerEvent>();
     for (const [agentId, types] of this.latestByType) {
+      const agent = this.agents.get(agentId);
+      if (agent && agent.removedAt !== null) continue;
       for (const event of types.values()) {
-        if (settings.tracked(event.type) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
+        if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
+      }
+    }
+    for (const [agentId, types] of this.livePreviews) {
+      const agent = this.agents.get(agentId);
+      if (!agent || agent.removedAt !== null) continue;
+      for (const event of types.values()) {
+        if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
       }
     }
     return latest;

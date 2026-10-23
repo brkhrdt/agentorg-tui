@@ -1664,7 +1664,7 @@ export class UI {
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
       const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
       // Blessed lists reserve a scrollbar cell even when it is hidden.
-      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.renderings, this.settings.colors, selectedIndex);
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex);
       this.columns.setContent(header);
       this.updating = true;
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {

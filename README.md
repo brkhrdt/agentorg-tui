@@ -130,7 +130,18 @@ message rather than only its last streamed chunk. Assistant previews omit the
 role label and use all available cells in the event column, truncating with `…`.
 Event previews render Markdown styles and fold blocks into a single line;
 clipping preserves styles and terminal-cell boundaries.
-Both live and retained history events update the tree.
+The tree keeps a separate, bounded summary of observed live events for active,
+known agents, so unrelated history eviction does not blank a quiet agent's last
+preview. Each agent retains at most 32 event-type candidates, with at most 1 KiB
+of event data per candidate (plus bounded presentation metadata); this is separate
+from, and does not enlarge, the raw-history cache. Message chunks are bounded as
+they accumulate. Candidates are discarded when an agent is removed, its session
+or generation changes, or the connection's store is reset. This is not startup
+backfill: an event the client never received cannot appear in the tree. Chat
+continues to use real events and renderings from its bounded history window, and
+explicit chat history can recover retained server events. Loading older history
+does not replace a newer live preview; filters still control which event types
+appear in the tree.
 
 ### Agent info: `i` (or `a`, then `i`)
 
