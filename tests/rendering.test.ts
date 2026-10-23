@@ -171,6 +171,23 @@ test('AgentOrg tools use the triangle marker and prompt targets get an independe
   }
 });
 
+test('long prompt targets do not steal or clip the prompt body at narrow widths', () => {
+  const target = '@research-worker-with-a-long-name', prompt = 'FIRST second';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} ${prompt}`, extended: `${target} ${prompt}`, full: `${target} ${prompt}`, toolSymbol: '∴', toolTarget: target, toolPrompt: prompt };
+  const e = event(1, 'tool.call', { title: 'mcp__agentorg__prompt_subagent', status: 'pending', rawInput: { agentId: 'session-1', text: prompt } });
+  for (const width of [20, 32]) {
+    const full = renderEvent(e, 3, width, presentation);
+    expect(stripAnsi(full)).toMatch(/FIRST\s+second/);
+    for (const line of full.split('\n')) expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(width);
+    const summary = renderEvent(e, 1, width, presentation);
+    expect(stripAnsi(summary)).toContain('F');
+    expect(stringWidth(stripAnsi(summary))).toBeLessThanOrEqual(width);
+    const extended = renderEvent(e, 2, width, presentation);
+    expect(stripAnsi(extended)).toMatch(/FIRST\s+second/);
+    expect(extended.split('\n').length).toBeLessThanOrEqual(2);
+  }
+});
+
 test('prompt_subagent levels bound summaries/details and preserve full Markdown prompts', () => {
   const prompt = '**Review the change** and inspect `src/main.ts`. '.repeat(9) + 'Keep the final recommendation concise.';
   const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `@Reviewer ${prompt}`, extended: `@Reviewer ${prompt}`, full: `@Reviewer ${prompt}`, toolSymbol: '∴', toolTarget: '@Reviewer', toolPrompt: prompt };
@@ -391,11 +408,59 @@ test('terminal level selector displays examples for the real Pi-prefixed AgentOr
     await tui.visible(`AgentOrg example ${emitted}`);
     expect(tui.screen()).toContain('Synthetic examples');
     expect(tui.screen()).not.toContain('No examples available');
-    tui.keys('\x1b[A');
-    await tui.visible('tool.result:create_subagent');
+    const canonicalType = 'tool.result:create_subagent';
+    const canonicalIndex = new Settings().types(subtypes).indexOf(canonicalType);
+    const steps = canonicalIndex - index;
+    tui.keys(steps < 0 ? '\x1b[A'.repeat(-steps) : '\x1b[B'.repeat(steps));
+    await tui.visible(canonicalType);
     await tui.visible('AgentOrg example create_subagent');
     expect(tui.screen()).not.toContain('Core generic tool fallback');
   } finally { await tui.close(); await mock.close(); }
+}, 15000);
+
+test('z inheritance for default Pi subtypes survives save/reload and follows the parent level', async () => {
+  const cases = [
+    { phase: 'tool.call', canonical: 'prompt_subagent', parentLevel: 1, defaultLevel: 3 },
+    { phase: 'tool.result', canonical: 'get_operation', parentLevel: 4, defaultLevel: 2 },
+  ] as const;
+  for (const item of cases) {
+    const emitted = `mcp__agentorg__${item.canonical}`, type = `${item.phase}:${emitted}`;
+    const renderer = {
+      id: `core.mcp-${item.canonical}`, name: `${item.canonical} · AgentOrg MCP`, tool: item.canonical,
+      aliases: [emitted], eventTypes: ['tool.call', 'tool.update', 'tool.result'], updateMode: 'semantic', extendedLayout: 'header-detail',
+      examples: ['tool.call', 'tool.update', 'tool.result'].map(phase => ({ type: phase, summary: `Example ${item.canonical}`, extended: `Example ${item.canonical}\nStatus`, full: `Example ${item.canonical}`, raw: JSON.stringify({ kind: 'event', seq: 0, time: 'now', type: phase, data: { title: item.canonical } }) })),
+      aliasExamples: { [emitted]: ['tool.call', 'tool.update', 'tool.result'].map(phase => ({ type: phase, subtype: emitted, summary: `Example ${emitted}`, extended: `Example ${emitted}\nStatus`, full: `Example ${emitted}`, raw: JSON.stringify({ kind: 'event', seq: 0, time: 'now', type: phase, data: { title: emitted } }) })) },
+    };
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { rendering: { version: 1, catalog: 'events.renderers' } } });
+      else if (request.method === 'events.renderers') respond(socket, request.id, { version: 1, renderers: [renderer] });
+      else if (request.method === 'subscribe') respond(socket, request.id, { seq: 0, liveOnly: true });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    });
+    const config = join(mock.directory, 'config.json');
+    const initial = new Settings();
+    if (item.parentLevel !== 1) initial.levels[item.phase] = item.parentLevel;
+    await initial.save(config);
+    const tui = terminalClient(mock.path, mock.directory);
+    try {
+      await tui.visible('connected');
+      const phases = ['tool.call', 'tool.update', 'tool.result'];
+      const subtypes = phases.flatMap(phase => [`${phase}:${item.canonical}`, `${phase}:${emitted}`]);
+      const index = (await Settings.load(config)).types(subtypes).indexOf(type);
+      tui.keys('vl'); await tui.visible('Event rendering levels');
+      tui.keys('\x1b[B'.repeat(index)); await tui.visible(type);
+      expect((await Settings.load(config)).level(item.phase, emitted)).toBe(item.defaultLevel);
+      tui.keys('z');
+      await tui.visible(`Saved ${config}`);
+      const persisted = JSON.parse(await readFile(config, 'utf8'));
+      expect(persisted.inheritedLevels).toContain(type);
+      expect(persisted.levels[type]).toBeUndefined();
+      const reloaded = await Settings.load(config);
+      expect(reloaded.levels[type]).toBeUndefined();
+      expect(reloaded.inheritedLevels.has(type)).toBe(true);
+      expect(reloaded.level(item.phase, emitted)).toBe(item.parentLevel);
+    } finally { await tui.close(); await mock.close(); }
+  }
 }, 15000);
 
 test('terminal level selector previews renderer examples, saves subtype overrides, and tree/raw chat stay independent', async () => {

@@ -21,6 +21,7 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
       'tool.result:mcp__agentorg__remove_subagent': 2,
     });
     expect(settings.levels).toEqual(DEFAULT_LEVELS);
+    expect(settings.inheritedLevels.size).toBe(0);
     expect(settings.level('agent.message')).toBe(3);
     expect(settings.level('tool.call')).toBe(1);
     expect(settings.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(3);
@@ -35,7 +36,11 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     settings.toggle('agent.message');
     settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;
-    settings.levels['tool.result:mcp__agentorg__get_operation'] = 4;
+    settings.levels['tool.result'] = 4;
+    delete settings.levels['tool.call:mcp__agentorg__prompt_subagent'];
+    settings.inheritedLevels.add('tool.call:mcp__agentorg__prompt_subagent');
+    settings.inheritedLevels.add('tool.result:mcp__agentorg__get_operation');
+    delete settings.levels['tool.result:mcp__agentorg__get_operation'];
     expect(settings.compactToolCalls).toBe(false);
     settings.compactToolCalls = true;
     settings.colors.selectionBg = 'white';
@@ -45,9 +50,10 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     const loaded = await Settings.load(path);
     expect(loaded.tracked('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
+    expect(loaded.inheritedLevels).toEqual(new Set(['tool.call:mcp__agentorg__prompt_subagent', 'tool.result:mcp__agentorg__get_operation']));
     expect(loaded.level('tool.result', 'mcp__agentorg__get_operation')).toBe(4);
     expect(loaded.level('tool.result', 'mcp__agentorg__get_completion')).toBe(2);
-    expect(loaded.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(3);
+    expect(loaded.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(1);
     expect(loaded.tableFields).toEqual(['error', 'name', 'status']);
     expect(loaded.compactToolCalls).toBe(true);
     expect(loaded.colors).toMatchObject({ selectionBg: 'white', selectionFg: 'black', toolCall: 'magenta' });
@@ -63,6 +69,12 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
       await writeFile(path, JSON.stringify({ excluded: [], levels: {}, compactToolCalls }));
       await expect(Settings.load(path)).rejects.toThrow('Invalid compactToolCalls setting');
     }
+    await writeFile(path, JSON.stringify({ excluded: [], levels: { 'tool.result': 4, 'tool.call': 1, 'tool.result:create_subagent': 3 } }));
+    const legacy = await Settings.load(path);
+    expect(legacy.level('tool.result', 'mcp__agentorg__get_operation')).toBe(4);
+    expect(legacy.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(1);
+    expect(legacy.level('tool.result', 'create_subagent')).toBe(3);
+    expect(legacy.inheritedLevels).toContain('tool.result:mcp__agentorg__get_operation');
     await writeFile(path, '{"excluded":[],"levels":{"agent.message":5}}');
     await expect(Settings.load(path)).rejects.toThrow('Invalid rendering level');
   } finally { await mock.close(); }

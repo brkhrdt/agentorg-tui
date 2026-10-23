@@ -97,6 +97,8 @@ export class Settings {
     'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped',
   ]);
   levels: Record<string, Level> = { ...DEFAULT_LEVELS };
+  /** Subtype defaults explicitly set to inherit their parent level. */
+  inheritedLevels = new Set<string>();
   tableFields: TableField[] = [...DEFAULT_TABLE_FIELDS];
   compactToolCalls = false;
   colors: Record<ColorSetting, string> = { ...DEFAULT_COLORS };
@@ -104,20 +106,23 @@ export class Settings {
   tracked(type: string): boolean { return !this.excluded.has(type); }
   level(type: string, subtype?: string): Level {
     const key = subtype ? `${type}:${subtype}` : type;
-    return this.levels[key] ?? this.levels[type.split(':')[0]!] ?? 1;
+    const parent = type.split(':')[0]!;
+    if (this.inheritedLevels.has(key)) return this.levels[parent] ?? 1;
+    return this.levels[key] ?? this.levels[parent] ?? 1;
   }
   toggle(type: string): void {
     if (!this.excluded.delete(type)) this.excluded.add(type);
   }
   types(discovered: Iterable<string>): string[] {
-    return [...new Set([...EVENT_TYPES, ...discovered, ...this.excluded, ...Object.keys(this.levels)])].sort();
+    return [...new Set([...EVENT_TYPES, ...discovered, ...this.excluded, ...Object.keys(this.levels), ...this.inheritedLevels])].sort();
   }
   static async load(path: string): Promise<Settings> {
     const settings = new Settings();
     try {
       const data = JSON.parse(await readFile(path, 'utf8'));
       if (!Array.isArray(data.excluded) || !data.excluded.every((v: unknown) => typeof v === 'string') ||
-          !data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels)) throw new Error('Invalid settings format');
+          !data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels) ||
+          (data.inheritedLevels !== undefined && (!Array.isArray(data.inheritedLevels) || !data.inheritedLevels.every((v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 256)))) throw new Error('Invalid settings format');
       if (data.history !== undefined) settings.history = historySettings(data.history);
       settings.excluded = new Set(data.excluded);
       settings.tableFields = normalizeTableFields(data.tableFields);
@@ -138,6 +143,13 @@ export class Settings {
         if (![1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
         settings.levels[type] = level as Level;
       }
+      if (data.inheritedLevels !== undefined) settings.inheritedLevels = new Set(data.inheritedLevels);
+      else {
+        // Legacy configs had no tombstones. A missing per-tool override meant
+        // inherit from its event type, so retain that behavior for old files.
+        settings.inheritedLevels = new Set(Object.keys(DEFAULT_LEVELS).filter(type => type.includes(':') && !Object.hasOwn(data.levels, type)));
+      }
+      for (const type of settings.inheritedLevels) delete settings.levels[type];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
@@ -146,7 +158,7 @@ export class Settings {
   async save(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors, history: this.history }, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, inheritedLevels: [...this.inheritedLevels].sort(), tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors, history: this.history }, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   }
 }

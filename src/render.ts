@@ -215,7 +215,12 @@ function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: 
   const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
   const targetText = rendering.toolTarget ? clean(rendering.toolTarget) : '';
   const target = targetText ? paint(targetText, 'agentTarget', colors) : '';
-  const prefix = `${symbol}${target ? ` ${target}` : ''} `;
+  // Keep a very long recipient from taking the entire prompt column. The target
+  // may be abbreviated, but prompt text always gets the remaining width.
+  const prefixBudget = Math.min(Math.max(0, width - 1), Math.floor(width * 0.4));
+  const targetBudget = Math.max(0, prefixBudget - stringWidth(stripAnsi(symbol)) - 2);
+  const visibleTarget = target && targetBudget > 0 ? clipStyled(target, targetBudget) : '';
+  const prefix = `${symbol}${visibleTarget ? ` ${visibleTarget}` : ''} `;
   const prefixWidth = stringWidth(stripAnsi(prefix));
   const bodyWidth = Math.max(1, width - prefixWidth);
   const prompt = rendering.toolPrompt ?? (targetText && rendering.summary.startsWith(targetText) ? rendering.summary.slice(targetText.length).trimStart() : rendering.summary);

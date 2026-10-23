@@ -325,6 +325,7 @@ export class UI {
   private changeLevel(delta: number, absolute?: Level): void {
     const type = this.menuTypes[this.menuIndex];
     if (!type) return;
+    this.settings.inheritedLevels.delete(type);
     this.settings.levels[type] = absolute ?? ((this.settings.level(type) - 1 + delta + 4) % 4 + 1) as Level;
     this.saveSettings(); this.draw();
   }
@@ -524,8 +525,13 @@ export class UI {
       action('r', 'Next renderer example (does not change server selection)', () => { this.previewIndex++; this.draw(); }),
       action('z', 'Inherit parent / default rendering level', () => {
         const type = this.menuTypes[this.menuIndex];
-        if (type?.includes(':')) delete this.settings.levels[type];
-        else if (type) this.settings.levels[type] = new Settings().level(type);
+        if (type?.includes(':')) {
+          delete this.settings.levels[type];
+          this.settings.inheritedLevels.add(type);
+        } else if (type) {
+          this.settings.inheritedLevels.delete(type);
+          this.settings.levels[type] = new Settings().level(type);
+        }
         this.saveSettings(); this.draw();
       }),
       action('left', 'Previous level', () => this.changeLevel(-1)), action('right', 'Next level', () => this.changeLevel(1)), action('space', 'Cycle level', () => this.changeLevel(1)), action('enter', 'Cycle level', () => this.changeLevel(1)), back,
