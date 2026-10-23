@@ -14,6 +14,7 @@ export function terminalClient(socket: string, directory: string, { cols = 120, 
   const keys = (text: string) => child.stdin.write(text);
   return {
     keys, screen,
+    async flush() { await new Promise<void>(resolve => terminal.write('', resolve)); },
     cursor() { return { x: terminal.buffer.active.cursorX, y: terminal.buffer.active.cursorY }; },
     cell(row: number, column: number) { return terminal.buffer.active.getLine(row)?.getCell(column); },
     async visible(text: string) {
