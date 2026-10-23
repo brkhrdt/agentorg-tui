@@ -1,4 +1,6 @@
 import { expect, test } from 'bun:test';
+import blessed from 'blessed';
+import { PassThrough } from 'node:stream';
 import { chatGroupIdentity, chatGroups } from '../src/render.js';
 import { layoutChatParts, resolveChatAnchor, visibleChatOrigin } from '../src/chat-viewport.js';
 import { Settings } from '../src/settings.js';
@@ -34,38 +36,46 @@ test('visible origin excludes Blessed alwaysScroll childOffset', () => {
   expect(visibleChatOrigin({ childBase: 0, childOffset: 0, getScroll: () => 0 })).toBe(0);
 });
 
-test('chat layout counts wrapped notices and the single blank row in double-newline joins', () => {
-  const a = event(1, 'agent.message', { content: { text: 'first' } }, { agentId: 'root' });
-  const b = event(2, 'agent.message', { content: { text: 'second' } }, { agentId: 'root' });
-  const layout = layoutChatParts([
-    { text: '[History gap: earlier events have expired.]' },
-    { text: 'first', event: a, identity: 'a' },
-    { text: 'second', event: b, identity: 'b' },
-  ], 10);
-  expect(layout).toEqual([
-    { identity: 'a', seq: 1, startRow: 7, rows: 1 },
-    { identity: 'b', seq: 2, startRow: 9, rows: 1 },
-  ]);
-});
+test('chat row starts and anchor restoration follow Blessed layout at narrow widths through insertions and removals', () => {
+  const screen = blessed.screen({
+    input: new PassThrough(), output: new PassThrough(),
+    terminal: 'xterm-256color', smartCSR: false,
+  });
+  const widget = blessed.box({ parent: screen, width: 37, height: 20, scrollable: true, alwaysScroll: true, tags: false,
+    scrollbar: { ch: '│', style: { bg: 'gray' } } });
+  const anchorEvent = event(10, 'agent.message', { content: { text: `anchor ${'wrapped '.repeat(24)}` } }, { agentId: 'root' });
+  const laterEvent = event(11, 'agent.message', { content: { text: 'later' } }, { agentId: 'root' });
+  const anchorPart = { text: `anchor ${'wrapped '.repeat(24)}`, event: anchorEvent, identity: 'anchor' };
+  const anchor = { identity: 'anchor', seq: 10, rowOffset: 1 };
+  const compareWithBlessed = (parts: Array<{ text: string; event?: ReturnType<typeof event>; identity?: string }>) => {
+    widget.setContent(parts.map(part => part.text).join('\n\n'));
+    const ftor = (widget as any)._clines.ftor as number[][];
+    const layout = layoutChatParts(parts, ftor);
+    let fakeLine = 0;
+    for (let index = 0; index < parts.length; index++) {
+      if (index) fakeLine++;
+      const part = parts[index]!;
+      if (part.event) expect(layout.find(item => item.identity === part.identity)?.startRow).toBe(ftor[fakeLine]?.[0]);
+      fakeLine += part.text.split('\n').length;
+    }
+    return { ftor, layout };
+  };
+  try {
+    const originalParts = [{ text: '[History gap: earlier events have expired.]' }, anchorPart,
+      { text: 'later', event: laterEvent, identity: 'later' }];
+    const original = compareWithBlessed(originalParts);
+    const originalRow = original.ftor[2]?.[0]!;
+    expect(resolveChatAnchor(anchor, original.layout)).toEqual({ row: originalRow + 1, lost: false });
 
-test('anchor rows remap across prepends/header changes and report eviction fallback', () => {
-  const a = event(10, 'agent.message', { content: { text: 'anchor' } }, { agentId: 'root' });
-  const b = event(11, 'agent.message', { content: { text: 'newer' } }, { agentId: 'root' });
-  const anchor = { identity: 'anchor', seq: 10, rowOffset: 0 };
-  const original = layoutChatParts([{ text: 'anchor', event: a, identity: 'anchor' }, { text: 'newer', event: b, identity: 'newer' }], 20);
-  expect(resolveChatAnchor(anchor, original)).toEqual({ row: 0, lost: false });
+    const insertedParts = [{ text: '[History gap: earlier events have expired.]' },
+      { text: `[Coverage ${'notice '.repeat(30)}]` }, { text: 'older', event: event(8), identity: 'older' },
+      anchorPart, { text: 'later', event: laterEvent, identity: 'later' }];
+    const inserted = compareWithBlessed(insertedParts);
+    const insertedFakeLine = insertedParts.slice(0, 3).reduce((lines, part) => lines + part.text.split('\n').length + 1, 0);
+    expect(resolveChatAnchor(anchor, inserted.layout)).toEqual({ row: inserted.ftor[insertedFakeLine]?.[0]! + 1, lost: false });
 
-  const prepended = event(8, 'agent.message', { content: { text: 'older' } }, { agentId: 'root' });
-  const afterPrepend = layoutChatParts([
-    { text: 'A history gap notice that wraps across this narrow pane' },
-    { text: 'older', event: prepended, identity: 'older' },
-    { text: 'anchor', event: a, identity: 'anchor' },
-    { text: 'newer', event: b, identity: 'newer' },
-  ], 10);
-  const mapped = resolveChatAnchor(anchor, afterPrepend);
-  expect(mapped.lost).toBe(false);
-  expect(mapped.row).toBe(afterPrepend.find(item => item.identity === 'anchor')?.startRow ?? -1);
-  const evicted = resolveChatAnchor(anchor, afterPrepend.filter(item => item.identity !== 'anchor'));
-  expect(evicted.lost).toBe(true);
-  expect(evicted.row).toBeGreaterThan(0);
+    const removed = compareWithBlessed([anchorPart, { text: 'later', event: laterEvent, identity: 'later' }]);
+    expect(resolveChatAnchor(anchor, removed.layout)).toEqual({ row: removed.ftor[0]?.[0]! + 1, lost: false });
+    expect(resolveChatAnchor(anchor, removed.layout.filter(item => item.identity !== 'anchor'))).toMatchObject({ lost: true });
+  } finally { screen.destroy(); }
 });

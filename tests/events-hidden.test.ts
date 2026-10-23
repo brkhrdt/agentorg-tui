@@ -47,6 +47,24 @@ describe('observed tree previews across history eviction', () => {
     expect(eventText(store.latest(settings).get('quiet')!)).toContain(marker);
   });
 
+  test('chat-history pages cannot regress a live preview after its raw event is evicted', () => {
+    const { store, settings } = setup();
+    store.ingest(message(20, 'quiet', 'CURRENT_LIVE'), 'live');
+    for (let seq = 21; seq <= 24; seq++) store.ingest(message(seq, 'busy', `BUSY_${seq}`), 'live');
+    expect(store.events.has(20)).toBe(false);
+    expect(eventText(store.latest(settings).get('quiet')!)).toContain('CURRENT_LIVE');
+
+    store.ingest(message(19, 'quiet', 'OLDER_SAME_GENERATION'), 'chat-history');
+    store.ingest(event(18, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'old-generation', content: { type: 'text', text: 'OLDER_GENERATION' },
+    }, { agentId: 'quiet', generation: 'g0' }), 'chat-history');
+
+    const latest = store.latest(settings).get('quiet');
+    expect(latest?.seq).toBe(20);
+    expect(eventText(latest!)).toContain('CURRENT_LIVE');
+    expect(eventText(latest!)).not.toContain('OLDER');
+  });
+
   test('session replacement and generation changes clear stale tree candidates', () => {
     const { store, settings } = setup();
     store.ingest(message(1, 'quiet', marker), 'live');

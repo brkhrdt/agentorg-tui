@@ -1394,7 +1394,11 @@ export class UI {
     this.chat.bottom = rows + 4;
     if (rows !== previous) {
       if (this.view === 'prompt') this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
-      else if (this.follow) this.chat.setScrollPerc(100);
+      else if (this.follow) {
+        this.adjustingChatViewport = true;
+        try { this.chat.setScrollPerc(100); }
+        finally { this.adjustingChatViewport = false; }
+      }
       else if (anchor) {
         this.adjustingChatViewport = true;
         this.chat.setScroll(this.restoreChatAnchor(anchor, this.chatLayout));
@@ -1912,13 +1916,15 @@ export class UI {
       }
       if (!parts.length) parts.push({ text: 'No tracked events yet.' });
       const content = parts.map(part => part.text).join('\n\n');
-      const nextLayout = layoutChatParts(parts, Math.max(1, width - 1));
+      let nextLayout = this.chatLayout;
       if (content !== this.lastChat) {
         this.adjustingChatViewport = true;
-        this.chat.setContent(content); this.lastChat = content;
-        if (this.follow) this.chat.setScrollPerc(100);
-        else this.chat.setScroll(this.restoreChatAnchor(anchor, nextLayout));
-        this.adjustingChatViewport = false;
+        try {
+          this.chat.setContent(content); this.lastChat = content;
+          nextLayout = layoutChatParts(parts, (this.chat as any)._clines?.ftor ?? []);
+          if (this.follow) this.chat.setScrollPerc(100);
+          else this.chat.setScroll(this.restoreChatAnchor(anchor, nextLayout));
+        } finally { this.adjustingChatViewport = false; }
       }
       this.chatLayout = nextLayout;
       this.footer.setContent(' Text: Enter interrupt/send  PgUp older  PgDn scroll to latest  Ctrl+Home top  Ctrl+End latest/follow  Ctrl+U clear  Esc tree');

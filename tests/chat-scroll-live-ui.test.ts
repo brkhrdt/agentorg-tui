@@ -23,12 +23,14 @@ test('chat appends while scrolled, preserves the viewport and outgoing prompt, t
       respond(socket, request.id, { events: matches.slice(-request.params.limit), hasMore: matches.length > request.params.limit, oldestSeq: 1, latestSeq: latest, expired: false });
     } else if (request.method === 'agent.prompt') {
       prompts.push(request.params);
-      latest = 31;
-      const queued = event(30, 'prompt.queued', { text: request.params.text, operationId: 'op-1' }, { agentId: 'root', generation: 'g1' });
-      const reply = message(31, 'PROMPT_REPLY_MARKER');
+      const first = prompts.length === 1;
+      const queuedSeq = first ? 30 : 35;
+      latest = queuedSeq + 1;
+      const queued = event(queuedSeq, 'prompt.queued', { text: request.params.text, operationId: `op-${prompts.length}` }, { agentId: 'root', generation: 'g1' });
+      const reply = message(queuedSeq + 1, first ? 'PROMPT_REPLY_MARKER' : 'PROMPT_REPLY_AFTER_COMPOSER_SHRINK');
       records.push(queued, reply);
       send(socket, queued); send(socket, reply);
-      respond(socket, request.id, { ...operation('completed'), id: 'op-1', agentId: 'root' });
+      respond(socket, request.id, { ...operation('completed'), id: `op-${prompts.length}`, agentId: 'root' });
     }
   });
   await writeFile(join(mock.directory, 'config.json'), JSON.stringify({
@@ -118,6 +120,17 @@ test('chat appends while scrolled, preserves the viewport and outgoing prompt, t
     const afterBottom = message(32, 'FOLLOWING_AT_BOTTOM'); records.push(afterBottom);
     for (const socket of mock.sockets) send(socket, afterBottom);
     await tui.visible('FOLLOWING_AT_BOTTOM');
+
+    const multilineDraft = 'COMPOSER_SHRINK_X'.repeat(18);
+    tui.keys(multilineDraft);
+    await tui.visible('COMPOSER_SHRINK_X');
+    await waitFor(() => tui.screen().split('\n').filter(line => line.includes('COMPOSER_SHRINK_X')).length >= 3);
+    tui.keys('\r');
+    await tui.visible('Prompt completed');
+    await waitFor(() => prompts.length === 2);
+    await waitFor(() => !tui.screen().includes('COMPOSER_SHRINK_X'));
+    expect(prompts[1]).toEqual({ agentId: 'root', text: multilineDraft, queue: false });
+    await tui.visible('PROMPT_REPLY_AFTER_COMPOSER_SHRINK');
   } finally { await tui.close(); await mock.close(); }
 }, 20_000);
 

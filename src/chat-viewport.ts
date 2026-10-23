@@ -1,4 +1,3 @@
-import wrapAnsi from 'wrap-ansi';
 import type { ServerEvent } from './protocol.js';
 
 export type ChatBlockLayout = { identity: string; seq: number; startRow: number; rows: number };
@@ -10,20 +9,24 @@ export function visibleChatOrigin(chat: { childBase: number; childOffset: number
   return Math.max(0, Math.floor(chat.childBase));
 }
 
-function visualRows(text: string, width: number): number {
-  return text.split('\n').reduce((rows, line) => rows + wrapAnsi(line, Math.max(1, width), { hard: true, trim: false }).split('\n').length, 0);
-}
-
-/** Layout rows for the exact double-newline join used to populate the chat widget. */
-export function layoutChatParts(parts: ChatLayoutPart[], width: number): ChatBlockLayout[] {
+/** Uses Blessed's ftor map so row offsets match its actual Unicode, tag, and wrap behavior. */
+export function layoutChatParts(parts: ChatLayoutPart[], ftor: number[][]): ChatBlockLayout[] {
   const layout: ChatBlockLayout[] = [];
-  let row = 0;
+  let fakeLine = 0;
   for (let index = 0; index < parts.length; index++) {
     const part = parts[index]!;
-    if (index) row++; // Two newline characters add one blank row between parts.
-    const rows = visualRows(part.text, width);
-    if (part.event) layout.push({ identity: part.identity ?? `${part.event.seq}`, seq: part.event.seq, startRow: row, rows });
-    row += rows;
+    if (index) fakeLine++; // Two newlines add one blank logical line between parts.
+    const lineCount = part.text.split('\n').length;
+    const renderedRows = ftor.slice(fakeLine, fakeLine + lineCount).flat();
+    if (part.event && renderedRows.length) {
+      layout.push({
+        identity: part.identity ?? `${part.event.seq}`,
+        seq: part.event.seq,
+        startRow: renderedRows[0]!,
+        rows: renderedRows.at(-1)! - renderedRows[0]! + 1,
+      });
+    }
+    fakeLine += lineCount;
   }
   return layout;
 }

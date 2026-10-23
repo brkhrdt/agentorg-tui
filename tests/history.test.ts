@@ -157,6 +157,75 @@ test('older-page traversal advances past cache capacity while preserving the bou
   } finally { session.close(); await running; await mock.close(); }
 });
 
+test('older-page cursors advance at page sizes five and six with a six-event cache', async () => {
+  for (const chatPageSize of [5, 6]) {
+    const history = Array.from({ length: 30 }, (_, i) => event(i + 1, 'agent.message', { content: { text: `message ${i + 1}` } }, { agentId: 'root' }));
+    const requests: any[] = [];
+    const mock = await mockServer((socket, request) => {
+      requests.push(request);
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 30, agents: [agent('root')], operations: [] });
+      else if (request.method === 'events.history') {
+        const { after = 0, before = Infinity, limit, agentId } = request.params;
+        const matches = history.filter(item => item.seq > after && item.seq < before && (!agentId || item.agentId === agentId));
+        respond(socket, request.id, { events: matches.slice(-limit), hasMore: matches.length > limit, oldestSeq: 1, latestSeq: 30, expired: false });
+      }
+    });
+    const session = new Session(mock.path, { history: { ...policy, chatPageSize } });
+    const running = session.run();
+    try {
+      await waitFor(() => session.status === 'connected');
+      await session.openChat('root');
+      const cursors: number[] = [];
+      for (let page = 0; page < 20 && session.chatHasMore('root'); page++) {
+        const before = session.chatEvents('root')[0]?.seq;
+        expect(before).toBeDefined();
+        cursors.push(before!);
+        await session.olderChat('root');
+        expect(session.store.events.size).toBeLessThanOrEqual(6);
+      }
+      expect(cursors.length).toBeGreaterThan(1);
+      expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1]!)).toBe(true);
+      expect(session.chatEvents('root').some(item => item.seq === 1)).toBe(true);
+      expect(session.store.events.has(30)).toBe(true);
+      expect(requests.filter(request => request.method === 'events.history' && request.params.agentId === 'root').length).toBeGreaterThan(1);
+    } finally { session.close(); await running; await mock.close(); }
+  }
+});
+
+test('older-page cursor progresses under byte pressure while preserving the newest event', async () => {
+  const history = Array.from({ length: 36 }, (_, i) => event(i + 1, 'agent.message', { content: { text: `${i + 1} ${'x'.repeat(300)}` } }, { agentId: 'root' }));
+  const requests: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 36, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') {
+      const { after = 0, before = Infinity, limit, agentId } = request.params;
+      const matches = history.filter(item => item.seq > after && item.seq < before && (!agentId || item.agentId === agentId));
+      respond(socket, request.id, { events: matches.slice(-limit), hasMore: matches.length > limit, oldestSeq: 1, latestSeq: 36, expired: false });
+    }
+  });
+  const session = new Session(mock.path, { history: { ...policy, chatPageSize: 6, cacheBytes: 2048 } });
+  const running = session.run();
+  try {
+    await waitFor(() => session.status === 'connected');
+    await session.openChat('root');
+    const cursors: number[] = [];
+    for (let page = 0; page < 30 && session.chatHasMore('root'); page++) {
+      const before = session.chatEvents('root')[0]?.seq;
+      expect(before).toBeDefined();
+      cursors.push(before!);
+      await session.olderChat('root');
+      expect(session.store.cachedBytes).toBeLessThanOrEqual(2048);
+      expect(session.store.events.size).toBeLessThanOrEqual(6);
+    }
+    expect(cursors.length).toBeGreaterThan(1);
+    expect(cursors.every((cursor, index) => index === 0 || cursor < cursors[index - 1]!)).toBe(true);
+    expect(session.chatEvents('root').some(item => item.seq === 1)).toBe(true);
+    expect(session.store.events.has(36)).toBe(true);
+    expect(requests.filter(request => request.method === 'events.history' && request.params.agentId === 'root').length).toBeGreaterThan(1);
+  } finally { session.close(); await running; await mock.close(); }
+});
+
 test('active historical chat appends live membership within cache bounds and follow reloads the latest tail', async () => {
   const history = Array.from({ length: 20 }, (_, i) => event(i + 1));
   const mock = await mockServer((socket, request) => {

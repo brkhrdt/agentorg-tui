@@ -205,10 +205,19 @@ export class Store extends EventEmitter {
       if (changed) this.emit('change');
       return;
     }
-    const activeTail = new Set([...this.cache.keys()].filter(active).sort((a, b) => b - a).slice(0, Math.max(2, this.policy.chatPageSize)));
+    const activeTail = [...this.cache.keys()].filter(active).sort((a, b) => b - a)
+      .slice(0, Math.max(1, Math.min(this.policy.chatPageSize, Math.floor(this.policy.recentEvents / 3))));
+    const newestActiveSeq = activeTail[0];
+    const oldestOlderSeq = this.browsingOlder
+      ? [...this.cache].filter(([seq, entry]) => active(seq) && entry.loadedAt !== undefined && entry.older).reduce<number | undefined>((oldest, [seq]) => oldest === undefined || seq < oldest ? seq : oldest, undefined)
+      : undefined;
     const priority = (seq: number, entry: HistoryCacheEntry) =>
       active(seq) && entry.loadedAt !== undefined
-        ? seq === this.activeAnchorSeq ? 5 : activeTail.has(seq) ? 4 : this.browsingOlder && entry.older ? 3 : 2
+        ? seq === newestActiveSeq ? 7
+          : seq === oldestOlderSeq ? 6
+            : seq === this.activeAnchorSeq ? 5
+              : activeTail.includes(seq) ? 4
+                : this.browsingOlder && entry.older ? 3 : 2
         : entry.recent || entry.pending ? 1 : 0;
     const candidates = [...this.cache].sort(([a, x], [b, y]) => {
       const rank = priority(a, x) - priority(b, y);
@@ -288,7 +297,7 @@ export class Store extends EventEmitter {
     const subtype = this.renderings.get(event.seq)?.subtype;
     if (subtype) this.discovered.add(`${event.type}:${subtype}`);
     if (this.watermark >= 0 && stateEvent.seq > this.watermark) this.reduce(stateEvent);
-    if (source !== 'history') this.rememberLivePreview(stateEvent);
+    if (source !== 'history' && source !== 'chat-history') this.rememberLivePreview(stateEvent);
     this.pruneLivePreviews();
     this.pruneHistory();
     this.emit('change');
