@@ -38,9 +38,10 @@ export interface RendererMetadata {
   examples: Array<{ type: string; summary: string; extended: string; full: string; raw: string; extendedDiff?: ExtendedDiff }>;
 }
 export interface RenderingCapability { version: number; catalog: string }
+export interface SkillCatalogManagementCapability { version: number; semantics: 'reversible-retirement-v1'; sourceIdentity: 'name+source-v1'; endpoints: { retire: 'skills.retireRepository'; restore: 'skills.restoreRepository'; delete?: 'skills.deleteRepository' } }
 export type SkillState = 'unavailable' | 'available' | 'installed';
 export type SkillStates = Record<string, SkillState>;
-export interface Skill { name: string; description: string; gitUrl?: string; [key: string]: unknown }
+export interface Skill { name: string; description: string; gitUrl?: string; source?: { kind: 'git'; gitUrl: string } | { kind: 'local'; path: string }; path?: string; createdAt?: string; origin?: string; history?: { mode: string; scope?: string; selectedCommit?: string; originalHead?: string; refCount?: number; refManifest?: string }; status?: 'ready' | 'retired'; catalogStatus?: 'active' | 'retired'; [key: string]: unknown }
 export interface SkillRetained { name: string; gitUrl?: string; description?: string; status?: string; error?: string; [key: string]: unknown }
 export interface SkillReconciliation { generation?: number; desiredRevision?: number; state: 'pending' | 'running' | 'ready' | 'error'; lastSuccessfulRevision?: number; entries?: Array<{ name: string; gitUrl?: string; status: string; error?: string; attempts?: number }> }
 export interface ServerSettingsField {

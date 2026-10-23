@@ -16,7 +16,7 @@ export class ServerSettingsEditor {
       return [field.key, valueText(value ?? (field.editor === 'list' ? [] : field.editor.endsWith('-map') ? {} : field.editor === 'select' ? field.choices![0] : field.editor === 'number' ? 0 : field.editor === 'boolean' ? false : ''))];
     }));
   }
-  get fields(): ServerSettingsField[] { return this.group.fields.filter(field => !field.deprecated); }
+  get fields(): ServerSettingsField[] { return this.group.fields.filter(field => !field.deprecated && !(this.group.namespace === 'skills' && field.key === 'repositories')); }
   private parse(field: ServerSettingsField, text: string): unknown {
     const value = parseTyped(text, field.editor === 'text' || field.editor === 'select' ? 'string' : field.editor === 'number' ? 'number' : field.editor === 'boolean' ? 'boolean' : 'json');
     if (field.editor === 'number' && ((field.min !== undefined && (value as number) < field.min) || (field.max !== undefined && (value as number) > field.max))) throw new Error(`Value must be between ${field.min ?? '−∞'} and ${field.max ?? '∞'}`);
