@@ -220,10 +220,17 @@ function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: 
   const prefixBudget = Math.min(Math.max(0, width - 1), Math.floor(width * 0.4));
   const targetBudget = Math.max(0, prefixBudget - stringWidth(stripAnsi(symbol)) - 2);
   const visibleTarget = target && targetBudget > 0 ? clipStyled(target, targetBudget) : '';
-  const prefix = `${symbol}${visibleTarget ? ` ${visibleTarget}` : ''} `;
-  const prefixWidth = stringWidth(stripAnsi(prefix));
-  const bodyWidth = Math.max(1, width - prefixWidth);
   const prompt = rendering.toolPrompt ?? (targetText && rendering.summary.startsWith(targetText) ? rendering.summary.slice(targetText.length).trimStart() : rendering.summary);
+  let prefix = `${symbol}${visibleTarget ? ` ${visibleTarget}` : ''} `;
+  let prefixWidth = stringWidth(stripAnsi(prefix));
+  let bodyWidth = Math.max(1, width - prefixWidth);
+  // At tiny widths the decoration can leave less room than a wide glyph needs;
+  // full mode must never clip away prompt characters to preserve a marker.
+  if (level === 3 && bodyWidth < 2) {
+    prefix = '';
+    prefixWidth = 0;
+    bodyWidth = width;
+  }
   if (level === 1) return clipStyled(prefix + markdown(prompt.replace(/\s+/g, ' ').trim(), bodyWidth, true, colors), width);
   const formatted = markdown(prompt, bodyWidth, false, colors);
   const bodyRows = logicalLines(formatted).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));

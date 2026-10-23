@@ -50,6 +50,16 @@ test.skipIf(!coreModule)('real semantic statuses stay visible at feasible narrow
   }
 });
 
+test.skipIf(!coreModule)('full prompt rendering drops decoration before clipping ASCII or multibyte text at tiny widths', () => {
+  for (const { width, prompt } of [{ width: 2, prompt: 'FIRST second' }, { width: 3, prompt: '你好世界' }]) {
+    const e = event('mcp__agentorg__prompt_subagent', { status: 'running' }, { agentId: 'child', text: prompt });
+    const presentation = registry().render(e, 'pi', 'core.tools', { targetName: 'research-worker-with-a-long-name' })!;
+    const output = stripAnsi(renderEvent(e, 3, width, presentation));
+    expect(output.replace(/\n/g, '')).toContain(prompt);
+    for (const line of output.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+  }
+});
+
 test.skipIf(!coreModule)('prompt_subagent full level shows the complete prompt without operation-status detail', () => {
   const prompt = 'very long prompt '.repeat(100);
   const e = { ...event('mcp__agentorg__prompt_subagent', { status: 'running' }, { agentId: 'child', text: prompt }), type: 'tool.update' };
