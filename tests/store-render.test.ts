@@ -133,6 +133,28 @@ describe('state and transcripts', () => {
     reordered.ingest(message(4, ' More'));
     expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
   });
+  test('historical prompt boundaries separate later out-of-order live messages', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }), 'history');
+    store.ingest(message(1, 'OLD '));
+    store.ingest(message(3, 'NEW'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+  });
+  test('historical message prefixes seed streams after earlier live prompts', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(2, 'HEAD '), 'history');
+    store.ingest(event(1, 'prompt.started', { operationId: 'prompt' }));
+    store.ingest(message(3, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD TAIL');
+  });
   test('late prompt boundaries reconcile retained previews immediately', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
