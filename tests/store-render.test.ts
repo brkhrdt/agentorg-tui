@@ -133,6 +133,19 @@ describe('state and transcripts', () => {
     reordered.ingest(message(4, ' More'));
     expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
   });
+  test('late prompt boundaries reconcile retained previews immediately', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(3, 'NEW'));
+    store.ingest(message(1, 'OLD '));
+    store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+    store.ingest(message(4, ' TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
   test('compatible historical chunks are not treated as tree-preview boundaries', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
