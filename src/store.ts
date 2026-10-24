@@ -290,9 +290,12 @@ export class Store extends EventEmitter {
       const needsHistory = this.livePreviewNeedsHistory.has(event.agentId);
       const shouldReconcileHistory = !previousBoundary || needsHistory || (this.compatibleLiveStream(previousBoundary, event) && !previous);
       const historical = shouldReconcileHistory ? this.historyMessagePrefix(event) : undefined;
+      const crossesRetainedBoundary = !!historical && !!previousBoundary && !this.compatibleLiveStream(previousBoundary, event) &&
+        (historical.startSeq ?? event.seq) <= previousBoundary.event.seq;
       let resolvedHistoryBoundary = false;
-      if (historical && (joined === undefined || (historical.startSeq ?? event.seq) <= startSeq ||
-          (needsHistory && historical.boundarySeq !== undefined && historical.boundarySeq >= startSeq))) {
+      if (historical && !crossesRetainedBoundary &&
+          (joined === undefined || (historical.startSeq ?? event.seq) <= startSeq ||
+            (needsHistory && historical.boundarySeq !== undefined && historical.boundarySeq >= startSeq))) {
         joined = historical.event;
         startSeq = historical.startSeq ?? event.seq;
       } else if (needsHistory && previousBoundary &&
