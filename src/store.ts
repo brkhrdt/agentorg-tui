@@ -29,7 +29,7 @@ function messageIdentity(event: ServerEvent): string | undefined {
   const messageId = object(event.data).messageId;
   return typeof messageId === 'string' ? createHash('sha256').update(messageId).digest('hex') : undefined;
 }
-type LivePreviewBoundary = { event: ServerEvent; streamKind?: string; messageIdentity?: string; startSeq?: number };
+type LivePreviewBoundary = { event: ServerEvent; streamKind?: string; messageIdentity?: string; startSeq?: number; historyCutoff?: number };
 type HistoricalLivePreviewBoundary = LivePreviewBoundary & { boundarySeq?: number };
 const TREE_PREVIEW_MAX_BYTES = 1024;
 const TREE_PREVIEW_MESSAGE_BYTES = 384;
@@ -224,12 +224,17 @@ export class Store extends EventEmitter {
     if (!current || !boundary?.streamKind) return;
     const historical = this.historyMessageThrough(agentId, current.seq);
     if (!historical || historical.event.seq !== current.seq ||
+        (boundary.historyCutoff !== undefined && (historical.startSeq ?? current.seq) < boundary.historyCutoff) ||
         (boundary.startSeq !== undefined && (historical.startSeq ?? current.seq) > boundary.startSeq &&
           (historical.boundarySeq === undefined || historical.boundarySeq < boundary.startSeq))) return;
     const candidate = compactPreview(historical.event);
     this.livePreviews.get(agentId)!.set(type, candidate);
+    const historyCutoff = historical.boundarySeq === undefined
+      ? boundary.historyCutoff
+      : Math.max(boundary.historyCutoff ?? historical.boundarySeq, historical.boundarySeq);
     const reconciledBoundary = {
       event: candidate, streamKind: historical.streamKind, messageIdentity: historical.messageIdentity, startSeq: historical.startSeq,
+      ...(historyCutoff !== undefined && { historyCutoff }),
     };
     this.livePreviewStreams.get(agentId)!.set(type, reconciledBoundary);
     const latestBoundary = this.livePreviewBoundaries.get(agentId);
@@ -249,8 +254,12 @@ export class Store extends EventEmitter {
       previous.event.type === event.type && previous.event.agentId === event.agentId && previous.event.generation === event.generation &&
       previous.messageIdentity === messageIdentity(event) && typeof data.content?.text === 'string';
   }
-  private hasHistoricalBoundaryAfter(agentId: string, afterSeq: number, beforeSeq: number): boolean {
-    return this.orderedEvents().some(event => event.agentId === agentId && event.seq > afterSeq && event.seq < beforeSeq);
+  private historicalBoundaryAfter(agentId: string, afterSeq: number, beforeSeq: number): number | undefined {
+    let boundarySeq: number | undefined;
+    for (const event of this.orderedEvents()) {
+      if (event.agentId === agentId && event.seq > afterSeq && event.seq < beforeSeq) boundarySeq = event.seq;
+    }
+    return boundarySeq;
   }
   private rememberLivePreview(event: ServerEvent, replay = false): void {
     if (!event.agentId || event.type === 'agent.session_replaced') {
@@ -281,6 +290,8 @@ export class Store extends EventEmitter {
     const previous = candidates.get(event.type);
     const streamKind = isStreamedMessage(event) && !this.renderings.has(event.seq) ? object(event.data).sessionUpdate : undefined;
     let joined: ServerEvent | undefined;
+    let historical: HistoricalLivePreviewBoundary | undefined;
+    let usedHistorical = false, historyCutoff: number | undefined, historicalBoundarySeq: number | undefined;
     let startSeq = event.seq;
     if (streamKind) {
       if (this.compatibleLiveStream(previousBoundary, event) && previous && !this.previewRenderings.has(previous.seq)) {
@@ -289,22 +300,30 @@ export class Store extends EventEmitter {
       }
       const needsHistory = this.livePreviewNeedsHistory.has(event.agentId);
       const shouldReconcileHistory = !previousBoundary || needsHistory || (this.compatibleLiveStream(previousBoundary, event) && !previous);
-      const historical = shouldReconcileHistory ? this.historyMessagePrefix(event) : undefined;
-      const crossesRetainedBoundary = !!historical && !!previousBoundary && !this.compatibleLiveStream(previousBoundary, event) &&
-        (historical.startSeq ?? event.seq) <= previousBoundary.event.seq;
+      historical = shouldReconcileHistory ? this.historyMessagePrefix(event) : undefined;
+      const compatibleBoundary = this.compatibleLiveStream(previousBoundary, event);
+      historyCutoff = compatibleBoundary ? previousBoundary?.historyCutoff : previousBoundary?.event.seq;
+      historicalBoundarySeq = needsHistory && previousBoundary
+        ? this.historicalBoundaryAfter(event.agentId, previousBoundary.event.seq, event.seq)
+        : undefined;
+      const crossesRetainedBoundary = !!historical && historyCutoff !== undefined &&
+        (historical.startSeq ?? event.seq) < historyCutoff;
       let resolvedHistoryBoundary = false;
       if (historical && !crossesRetainedBoundary &&
           (joined === undefined || (historical.startSeq ?? event.seq) <= startSeq ||
             (needsHistory && historical.boundarySeq !== undefined && historical.boundarySeq >= startSeq))) {
         joined = historical.event;
         startSeq = historical.startSeq ?? event.seq;
-      } else if (needsHistory && previousBoundary &&
-          this.hasHistoricalBoundaryAfter(event.agentId, previousBoundary.event.seq, event.seq)) {
+        usedHistorical = true;
+      } else if (historicalBoundarySeq !== undefined) {
         joined = undefined; startSeq = event.seq; resolvedHistoryBoundary = true;
       }
       if (shouldReconcileHistory && (historical || !needsHistory || resolvedHistoryBoundary)) this.livePreviewNeedsHistory.delete(event.agentId);
     }
     const candidate = compactPreview(joined ?? event);
+    const cutoffValues = [historyCutoff, historicalBoundarySeq, usedHistorical ? historical?.boundarySeq : undefined]
+      .filter((seq): seq is number => seq !== undefined);
+    const acceptedCutoff = cutoffValues.length ? Math.max(...cutoffValues) : undefined;
     if (previous) this.previewRenderings.delete(previous.seq);
     candidates.set(event.type, candidate);
     if (candidates.size > TREE_PREVIEW_TYPES_PER_AGENT) {
@@ -320,15 +339,19 @@ export class Store extends EventEmitter {
     const rendering = this.renderings.get(event.seq);
     if (rendering) this.previewRenderings.set(candidate.seq, this.compactRendering(rendering));
     const streams = this.livePreviewStreams.get(event.agentId) ?? new Map<string, LivePreviewBoundary>();
-    if (streamKind) streams.set(event.type, {
-      event: candidate, streamKind, messageIdentity: messageIdentity(event), startSeq,
-    });
+    if (streamKind) {
+      streams.set(event.type, {
+        event: candidate, streamKind, messageIdentity: messageIdentity(event), startSeq,
+        ...(acceptedCutoff !== undefined && { historyCutoff: acceptedCutoff }),
+      });
+    }
     else streams.delete(event.type);
     if (streams.size) this.livePreviewStreams.set(event.agentId, streams);
     else this.livePreviewStreams.delete(event.agentId);
     this.livePreviewBoundaries.set(event.agentId, {
       event: candidate, streamKind, messageIdentity: streamKind ? messageIdentity(event) : undefined,
       ...(streamKind && { startSeq }),
+      ...(streamKind && acceptedCutoff !== undefined && { historyCutoff: acceptedCutoff }),
     });
     this.livePreviewWatermarks.set(event.agentId, Math.max(this.livePreviewWatermarks.get(event.agentId) ?? -1, event.seq));
   }

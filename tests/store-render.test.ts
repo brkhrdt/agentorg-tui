@@ -163,11 +163,13 @@ describe('state and transcripts', () => {
     store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }));
     store.ingest(event(3, 'operation.changed', { id: 'other-1', status: 'running' }, { agentId: 'other' }));
     store.ingest(event(4, 'operation.changed', { id: 'other-2', status: 'running' }, { agentId: 'other' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.events.has(2)).toBe(false);
     store.setActiveChat('root');
     store.ingest(message(1, 'OLD '), 'history');
     store.ingest(message(1, 'OLD '), 'history');
-    store.ingest(message(5, 'NEW'));
-    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+    store.ingest(message(5, 'NEW '));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW ');
     store.ingest(message(1, 'OLD '), 'history');
     store.ingest(message(6, 'TAIL'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
