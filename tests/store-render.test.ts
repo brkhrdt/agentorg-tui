@@ -158,7 +158,7 @@ describe('state and transcripts', () => {
     store.ingest(message(2, 'MID '));
     store.ingest(message(3, 'TAIL '));
     store.ingest(event(0, 'prompt.started', { operationId: 'old-prompt' }), 'history');
-    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD MID TAIL');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD MID TAIL ');
   });
   test('history message prefix seeds a live continuation after a live prompt boundary', () => {
     const store = new Store(), settings = new Settings();
