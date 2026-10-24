@@ -70,7 +70,7 @@ test('selection stays visible with Event first or alone without recoloring event
     });
     else if (request.method === 'events.history') respond(socket, request.id, {
       events: ['root', 'worker'].map((id, index) => event(index + 1, 'agent.message', {
-        sessionUpdate: 'agent_message_chunk', content: { text: `**${id} output**` },
+        sessionUpdate: 'agent_message_chunk', content: { text: `${id} output` },
       }, { agentId: id })), oldestSeq: 1, latestSeq: 2, expired: false,
     });
   });
@@ -92,7 +92,7 @@ test('selection stays visible with Event first or alone without recoloring event
         for (const [row, text] of [[2, 'root output'], [3, 'worker output']] as const) {
           const column = tui.screen().split('\n')[row]!.indexOf(text);
           expect(tui.cell(row, column)?.isBgDefault()).toBeTruthy();
-          expect(tui.cell(row, column)?.isBold()).toBeTruthy();
+          expect(tui.cell(row, column)?.isBold()).toBeFalsy();
         }
         if (tableFields.length === 1) expect(tui.screen().split('\n')[3]).toStartWith('▸ ');
       } finally { await tui.close(); }

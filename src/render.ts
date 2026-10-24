@@ -247,14 +247,27 @@ function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: 
   return [rows[0]!, clipStyled(`${tail} …`, width)].join('\n');
 }
 
-/** Tree previews render Markdown, but remain exactly one terminal-width-aware line. */
-export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
+/** Render a one-line event preview, optionally keeping streamed text literal for the tree. */
+function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean): string {
   if (width <= 0) return '';
-  const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
+  const data = object(event.data);
+  const streamKind = event.type === 'agent.message' && ['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk'].includes(data.sessionUpdate);
+  const assistant = event.type === 'agent.message' && data.sessionUpdate === 'agent_message_chunk';
   const prefix = assistant || isTool(event) ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
   const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
-  const preview = prefix + markdown(text, Math.max(1, width), true, colors);
+  // Incremental Markdown can change already-visible leading characters as tokens
+  // complete. Tree stream previews preserve their source prefix and clip right.
+  const prefixText = clean(text).replace(/\s+/g, ' ').trim();
+  const messageTruncated = !rendering && object(data.content).previewTruncated === true;
+  const summary = staticStreamPrefix && streamKind
+    ? prefixText + (messageTruncated ? '…' : '')
+    : markdown(text, Math.max(1, width), true, colors);
+  const preview = prefix + summary;
   return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
+}
+/** Tree previews keep streamed message beginnings static and right-clip the rest. */
+export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
+  return renderTreeEventPreview(event, width, rendering, colors, true);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   width = Math.max(1, width);
@@ -287,7 +300,7 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       }
       return heading + '\n' + countLine + (tail.text ? '\n' + tail.text : '');
     }
-    if (level === 1) return renderTreeEvent(event, width, rendering, colors);
+    if (level === 1) return renderTreeEventPreview(event, width, rendering, colors, false);
     if (level === 2) {
       if (rendering.extendedLayout === 'header-detail') {
         const [detail] = logicalLines(rendering.extended).slice(1);

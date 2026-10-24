@@ -59,12 +59,11 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     catch { throw new Error(`Missing ${JSON.stringify(text)}; exited=${exited}; stderr=${stderr}\n${screen()}`); }
   };
   try {
-    await visible('Initial worker answer');
+    await visible('**Initial worker answer**');
     const eventColumn = terminal.buffer.active.getLine(1)!.translateToString(true).indexOf('LATEST TRACKED EVENT');
-    await visible(clip(initialText.replace(/\*\*/g, '') + '.', 99 - eventColumn));
+    await visible(clip(initialText + '.', 99 - eventColumn));
     expect(screen()).not.toContain('assistant:');
-    expect(screen()).not.toContain('**Initial worker answer**');
-    expect(terminal.buffer.active.getLine(3)?.getCell(eventColumn)?.isBold()).toBeTruthy();
+    expect(terminal.buffer.active.getLine(3)?.getCell(eventColumn)?.isBold()).toBeFalsy();
     expect(terminal.buffer.active.getLine(3)?.getCell(eventColumn + 22)?.isBold()).toBeFalsy();
     expect(screen()).toContain('STATUS');
     expect(screen()).toContain('gpt-6-luna');
@@ -97,8 +96,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await visible('Bold streamed answer');
     expect(screen()).not.toContain('**Bold streamed**');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
-    await visible('# A heading Bold streamed answer');
-    expect(screen()).not.toContain('**Bold streamed**');
+    await visible('# A heading **Bold streamed** answer');
 
     keys('v'); await visible('View settings');
     keys('?'); await visible('Keys · view');
