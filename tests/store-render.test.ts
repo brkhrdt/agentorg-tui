@@ -140,9 +140,10 @@ describe('state and transcripts', () => {
       sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text },
     });
     store.ingest(message(3, 'TAIL', 'new'));
+    store.ingest(message(4, ' MORE', 'new'));
     store.ingest(message(1, 'OLD ', 'old'));
     store.ingest(message(2, 'NEW ', 'new'));
-    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL MORE');
   });
   test('a late earlier assistant chunk can extend past an older thought chunk', () => {
     const store = new Store(), settings = new Settings();
@@ -151,9 +152,10 @@ describe('state and transcripts', () => {
       sessionUpdate, content: { type: 'text', text },
     });
     store.ingest(message(3, 'agent_message_chunk', 'TAIL'));
+    store.ingest(message(4, 'agent_message_chunk', ' MORE'));
     store.ingest(message(1, 'agent_thought_chunk', 'OLD '));
     store.ingest(message(2, 'agent_message_chunk', 'NEW '));
-    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL MORE');
   });
   test('historical prompt boundaries separate later out-of-order live messages', () => {
     const store = new Store(), settings = new Settings();
