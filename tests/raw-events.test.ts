@@ -1,21 +1,166 @@
 import { expect, test } from 'bun:test';
-import { mockServer, respond, waitFor, agent } from './helpers.js';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { agent, event, mockServer, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 
-test('raw-event viewer opens safely for selected agent with no loaded chat events', async () => {
-  const mock = await mockServer((_socket, request) => {
-    if (request.method === 'organization.snapshot') respond(_socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+function fixtureEvents(count = 3) {
+  return Array.from({ length: count }, (_, i) => {
+    const seq = i + 1;
+    return event(seq, seq === 2 ? 'agent.state' : 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: `m${seq}`,
+      content: { type: 'text', text: `ROOT_PAYLOAD_${seq}` },
+      nested: { seq, values: [true, false, 'λ'] },
+    }, { agentId: 'root', generation: 'g1' });
+  }).concat([event(count + 1, 'agent.message', { content: { type: 'text', text: 'CHILD_ONLY_PAYLOAD' } }, { agentId: 'child', generation: 'g2' })]);
+}
+
+async function startDemo(initial = fixtureEvents(), excluded?: string[], size = { cols: 120, rows: 26 }) {
+  let history = [...initial];
+  const requests: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') {
+      const latest = Math.max(0, ...history.map(item => item.seq));
+      respond(socket, request.id, { seq: latest, agents: [agent('root'), agent('child', 'root')], operations: [] });
+    } else if (request.method === 'events.history') {
+      const before = request.params?.before ?? Infinity;
+      const after = request.params?.after ?? 0;
+      const matching = history.filter(item => item.seq < before && item.seq > after && (!request.params?.agentId || item.agentId === request.params.agentId));
+      respond(socket, request.id, {
+        events: matching.slice(-Math.min(request.params?.limit ?? 200, 200)),
+        oldestSeq: Math.min(...history.map(item => item.seq), 0), latestSeq: Math.max(...history.map(item => item.seq), 0),
+        expired: false, hasMore: false,
+      });
+    }
   });
-  const tui = terminalClient(mock.path, mock.directory);
+  if (excluded) await writeFile(join(mock.directory, 'config.json'), JSON.stringify({ excluded, levels: {}, tableFields: ['name'], compactToolCalls: false }));
+  const tui = terminalClient(mock.path, mock.directory, size);
+  await tui.visible('root');
+  await tui.visible('connected');
+  await tui.visible('z raw events');
+  return {
+    mock, tui, requests,
+    addHistory(item: ReturnType<typeof event>) { history = [...history, item]; for (const socket of mock.sockets) send(socket, item); },
+    historyRequests() { return requests.filter(request => request.method === 'events.history').length; },
+    async close() { await tui.close(); await mock.close(); },
+  };
+}
+
+async function openLoadedChat(demo: Awaited<ReturnType<typeof startDemo>>) {
+  demo.tui.keys('c');
+  await demo.tui.visible('Chat · root');
+  await waitFor(() => ['ROOT_PAYLOAD_', 'FIRST_SNAPSHOT', 'badTYPE', 'No tracked events yet.'].some(marker => demo.tui.screen().includes(marker)));
+  demo.tui.keys('\x1b');
+  await demo.tui.visible('z raw events');
+}
+
+test('raw list navigates a selected-agent loaded snapshot and preserves visible list origin through JSON', async () => {
+  const demo = await startDemo(fixtureEvents(32));
   try {
-    await tui.visible('root');
-    await new Promise(resolve => setTimeout(resolve, 100));
-    tui.keys('z');
-    await tui.visible('No events in this loaded history window.');
-    tui.keys('a');
-    tui.keys('\r');
-    expect(tui.screen()).toContain('Raw events');
-    tui.keys('\x1b');
-    await tui.visible('AGENT');
-  } finally { await tui.close(); await mock.close(); }
+    await openLoadedChat(demo);
+    const beforeViewer = demo.historyRequests();
+    demo.tui.keys('z');
+    await demo.tui.visible('› 1');
+    expect(demo.tui.screen()).not.toContain('· 33 ·');
+    expect(demo.tui.screen()).not.toContain('· 2 ·'); // chat-hidden agent.state
+    demo.tui.keys('\x1b[B'); await demo.tui.visible('› 3');
+    demo.tui.keys('a');
+    await demo.tui.visible('all filterable');
+    await demo.tui.visible('› 2'); // row index 1 now selects event 2, not the former event 3
+    await demo.tui.visible('› 2 · 2026-10-08');
+    const allCount = demo.historyRequests();
+    demo.tui.keys('a');
+    await demo.tui.visible('chat-visible');
+    await demo.tui.visible('› 3'); // same row index maps back to event 3
+    expect(demo.historyRequests()).toBe(allCount);
+    expect(allCount).toBe(beforeViewer);
+    demo.tui.keys('\x1b[B'.repeat(18));
+    await demo.tui.visible('› 21');
+    const beforeRows = demo.tui.screen().split('\n').filter(line => line.includes('2026-10-08'));
+    expect(beforeRows.length).toBeGreaterThan(1);
+    demo.tui.keys('\r');
+    await demo.tui.visible('Event JSON');
+    await demo.tui.visible('"seq": 21');
+    demo.tui.keys('\x1b');
+    await demo.tui.visible('chat-visible');
+    await demo.tui.visible('› 21');
+    const afterRows = demo.tui.screen().split('\n').filter(line => line.includes('2026-10-08'));
+    expect(afterRows).toEqual(beforeRows);
+    demo.tui.keys('\x1b'); await demo.tui.visible('z raw events');
+  } finally { await demo.close(); }
+}, 20_000);
+
+test('JSON exposes complete escaped payloads safely and sanitizes hostile event labels', async () => {
+  const hostile = event(1, 'bad\x1b[31mTYPE\x7f', { text: `controls \x7f\x80\x9f \x1b[31mRED`, deep: { array: [1, 2, 'é'] } }, { agentId: 'root' });
+  const demo = await startDemo([hostile]);
+  try {
+    await openLoadedChat(demo);
+    demo.tui.keys('z'); await demo.tui.visible('badTYPE');
+    demo.tui.keys('\r'); await demo.tui.visible('Event JSON');
+    await demo.tui.visible('controls \\u007f\\u0080\\u009f');
+    await demo.tui.visible('\\u001b[31mRED');
+    await demo.tui.visible('"array": [');
+    const displayedJson: string[] = [];
+    let inJson = false, depth = 0;
+    for (const line of demo.tui.screen().split('\n')) {
+      if (!line.startsWith('│')) continue;
+      const content = line.slice(1).replace(/\s*│$/, '');
+      if (!inJson && content.trim() === '{') inJson = true;
+      if (inJson) {
+        displayedJson.push(content);
+        depth += (content.match(/{/g) ?? []).length - (content.match(/}/g) ?? []).length;
+        if (depth === 0) break;
+      }
+    }
+    expect(JSON.parse(displayedJson.join('\n'))).toEqual(hostile);
+    expect(demo.tui.screen()).not.toContain('\x1b[31m');
+    demo.tui.keys('a'); // inert in JSON mode
+    expect(demo.tui.screen()).toContain('Event JSON');
+    demo.tui.keys('\x1b'); await demo.tui.visible('› 1');
+  } finally { await demo.close(); }
+}, 15_000);
+
+test('all-excluded snapshots support empty state, reversible filter toggle and row-index clamping', async () => {
+  const events = [event(1, 'agent.state', { payload: 'FILTERED_ONE' }, { agentId: 'root' }), event(2, 'agent.error', { payload: 'FILTERED_TWO' }, { agentId: 'root' })];
+  const demo = await startDemo(events, ['agent.state', 'agent.error']);
+  try {
+    await openLoadedChat(demo);
+    demo.tui.keys('z'); await demo.tui.visible('No events in this loaded history window.');
+    const before = demo.historyRequests();
+    demo.tui.keys('a'); await demo.tui.visible('1 · 2026-10-08'); await demo.tui.visible('2 · 2026-10-08');
+    demo.tui.keys('\x1b[B'); await demo.tui.visible('› 2');
+    demo.tui.keys('a'); await demo.tui.visible('No events in this loaded history window.');
+    expect(demo.historyRequests()).toBe(before);
+    demo.tui.keys('\r'); // empty list has no selection
+    expect(demo.tui.screen()).toContain('No events in this loaded history window.');
+  } finally { await demo.close(); }
+}, 15_000);
+
+test('an open snapshot ignores live arrivals; reopening after chat reload captures them', async () => {
+  const demo = await startDemo([event(1, 'agent.message', { content: { type: 'text', text: 'FIRST_SNAPSHOT' } }, { agentId: 'root' })]);
+  try {
+    await openLoadedChat(demo);
+    demo.tui.keys('z'); await demo.tui.visible('FIRST_SNAPSHOT');
+    const before = demo.historyRequests();
+    const arrival = event(2, 'agent.message', { content: { type: 'text', text: 'ARRIVED_LATER' } }, { agentId: 'root' });
+    demo.addHistory(arrival);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(demo.tui.screen()).not.toContain('ARRIVED_LATER');
+    expect(demo.historyRequests()).toBe(before);
+    demo.tui.keys('\x1b'); await demo.tui.visible('z raw events');
+    demo.tui.keys('c'); await demo.tui.visible('Chat · root'); await demo.tui.visible('ARRIVED_LATER');
+    demo.tui.keys('\x1b'); await demo.tui.visible('z raw events');
+    demo.tui.keys('z'); await demo.tui.visible('ARRIVED_LATER');
+  } finally { await demo.close(); }
+}, 20_000);
+
+test('z opens safely with an empty loaded chat window', async () => {
+  const demo = await startDemo([]);
+  try {
+    demo.tui.keys('z'); await demo.tui.visible('No events in this loaded history window.');
+    demo.tui.keys('a'); demo.tui.keys('\r');
+    expect(demo.tui.screen()).toContain('Raw events');
+    demo.tui.keys('\x1b'); await demo.tui.visible('AGENT');
+  } finally { await demo.close(); }
 }, 15_000);

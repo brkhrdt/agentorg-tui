@@ -1395,7 +1395,7 @@ export class UI {
     const event = this.rawIndex < 0 ? undefined : this.rawEvents()[this.rawIndex];
     if (!event) return;
     this.selectedRawEvent = event;
-    this.rawListScroll = this.rawView.getScroll();
+    this.rawListScroll = visibleChatOrigin(this.rawView);
     this.rawScroll = 0; this.setView('raw-event-json');
   }
   private scrollRawJson(delta: number): void {
@@ -1917,8 +1917,9 @@ export class UI {
       this.footer.setContent(' ↑↓ select event   Enter full JSON   a toggle filterable events   Esc tree');
     } else if (this.view === 'raw-event-json') {
       const event = this.selectedRawEvent;
-      this.rawView.setLabel(` Event JSON · ${event?.type ?? 'unavailable'} `);
-      this.rawView.setContent(event ? JSON.stringify(event, null, 2) : 'No event selected.');
+      this.rawView.setLabel(clip(` Event JSON · ${clean(event?.type ?? 'unavailable')} `, Math.max(0, width - 2)));
+      const json = event ? JSON.stringify(event, null, 2).replace(/[\x7f-\x9f]/g, ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : 'No event selected.';
+      this.rawView.setContent(json);
       this.rawView.scrollTo(this.rawScroll);
       this.footer.setContent(' ↑↓ scroll   Esc event list');
     } else if (this.view === 'chat') {
