@@ -133,6 +133,17 @@ describe('state and transcripts', () => {
     reordered.ingest(message(4, ' More'));
     expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
   });
+  test('compatible historical chunks are not treated as tree-preview boundaries', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'same', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'HEAD '));
+    store.ingest(message(2, 'MID '), 'history');
+    store.ingest(message(3, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD MID TAIL');
+  });
   test('backfilled old chunks cannot cross a retained prompt boundary after eviction', () => {
     const store = new Store(), settings = new Settings();
     store.configureHistory({ ...settings.history, recentEvents: 2 });
