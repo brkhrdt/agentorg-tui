@@ -77,6 +77,66 @@ describe('state and transcripts', () => {
     store.ingest(chunk(1, 'Fresh'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('Fresh');
   });
+  test('live message chunks do not merge across a prompt boundary when IDs are absent', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'OLD '));
+    store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }));
+    store.ingest(message(3, 'NEW'));
+
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+  });
+  test('live message chunks retain historical prefix and reconcile out-of-order history', () => {
+    const settings = new Settings();
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    const seeded = new Store();
+    seeded.install({ seq: 0, agents: [agent('root')], operations: [] });
+    seeded.ingest(message(1, 'HEAD '), 'history');
+    seeded.ingest(message(2, 'TAIL'));
+    expect(eventText(seeded.latest(settings).get('root')!)).toBe('HEAD TAIL');
+
+    const reordered = new Store();
+    reordered.install({ seq: 0, agents: [agent('root')], operations: [] });
+    reordered.ingest(message(3, '.'));
+    reordered.ingest(message(1, 'Hello '));
+    reordered.ingest(message(2, 'world'));
+    reordered.ingest(message(4, ' More'));
+    expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
+  });
+  test('reinstalling a same-generation snapshot does not replay message chunks twice', () => {
+    const store = new Store(), settings = new Settings();
+    const snapshot = { seq: 2, agents: [agent('root')], operations: [] };
+    store.install(snapshot);
+    store.ingest(event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { text: 'Hello ' } }));
+    store.ingest(event(2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { text: 'world' } }));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world');
+    store.install(snapshot);
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world');
+  });
+  test('same-sequence live candidates do not replace complete cached non-message events', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.ingest(event(1, 'tool.call', { title: 'write', rawInput: { path: 'src/file.ts', content: 'x'.repeat(1500) } }));
+    const row = renderTable(store.tree(), store.latest(settings), ['event'], 60).items[0]!;
+    expect(stripAnsi(row)).toContain('> src/file.ts');
+    expect(stripAnsi(row)).not.toContain('TRUNCATED');
+  });
+  test('long message beginnings survive bounded IDs and raw-history eviction', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'i'.repeat(97), content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'IDENTITY_ANCHOR '));
+    for (let seq = 2; seq <= 2001; seq++) store.ingest(message(seq, 'x'));
+    expect(store.events.size).toBeLessThanOrEqual(2000);
+    expect(stripAnsi(renderTable(store.tree(), store.latest(settings), ['event'], 60).items[0]!).slice(2)).toStartWith('IDENTITY_ANCHOR');
+  });
   test('tree table retains the beginning of a long live message after raw events are evicted', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
