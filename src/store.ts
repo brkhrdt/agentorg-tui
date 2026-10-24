@@ -378,10 +378,11 @@ export class Store extends EventEmitter {
       if (shouldReconcileHistory && (historical || !needsHistory || resolvedHistoryBoundary)) this.livePreviewNeedsHistory.delete(event.agentId);
     }
     const candidate = compactPreview(joined ?? event);
+    const provisionalStreamStart = historical?.boundarySeq !== undefined && historical.boundarySeq === historical.startSeq && !historical.boundaryInclusive;
     const acceptedCutoff = latestHistoryCutoff(
       historyCutoff === undefined ? undefined : { seq: historyCutoff, inclusive: historyCutoffInclusive },
-      historicalBoundary,
-      usedHistorical && historical?.boundarySeq !== undefined
+      provisionalStreamStart ? undefined : historicalBoundary,
+      usedHistorical && !provisionalStreamStart && historical?.boundarySeq !== undefined
         ? { seq: historical.boundarySeq, inclusive: historical.boundaryInclusive === true }
         : undefined,
     );
