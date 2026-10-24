@@ -89,6 +89,19 @@ describe('state and transcripts', () => {
 
     expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
   });
+  test('late out-of-order chunks reconcile summaries even when they do not move the first sequence', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'same', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'Hello '));
+    store.ingest(message(3, '.'));
+    store.ingest(message(2, 'world'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world.');
+    store.ingest(message(4, ' More'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world. More');
+  });
   test('live message chunks retain historical prefix and reconcile out-of-order history', () => {
     const settings = new Settings();
     const message = (seq: number, text: string) => event(seq, 'agent.message', {
@@ -107,6 +120,44 @@ describe('state and transcripts', () => {
     reordered.ingest(message(2, 'world'));
     reordered.ingest(message(4, ' More'));
     expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
+  });
+  test('history message prefix seeds a live continuation after a live prompt boundary', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'continuation', content: { type: 'text', text },
+    });
+    store.ingest(event(1, 'prompt.started', { operationId: 'prompt' }));
+    store.ingest(message(2, 'HEAD '), 'history');
+    store.ingest(message(3, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD TAIL');
+  });
+  test('historical prompt boundary prevents an old live message from joining a new response', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'OLD '));
+    store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }), 'history');
+    store.ingest(message(3, 'NEW'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+  });
+  test('history sidecar breaks a message join before the next live chunk', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.ingest(event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'IGNORE ' } }), 'history');
+    store.present(1, { rendererId: 'fixture', summary: 'custom summary', extended: 'custom summary', full: 'custom summary' });
+    store.ingest(event(2, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'NEW' } }));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+  });
+  test('Store-to-table Unicode previews end on a grapheme boundary with an ellipsis', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.ingest(event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '👩‍💻'.repeat(50) } }));
+    const summary = stripAnsi(renderTable(store.tree(), store.latest(settings), ['event'], 80).items[0]!).slice(2).trimEnd();
+    expect(summary).toEndWith('…');
+    expect([...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(summary.slice(0, -1))].every(({ segment }) => segment === '👩‍💻')).toBe(true);
   });
   test('reinstalling a same-generation snapshot does not replay message chunks twice', () => {
     const store = new Store(), settings = new Settings();
