@@ -253,7 +253,11 @@ export function renderTreeEvent(event: ServerEvent, width: number, rendering?: E
   const assistant = event.type === 'agent.message' && object(event.data).sessionUpdate === 'agent_message_chunk';
   const prefix = assistant || isTool(event) ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
   const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
-  const preview = prefix + markdown(text, Math.max(1, width), true, colors);
+  // A streamed assistant message can gain meaning as Markdown syntax is completed
+  // (for example, a partial link drops its opening '['). Keep the tree's left edge
+  // tied to the message text and clip only its right side; chat retains Markdown.
+  const summary = assistant ? clean(text).replace(/\s+/g, ' ').trim() : markdown(text, Math.max(1, width), true, colors);
+  const preview = prefix + summary;
   return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {

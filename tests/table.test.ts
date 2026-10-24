@@ -11,7 +11,7 @@ const rows = [
   { agent: agent('worker', 'coordinator'), depth: 1 },
 ];
 const latest = new Map(rows.map(row => [row.agent.id, event(1, 'agent.message', {
-  sessionUpdate: 'agent_message_chunk', content: { text: '**Reading files** and reviewing the changes in the working tree' },
+  sessionUpdate: 'agent_message_chunk', content: { text: 'Reading files and reviewing the changes in the working tree' },
 })]));
 
 test('tree event summaries keep their beginning fixed as streamed Markdown completes', () => {
@@ -34,7 +34,6 @@ test('metadata follows content and Event gets remaining space', () => {
   expect(table.widths[4]).toBeGreaterThan(table.widths[2]! * 5);
   expect(table.items[1]).toStartWith('  worker');
   expect(stripAnsi(table.items[0]!)).toContain('Reading files and reviewing the changes');
-  expect(table.items[0]).toContain('\x1b[1mReading files');
 });
 
 test('tree hierarchy uses whitespace indentation', () => {
@@ -80,7 +79,7 @@ test('selection highlights metadata on either side of Event and marks Event-only
       ? '▸' + stripAnsi(plain.items[0]!).slice(1) : stripAnsi(plain.items[0]!));
     expect(selected.items[0]).toContain('\x1b[37;44m');
     expect(selected.items[1]).not.toContain('\x1b[37;44m');
-    expect(selected.items[0]).not.toContain('\x1b[37;44m\x1b[1mReading');
+    expect(selected.items[0]).not.toContain('\x1b[37;44mReading');
     expect(stringWidth(selected.items[0]!)).toBeLessThanOrEqual(80);
   }
 });
