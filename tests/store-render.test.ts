@@ -224,6 +224,30 @@ describe('state and transcripts', () => {
     store.ingest(message(5, 'NEW'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
   });
+  test('an earlier historical chunk can move a mixed-source message start backward', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string, messageId: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'OLD ', 'old'));
+    store.ingest(message(3, 'TAIL', 'new'), 'history');
+    store.ingest(message(4, ' MORE', 'new'));
+    store.ingest(message(2, 'NEW ', 'new'), 'history');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL MORE');
+  });
+  test('an earlier historical assistant chunk moves a mixed thought-to-message start backward', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, sessionUpdate: string, text: string) => event(seq, 'agent.message', {
+      sessionUpdate, content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'agent_thought_chunk', 'OLD '));
+    store.ingest(message(3, 'agent_message_chunk', 'TAIL'), 'history');
+    store.ingest(message(4, 'agent_message_chunk', ' MORE'));
+    store.ingest(message(2, 'agent_message_chunk', 'NEW '), 'history');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL MORE');
+  });
   test('history backfill preserves an evicted custom sidecar after a thought-to-message transition', () => {
     const store = new Store(), settings = new Settings();
     store.configureHistory({ ...settings.history, recentEvents: 2 });
