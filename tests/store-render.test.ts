@@ -4,6 +4,7 @@ import stringWidth from 'string-width';
 import { chatGroups, clean, clip, eventText, renderEvent, renderTreeEvent } from '../src/render.js';
 import { Settings } from '../src/settings.js';
 import { Store } from '../src/store.js';
+import { renderTable } from '../src/table.js';
 import { agent, event, operation } from './helpers.js';
 
 describe('state and transcripts', () => {
@@ -76,6 +77,21 @@ describe('state and transcripts', () => {
     store.ingest(chunk(1, 'Fresh'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('Fresh');
   });
+  test('tree table retains the beginning of a long live message after raw events are evicted', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.configureHistory({ ...settings.history, recentEvents: 6 });
+    for (let seq = 1; seq <= 2001; seq++) {
+      const text = seq === 1 ? 'TREE_ANCHOR ' : 'x';
+      store.ingest(event(seq, 'agent.message', {
+        sessionUpdate: 'agent_message_chunk', messageId: 'long-message', content: { type: 'text', text },
+      }));
+    }
+
+    expect(store.events.size).toBeLessThanOrEqual(6);
+    const row = renderTable(store.tree(), store.latest(settings), ['event'], 60).items[0]!;
+    expect(stripAnsi(row).slice(2)).toStartWith('TREE_ANCHOR');
+  });
   test('message summaries respect generation, kind, message ID and hidden boundaries', () => {
     const settings = new Settings(); settings.excluded.add('prompt.started');
     const first = event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'Old ' } });
@@ -112,13 +128,19 @@ describe('state and transcripts', () => {
 });
 
 describe('static tree previews', () => {
-  const message = (text: string) => event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+  const message = (text: string, sessionUpdate = 'agent_message_chunk') => event(1, 'agent.message', { sessionUpdate, content: { type: 'text', text } });
   test('keeps Markdown source literal and folds blocks into one line without an assistant label', () => {
     const rendered = renderTreeEvent(message('# Heading\n\n**bold** and _italic_ with `code`\n\n- item\n\n```ts\nconst x = 1;\n```'), 120);
     expect(rendered.split('\n')).toHaveLength(1);
     const text = stripAnsi(rendered);
     expect(text).toContain('# Heading **bold** and _italic_ with `code` - item ```ts const x = 1; ```');
     expect(text).not.toContain('assistant:');
+  });
+  test('thinking chunks keep their beginning fixed as streamed Markdown completes', () => {
+    const first = stripAnsi(renderTreeEvent(message('[THINKING_ANCHOR', 'agent_thought_chunk'), 80));
+    const completed = stripAnsi(renderTreeEvent(message('[THINKING_ANCHOR](https://example.test) and more', 'agent_thought_chunk'), 80));
+    expect(first).toStartWith('thinking: [THINKING_ANCHOR');
+    expect(completed).toStartWith(first);
   });
   test('right-clips literal summaries by terminal cells', () => {
     const rendered = renderTreeEvent(message('Hello world'), 8);
@@ -158,6 +180,12 @@ describe('four rendering levels', () => {
     expect(clip('  child', 20)).toBe('  child');
     expect(clip('🦊🦊🦊', 5)).toBe('🦊🦊…');
     expect(clip('test', 0)).toBe('');
+  });
+  test('chat level-one sidecar summaries retain Markdown rendering', () => {
+    const sidecar = { rendererId: 'fixture', summary: '**Hello** from sidecar', extended: '**Hello** from sidecar', full: '**Hello** from sidecar' };
+    const rendered = renderEvent(event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { text: 'ignored' } }), 1, 80, sidecar);
+    expect(stripAnsi(rendered)).toBe('Hello from sidecar');
+    expect(rendered).toContain('\x1b[1mHello\x1b[0m');
   });
   test('extended is at most two wrapped lines', () => {
     const extended = renderEvent(message, 2, 20);
