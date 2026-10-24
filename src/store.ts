@@ -272,12 +272,12 @@ export class Store extends EventEmitter {
       previous.event.type === event.type && previous.event.agentId === event.agentId && previous.event.generation === event.generation &&
       previous.messageIdentity === messageIdentity(event) && typeof data.content?.text === 'string';
   }
-  private historicalBoundaryAfter(agentId: string, afterSeq: number, beforeSeq: number): HistoryCutoff | undefined {
+  private historicalBoundaryAfter(previous: LivePreviewBoundary, beforeSeq: number): HistoryCutoff | undefined {
     let boundary: HistoryCutoff | undefined;
     for (const event of this.orderedEvents()) {
-      if (event.agentId === agentId && event.seq > afterSeq && event.seq < beforeSeq) {
-        boundary = { seq: event.seq, inclusive: this.renderings.has(event.seq) };
-      }
+      if (event.agentId !== previous.event.agentId || event.seq <= previous.event.seq || event.seq >= beforeSeq) continue;
+      if (this.compatibleLiveStream(previous, event) && !this.renderings.has(event.seq)) continue;
+      boundary = { seq: event.seq, inclusive: this.renderings.has(event.seq) };
     }
     return boundary;
   }
@@ -336,7 +336,7 @@ export class Store extends EventEmitter {
         historyCutoffInclusive = cutoff?.inclusive === true;
       }
       historicalBoundary = needsHistory && previousBoundary
-        ? this.historicalBoundaryAfter(event.agentId, previousBoundary.event.seq, event.seq)
+        ? this.historicalBoundaryAfter(previousBoundary, event.seq)
         : undefined;
       const cutoff = latestHistoryCutoff(
         historyCutoff === undefined ? undefined : { seq: historyCutoff, inclusive: historyCutoffInclusive },
