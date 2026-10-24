@@ -91,7 +91,7 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     expect(prompts[0]).toEqual({ agentId: 'worker', text: longPrompt, queue: false });
     keys('c'); await visible('Chat · coordinator / worker');
     for (const text of ['\n\n# A heading\n\n**Bold streamed** ', 'answer']) {
-      for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }, { agentId: 'worker' }));
+      for (const socket of mock.sockets) send(socket, event(++seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: 'response-after-prompt', content: { type: 'text', text } }, { agentId: 'worker' }));
     }
     await visible('Bold streamed answer');
     expect(screen()).not.toContain('**Bold streamed**');

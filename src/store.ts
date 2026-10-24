@@ -20,6 +20,7 @@ export function appendMessageChunk(previous: ServerEvent | undefined, event: Ser
 }
 const terminal = (status: string) => ['completed', 'failed', 'stopped'].includes(status);
 const TREE_PREVIEW_MAX_BYTES = 1024;
+const TREE_PREVIEW_MESSAGE_BYTES = 384;
 const TREE_PREVIEW_TYPES_PER_AGENT = 32;
 function boundedUtf8(value: string, maxBytes: number): string {
   let bytes = Buffer.from(value).subarray(0, maxBytes);
@@ -30,6 +31,23 @@ function boundedUtf8(value: string, maxBytes: number): string {
   return '';
 }
 function compactPreview(event: ServerEvent): ServerEvent {
+  const data = object(event.data);
+  const streamKind = data.sessionUpdate;
+  if (event.type === 'agent.message' && ['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk'].includes(streamKind) && typeof data.content?.text === 'string') {
+    // Keep a bounded source prefix rather than JSON-truncating an accumulated
+    // message. Subsequent chunks can then extend it without replacing its start.
+    return {
+      ...event,
+      type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64),
+      ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }),
+      ...(event.generation && { generation: boundedUtf8(event.generation, 128) }),
+      data: {
+        sessionUpdate: streamKind,
+        ...(typeof data.messageId === 'string' && { messageId: boundedUtf8(data.messageId, 96) }),
+        content: { type: 'text', text: boundedUtf8(data.content.text, TREE_PREVIEW_MESSAGE_BYTES) },
+      },
+    };
+  }
   const serialized = JSON.stringify(event.data ?? null);
   const envelope = {
     ...event,
@@ -40,12 +58,12 @@ function compactPreview(event: ServerEvent): ServerEvent {
   };
   if (Buffer.byteLength(serialized) <= TREE_PREVIEW_MAX_BYTES) return { ...envelope, data: JSON.parse(serialized) };
   let preview = boundedUtf8(serialized, TREE_PREVIEW_MAX_BYTES - 128);
-  let data = { truncated: true, originalBytes: Buffer.byteLength(serialized), preview };
-  while (Buffer.byteLength(JSON.stringify(data)) > TREE_PREVIEW_MAX_BYTES && preview.length) {
+  let truncatedData = { truncated: true, originalBytes: Buffer.byteLength(serialized), preview };
+  while (Buffer.byteLength(JSON.stringify(truncatedData)) > TREE_PREVIEW_MAX_BYTES && preview.length) {
     preview = boundedUtf8(preview, Math.floor(Buffer.byteLength(preview) * 0.75));
-    data = { truncated: true, originalBytes: Buffer.byteLength(serialized), preview };
+    truncatedData = { truncated: true, originalBytes: Buffer.byteLength(serialized), preview };
   }
-  return { ...envelope, data };
+  return { ...envelope, data: truncatedData };
 }
 export interface TreeRow { agent: Agent; depth: number }
 
@@ -378,11 +396,13 @@ export class Store extends EventEmitter {
         if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
       }
     }
+    // At equal sequence, prefer the independently bounded live candidate: its
+    // message prefix survives even when raw history has evicted older chunks.
     for (const [agentId, types] of this.livePreviews) {
       const agent = this.agents.get(agentId);
       if (!agent || agent.removedAt !== null) continue;
       for (const event of types.values()) {
-        if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
+        if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq >= (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
       }
     }
     return latest;

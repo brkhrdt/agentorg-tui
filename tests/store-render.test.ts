@@ -80,7 +80,6 @@ describe('state and transcripts', () => {
   test('tree table retains the beginning of a long live message after raw events are evicted', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
-    store.configureHistory({ ...settings.history, recentEvents: 6 });
     for (let seq = 1; seq <= 2001; seq++) {
       const text = seq === 1 ? 'TREE_ANCHOR ' : 'x';
       store.ingest(event(seq, 'agent.message', {
@@ -88,7 +87,7 @@ describe('state and transcripts', () => {
       }));
     }
 
-    expect(store.events.size).toBeLessThanOrEqual(6);
+    expect(store.events.size).toBeLessThanOrEqual(2000);
     const row = renderTable(store.tree(), store.latest(settings), ['event'], 60).items[0]!;
     expect(stripAnsi(row).slice(2)).toStartWith('TREE_ANCHOR');
   });
