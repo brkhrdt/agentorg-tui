@@ -77,6 +77,18 @@ describe('state and transcripts', () => {
     store.ingest(chunk(1, 'Fresh'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('Fresh');
   });
+  test('a compacted Unicode message does not append later chunks after its retained prefix', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const chunk = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'unicode', content: { type: 'text', text },
+    });
+    store.ingest(chunk(1, '👩‍💻'.repeat(50)));
+    store.ingest(chunk(2, 'TAIL'));
+    const row = stripAnsi(renderTable(store.tree(), store.latest(settings), ['event'], 80).items[0]!);
+    expect(row).not.toContain('TAIL');
+    expect(row.trimEnd()).toEndWith('…');
+  });
   test('live message chunks do not merge across a prompt boundary when IDs are absent', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
@@ -158,6 +170,54 @@ describe('state and transcripts', () => {
     const summary = stripAnsi(renderTable(store.tree(), store.latest(settings), ['event'], 80).items[0]!).slice(2).trimEnd();
     expect(summary).toEndWith('…');
     expect([...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(summary.slice(0, -1))].every(({ segment }) => segment === '👩‍💻')).toBe(true);
+  });
+  test('history after a live boundary supplies the authoritative continuation prefix', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    store.ingest(event(1, 'prompt.started', { operationId: 'prompt' }));
+    store.ingest(message(2, 'NEW '), 'history');
+    store.ingest(message(3, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
+  test('a late historical boundary replaces an already merged speculative prefix', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'OLD '));
+    store.ingest(message(3, 'NEW '));
+    store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }), 'history');
+    store.ingest(message(4, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
+  test('history arrival reconciles a pending live preview immediately', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    store.ingest(message(3, '.'));
+    store.ingest(message(1, 'Hello '), 'history');
+    store.ingest(message(2, 'world'), 'history');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world.');
+  });
+  test('reconciled tree boundaries do not retain oversized history payloads after eviction', () => {
+    const store = new Store(), settings = new Settings();
+    store.configureHistory({ ...settings.history, recentEvents: 2 });
+    store.install({ seq: 0, agents: [agent('root'), agent('other')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'LARGE_ANCHOR ' + 'x'.repeat(100_000)), 'history');
+    store.ingest(message(3, 'TAIL'));
+    store.ingest(message(2, 'MID'));
+    expect(store.events.has(1)).toBe(false);
+    const retained = (store as any).livePreviewBoundaries.get('root').event;
+    expect(Buffer.byteLength(JSON.stringify(retained))).toBeLessThan(2048);
   });
   test('reinstalling a same-generation snapshot does not replay message chunks twice', () => {
     const store = new Store(), settings = new Settings();
