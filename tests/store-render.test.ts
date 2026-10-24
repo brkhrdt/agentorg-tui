@@ -224,6 +224,29 @@ describe('state and transcripts', () => {
     store.ingest(message(5, 'NEW'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
   });
+  test('history backfill preserves an evicted custom sidecar after a thought-to-message transition', () => {
+    const store = new Store(), settings = new Settings();
+    store.configureHistory({ ...settings.history, recentEvents: 2 });
+    store.install({ seq: 0, agents: [agent('root'), agent('other')], operations: [] });
+    const message = (seq: number, sessionUpdate: string, text: string) => event(seq, 'agent.message', {
+      sessionUpdate, content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'agent_thought_chunk', 'THOUGHT '));
+    store.ingest(message(2, 'agent_message_chunk', 'IGNORE '));
+    store.present(2, { rendererId: 'fixture', subtype: 'custom', summary: 'custom', extended: 'custom', full: 'custom' });
+    store.ingest(message(3, 'agent_message_chunk', 'NEW '));
+    store.ingest(event(4, 'operation.changed', { id: 'other-1', status: 'running' }, { agentId: 'other' }));
+    store.ingest(event(5, 'operation.changed', { id: 'other-2', status: 'running' }, { agentId: 'other' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.events.has(2)).toBe(false);
+    expect(store.renderings.has(2)).toBe(false);
+    store.setActiveChat('root');
+    store.ingest(message(1, 'agent_thought_chunk', 'THOUGHT '), 'history');
+    store.ingest(message(2, 'agent_message_chunk', 'IGNORE '), 'history');
+    store.ingest(message(3, 'agent_message_chunk', 'NEW '), 'history');
+    store.ingest(message(6, 'agent_message_chunk', 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
   test('history backfill retains a sidecar boundary attached after streamed chunks merged', () => {
     const store = new Store(), settings = new Settings();
     store.configureHistory({ ...settings.history, recentEvents: 2 });
