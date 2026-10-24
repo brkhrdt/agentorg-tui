@@ -14,6 +14,18 @@ const latest = new Map(rows.map(row => [row.agent.id, event(1, 'agent.message', 
   sessionUpdate: 'agent_message_chunk', content: { text: '**Reading files** and reviewing the changes in the working tree' },
 })]));
 
+test('tree event summaries keep their beginning fixed as streamed Markdown completes', () => {
+  const row = [{ agent: agent('root'), depth: 0 }];
+  const summary = (text: string) => stripAnsi(renderTable(row, new Map([['root', event(1, 'agent.message', {
+    sessionUpdate: 'agent_message_chunk', content: { text },
+  }, { agentId: 'root' })]]), ['event'], 40).items[0]!).slice(2).trimEnd();
+  const first = summary('[TREE_ANCHOR');
+  const completed = summary('[TREE_ANCHOR](https://example.test) and more text');
+
+  expect(first).toBe('[TREE_ANCHOR');
+  expect(completed).toStartWith(first);
+});
+
 test('metadata follows content and Event gets remaining space', () => {
   const fields = ['name', 'status', 'harness', 'model', 'event'] as const;
   const table = renderTable(rows, latest, fields, 119);
