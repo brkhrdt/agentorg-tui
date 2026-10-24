@@ -152,6 +152,47 @@ describe('state and transcripts', () => {
     store.ingest(message(5, 'NEW'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
   });
+  test('history backfill retains a sidecar boundary attached after streamed chunks merged', () => {
+    const store = new Store(), settings = new Settings();
+    store.configureHistory({ ...settings.history, recentEvents: 2 });
+    store.install({ seq: 0, agents: [agent('root'), agent('other')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'IGNORE '));
+    store.ingest(message(2, 'NEW '));
+    store.present(1, { rendererId: 'fixture', subtype: 'custom', summary: 'custom', extended: 'custom', full: 'custom' });
+    store.ingest(event(3, 'operation.changed', { id: 'other-1', status: 'running' }, { agentId: 'other' }));
+    store.ingest(event(4, 'operation.changed', { id: 'other-2', status: 'running' }, { agentId: 'other' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.renderings.has(1)).toBe(false);
+    store.setActiveChat('root');
+    store.ingest(message(1, 'IGNORE '), 'history');
+    store.ingest(message(2, 'NEW '), 'history');
+    store.ingest(message(5, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
+  test('history backfill retains a sidecar boundary that prevented the first join', () => {
+    const store = new Store(), settings = new Settings();
+    store.configureHistory({ ...settings.history, recentEvents: 2 });
+    store.install({ seq: 0, agents: [agent('root'), agent('other')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'IGNORE '));
+    store.present(1, { rendererId: 'fixture', subtype: 'custom', summary: 'custom', extended: 'custom', full: 'custom' });
+    store.ingest(message(2, 'NEW '));
+    store.ingest(event(3, 'operation.changed', { id: 'other-1', status: 'running' }, { agentId: 'other' }));
+    store.ingest(event(4, 'operation.changed', { id: 'other-2', status: 'running' }, { agentId: 'other' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.events.has(2)).toBe(false);
+    expect(store.renderings.has(1)).toBe(false);
+    store.setActiveChat('root');
+    store.ingest(message(1, 'IGNORE '), 'history');
+    store.ingest(message(2, 'NEW '), 'history');
+    store.ingest(message(5, 'TAIL'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
   test('repeated old backfills cannot revive a response before an evicted prompt boundary', () => {
     const store = new Store(), settings = new Settings();
     store.configureHistory({ ...settings.history, recentEvents: 2 });
