@@ -239,7 +239,8 @@ export class Store extends EventEmitter {
     const boundary = this.livePreviewStreams.get(agentId)?.get(type);
     if (!current || !boundary?.streamKind) return;
     const historical = this.historyMessageThrough(agentId, current.seq);
-    const cutoff = latestHistoryCutoff(
+    const provisionalCurrentBoundary = historical?.boundarySeq === current.seq && historical.startSeq === current.seq && !historical.boundaryInclusive;
+    const cutoff = provisionalCurrentBoundary ? undefined : latestHistoryCutoff(
       boundary.historyCutoff === undefined ? undefined : { seq: boundary.historyCutoff, inclusive: boundary.historyCutoffInclusive === true },
       historical?.boundarySeq === undefined ? undefined : { seq: historical.boundarySeq, inclusive: historical.boundaryInclusive === true },
     );
