@@ -257,7 +257,11 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
   const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
   // Incremental Markdown can change already-visible leading characters as tokens
   // complete. Tree stream previews preserve their source prefix and clip right.
-  const summary = staticStreamPrefix && streamKind ? clean(text).replace(/\s+/g, ' ').trim() : markdown(text, Math.max(1, width), true, colors);
+  const prefixText = clean(text).replace(/\s+/g, ' ').trim();
+  const messageTruncated = !rendering && object(data.content).previewTruncated === true;
+  const summary = staticStreamPrefix && streamKind
+    ? prefixText + (messageTruncated ? '…' : '')
+    : markdown(text, Math.max(1, width), true, colors);
   const preview = prefix + summary;
   return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
 }
