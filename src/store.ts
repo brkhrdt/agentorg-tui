@@ -313,6 +313,9 @@ export class Store extends EventEmitter {
     if (!replay && previousBoundary && event.seq <= previousBoundary.event.seq) {
       this.livePreviewNeedsHistory.add(event.agentId);
       if (isStreamedMessage(event)) this.reconcileLivePreviewFromHistory(event.agentId, event.type);
+      else for (const [type, candidate] of this.livePreviews.get(event.agentId) ?? []) {
+        if (candidate.seq > event.seq) this.reconcileLivePreviewFromHistory(event.agentId, type);
+      }
       return; // Raw cache rebuild handles late/out-of-order records.
     }
     const candidates = this.livePreviews.get(event.agentId) ?? new Map<string, ServerEvent>();
