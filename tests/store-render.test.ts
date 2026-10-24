@@ -133,6 +133,25 @@ describe('state and transcripts', () => {
     reordered.ingest(message(4, ' More'));
     expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
   });
+  test('backfilled old chunks cannot cross a retained prompt boundary after eviction', () => {
+    const store = new Store(), settings = new Settings();
+    store.configureHistory({ ...settings.history, recentEvents: 2 });
+    store.install({ seq: 0, agents: [agent('root'), agent('other')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'OLD '));
+    store.ingest(event(2, 'prompt.started', { operationId: 'prompt' }));
+    store.ingest(event(3, 'operation.changed', { id: 'other-1', status: 'running' }, { agentId: 'other' }));
+    store.ingest(event(4, 'operation.changed', { id: 'other-2', status: 'running' }, { agentId: 'other' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.events.has(2)).toBe(false);
+    store.setActiveChat('root');
+    store.ingest(message(1, 'OLD '), 'history');
+    store.ingest(message(1, 'OLD '), 'history');
+    store.ingest(message(5, 'NEW'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW');
+  });
   test('history backfill after eviction preserves the observed beginning of a live stream', () => {
     const store = new Store(), settings = new Settings();
     store.configureHistory({ ...settings.history, recentEvents: 2 });
