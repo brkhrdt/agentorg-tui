@@ -274,10 +274,19 @@ export class Store extends EventEmitter {
   }
   private historicalBoundaryAfter(previous: LivePreviewBoundary, beforeSeq: number): HistoryCutoff | undefined {
     let boundary: HistoryCutoff | undefined;
+    let preceding = previous;
     for (const event of this.orderedEvents()) {
       if (event.agentId !== previous.event.agentId || event.seq <= previous.event.seq || event.seq >= beforeSeq) continue;
-      if (this.compatibleLiveStream(previous, event) && !this.renderings.has(event.seq)) continue;
-      boundary = { seq: event.seq, inclusive: this.renderings.has(event.seq) };
+      const rendered = this.renderings.has(event.seq);
+      if (!isStreamedMessage(event) || rendered) {
+        boundary = { seq: event.seq, inclusive: rendered };
+        preceding = { event };
+      } else {
+        if (preceding.streamKind && !this.compatibleLiveStream(preceding, event)) boundary = { seq: event.seq, inclusive: false };
+        preceding = {
+          event, streamKind: object(event.data).sessionUpdate, messageIdentity: messageIdentity(event), startSeq: event.seq,
+        };
+      }
     }
     return boundary;
   }

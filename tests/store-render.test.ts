@@ -141,8 +141,10 @@ describe('state and transcripts', () => {
     });
     store.ingest(message(1, 'HEAD '));
     store.ingest(message(2, 'MID '), 'history');
-    store.ingest(message(3, 'TAIL'));
-    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD MID TAIL');
+    store.ingest(message(3, 'TAIL '));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD MID TAIL ');
+    store.ingest(message(4, 'MORE'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('HEAD MID TAIL MORE');
   });
   test('backfilled old chunks cannot cross a retained prompt boundary after eviction', () => {
     const store = new Store(), settings = new Settings();
