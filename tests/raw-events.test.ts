@@ -3,16 +3,18 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agent, event, mockServer, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
+import { rawEventJsonLabel } from '../src/ui.js';
 
 function fixtureEvents(count = 3) {
-  return Array.from({ length: count }, (_, i) => {
-    const seq = i + 1;
-    return event(seq, seq === 2 ? 'agent.state' : 'agent.message', {
+  const rootEvents = Array.from({ length: count }, (_, i) => {
+    const ordinal = i + 1, seq = ordinal === 1 ? 1 : ordinal + 1;
+    return event(seq, ordinal === 2 ? 'agent.state' : 'agent.message', {
       sessionUpdate: 'agent_message_chunk', messageId: `m${seq}`,
       content: { type: 'text', text: `ROOT_PAYLOAD_${seq}` },
       nested: { seq, values: [true, false, 'λ'] },
     }, { agentId: 'root', generation: 'g1' });
-  }).concat([event(count + 1, 'agent.message', { content: { type: 'text', text: 'CHILD_ONLY_PAYLOAD' } }, { agentId: 'child', generation: 'g2' })]);
+  });
+  return [...rootEvents, event(2, 'agent.message', { content: { type: 'text', text: 'CHILD_ONLY_PAYLOAD' } }, { agentId: 'child', generation: 'g2' })];
 }
 
 async function startDemo(initial = fixtureEvents(), excluded?: string[], size = { cols: 120, rows: 26 }) {
@@ -62,32 +64,43 @@ test('raw list navigates a selected-agent loaded snapshot and preserves visible 
     const beforeViewer = demo.historyRequests();
     demo.tui.keys('z');
     await demo.tui.visible('› 1');
-    expect(demo.tui.screen()).not.toContain('· 33 ·');
-    expect(demo.tui.screen()).not.toContain('· 2 ·'); // chat-hidden agent.state
-    demo.tui.keys('\x1b[B'); await demo.tui.visible('› 3');
+    const firstPageSeqs = demo.tui.screen().split('\n')
+      .filter(line => /│[› ]*\d+ · 2026-10-08/.test(line))
+      .map(line => Number(line.match(/│[› ]*(\d+) ·/)?.[1]));
+    expect(firstPageSeqs).not.toContain(2); // visible-range child event is agent-scoped out
+    expect(firstPageSeqs).not.toContain(3); // root agent.state is chat-filtered
+    demo.tui.keys('\x1b[B'); await demo.tui.visible('› 4');
     demo.tui.keys('a');
     await demo.tui.visible('all filterable');
-    await demo.tui.visible('› 2'); // row index 1 now selects event 2, not the former event 3
-    await demo.tui.visible('› 2 · 2026-10-08');
+    await demo.tui.visible('› 3'); // row index 1 now selects filtered event 3, not the former event 4
+    await demo.tui.visible('› 3 · 2026-10-08');
     const allCount = demo.historyRequests();
     demo.tui.keys('a');
     await demo.tui.visible('chat-visible');
-    await demo.tui.visible('› 3'); // same row index maps back to event 3
+    await demo.tui.visible('› 4'); // same row index maps back to event 4
     expect(demo.historyRequests()).toBe(allCount);
     expect(allCount).toBe(beforeViewer);
     demo.tui.keys('\x1b[B'.repeat(18));
-    await demo.tui.visible('› 21');
+    await demo.tui.visible('› 22');
     const beforeRows = demo.tui.screen().split('\n').filter(line => line.includes('2026-10-08'));
     expect(beforeRows.length).toBeGreaterThan(1);
     demo.tui.keys('\r');
     await demo.tui.visible('Event JSON');
-    await demo.tui.visible('"seq": 21');
+    await demo.tui.visible('"seq": 22');
     demo.tui.keys('\x1b');
     await demo.tui.visible('chat-visible');
-    await demo.tui.visible('› 21');
+    await demo.tui.visible('› 22');
     const afterRows = demo.tui.screen().split('\n').filter(line => line.includes('2026-10-08'));
     expect(afterRows).toEqual(beforeRows);
     demo.tui.keys('\x1b'); await demo.tui.visible('z raw events');
+    demo.tui.keys('\x1b'); await demo.tui.visible('AGENT');
+    demo.tui.keys('\x1b[B');
+    demo.tui.keys('c'); await demo.tui.visible('Chat · root / child');
+    await demo.tui.visible('CHILD_ONLY_PAYLOAD');
+    demo.tui.keys('\x1b'); await demo.tui.visible('z raw events');
+    demo.tui.keys('z'); await demo.tui.visible('› 2');
+    demo.tui.keys('\r'); await demo.tui.visible('"agentId": "child"');
+    await demo.tui.visible('"seq": 2');
   } finally { await demo.close(); }
 }, 20_000);
 
@@ -114,7 +127,8 @@ test('JSON exposes complete escaped payloads safely and sanitizes hostile event 
       }
     }
     expect(JSON.parse(displayedJson.join('\n'))).toEqual(hostile);
-    expect(demo.tui.screen()).not.toContain('\x1b[31m');
+    expect(rawEventJsonLabel(hostile.type, 120)).toBe(' Event JSON · badTYPE ');
+    expect(rawEventJsonLabel(hostile.type, 120)).not.toContain('\x1b');
     demo.tui.keys('a'); // inert in JSON mode
     expect(demo.tui.screen()).toContain('Event JSON');
     demo.tui.keys('\x1b'); await demo.tui.visible('› 1');

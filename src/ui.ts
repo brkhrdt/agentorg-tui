@@ -62,6 +62,10 @@ function agentHierarchy(agent: Agent | undefined, agents: Map<string, Agent>): s
   return names.join(' / ');
 }
 
+export function rawEventJsonLabel(eventType: string | undefined, width: number): string {
+  return clip(` Event JSON · ${clean(eventType ?? 'unavailable')} `, Math.max(0, width - 2));
+}
+
 export class UI {
   readonly screen = blessed.screen({
     smartCSR: true, fullUnicode: true, title: 'Agent Organization',
@@ -1917,7 +1921,7 @@ export class UI {
       this.footer.setContent(' ↑↓ select event   Enter full JSON   a toggle filterable events   Esc tree');
     } else if (this.view === 'raw-event-json') {
       const event = this.selectedRawEvent;
-      this.rawView.setLabel(clip(` Event JSON · ${clean(event?.type ?? 'unavailable')} `, Math.max(0, width - 2)));
+      this.rawView.setLabel(rawEventJsonLabel(event?.type, width));
       const json = event ? JSON.stringify(event, null, 2).replace(/[\x7f-\x9f]/g, ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : 'No event selected.';
       this.rawView.setContent(json);
       this.rawView.scrollTo(this.rawScroll);
