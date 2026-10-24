@@ -240,7 +240,7 @@ export class Store extends EventEmitter {
     if (!current || !boundary?.streamKind) return;
     const historical = this.historyMessageThrough(agentId, current.seq);
     const provisionalStreamStart = historical?.boundarySeq !== undefined && historical.boundarySeq === historical.startSeq && !historical.boundaryInclusive;
-    const retainedCutoff = boundary.historyCutoff === undefined || (provisionalStreamStart && boundary.historyCutoff === historical?.boundarySeq)
+    const retainedCutoff = boundary.historyCutoff === undefined || (provisionalStreamStart && !boundary.historyCutoffInclusive && boundary.historyCutoff === historical?.boundarySeq)
       ? undefined
       : { seq: boundary.historyCutoff, inclusive: boundary.historyCutoffInclusive === true };
     const cutoff = provisionalStreamStart ? retainedCutoff : latestHistoryCutoff(
