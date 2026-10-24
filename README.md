@@ -96,6 +96,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | ↑ / ↓ | Select an agent (metadata highlighted; configurable colors) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
+| z | Open the selected agent's raw events from currently loaded chat history |
 | a | Key-labelled agent info, editing and lifecycle actions |
 | i | View all information about the selected agent (read-only) |
 | r / x | Start/restart / stop selected agent (confirmation required) |
@@ -142,6 +143,10 @@ continues to use real events and renderings from its bounded history window, and
 explicit chat history can recover retained server events. Loading older history
 does not replace a newer live preview; filters still control which event types
 appear in the tree.
+
+### Raw events: `z`
+
+From the tree, `z` opens a snapshot of the selected agent's currently loaded events only. The initial list contains events not excluded by chat filters; `a` toggles inclusion of filterable events. Use ↑/↓ to select an event, Enter for its complete pretty-printed JSON, and Esc to return (JSON Esc returns to the same list). The viewer does not fetch history or alter chat retention; reopen it to capture a fresh snapshot.
 
 ### Agent info: `i` (or `a`, then `i`)
 

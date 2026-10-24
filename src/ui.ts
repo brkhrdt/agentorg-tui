@@ -22,7 +22,7 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
-type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function urlLikeSkillSource(source: string): boolean { return /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith('//') || /^[^/\s]+@[^:\s]+:/.test(source); }
 function pathCompletionAllowed(source: string): boolean {
@@ -124,6 +124,13 @@ export class UI {
   private entry: { id?: string; key: string; text: string; type: ValueType } = { key: '', text: '', type: 'string' };
   private notice = blessed.box({ parent: this.screen, bottom: 1, height: 1, tags: false, style: { fg: 'yellow' } });
   private footer = blessed.box({ parent: this.screen, bottom: 0, height: 1, tags: false, style: { fg: 'black', bg: 'white' } });
+  private rawView = blessed.box({ parent: this.screen, top: 2, bottom: 2, left: 0, right: 0, hidden: true, tags: false, scrollable: true, alwaysScroll: true, keys: false, mouse: false, border: 'line', label: ' Raw events ', style: { border: { fg: 'cyan' } } });
+  private rawSnapshot: ServerEvent[] = [];
+  private selectedRawEvent?: ServerEvent;
+  private rawVisibleOnly = true;
+  private rawIndex = 0;
+  private rawListScroll = 0;
+  private rawScroll = 0;
   private view: View = 'tree';
   private keyContext?: { view: View; index: number };
   private keyActions: KeyAction[] = [];
@@ -206,10 +213,10 @@ export class UI {
         if (['levels', 'agent-edit', 'agent-skills'].includes(this.view)) this.scheduleDraw();
       }
     });
-    for (const widget of [this.tree, this.menu, this.details]) {
-      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'S-l', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
+    for (const widget of [this.tree, this.menu, this.details, this.rawView]) {
+      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'S-l', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'up', 'down', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
         const binding = key.full === 'C-home' || key.full === 'C-end' ? key.full :
-          ['space', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end'].includes(key.name) ? key.name : ch;
+          ['space', 'up', 'down', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
         else if (this.view === 'keys') {
           if (binding === 'escape') this.restoreKeyContext();
@@ -532,6 +539,15 @@ export class UI {
     });
     const choose = () => this.chooseMenu();
     const cycle = () => this.cycleMenu();
+    if (this.view === 'raw-events') return [
+      action('up', 'Previous event', () => this.moveRaw(-1)), action('down', 'Next event', () => this.moveRaw(1)),
+      action('enter', 'View full event JSON', () => this.openRawJson()), action('a', this.rawVisibleOnly ? 'Include filtered events' : 'Show chat-visible events', () => this.toggleRawFilter()),
+      action('escape', 'Return to tree', () => this.setView('tree')),
+    ];
+    if (this.view === 'raw-event-json') return [
+      action('up', 'Scroll up', () => this.scrollRawJson(-1)), action('down', 'Scroll down', () => this.scrollRawJson(1)),
+      action('escape', 'Return to event list', () => this.setView('raw-events')),
+    ];
     if (this.view === 'skill-details') return [
       ...(['pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'] as const).map(key => action(key,
         key.endsWith('home') ? 'Top' : key.endsWith('end') ? 'Bottom' : key === 'pageup' ? 'Previous page' : 'Next page', () => this.scrollSkillDetails(key))),
@@ -574,7 +590,7 @@ export class UI {
     if (this.view === 'tree') return [
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
-        action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()),
+        action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
         ] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
@@ -1353,6 +1369,39 @@ export class UI {
     this.skillPicker.filter = this.input.getValue(); this.menuIndex = 0; this.setView('agent-skills'); this.draw();
   }
   private cancelSkillFilter(): void { this.setView('agent-skills'); this.draw(); }
+  private rawEvents(): ServerEvent[] { return this.rawSnapshot.filter(event => !this.rawVisibleOnly || this.settings.tracked(event.type)); }
+  private openRawEvents(): void {
+    const agent = this.selected();
+    if (!agent) return;
+    // Copy loaded records at entry so subsequent store/filter changes cannot alter this session.
+    this.rawSnapshot = this.session.chatEvents(agent.id).map(event => JSON.parse(JSON.stringify(event)) as ServerEvent);
+    this.rawVisibleOnly = true; this.rawIndex = this.rawSnapshot.length ? 0 : -1; this.rawListScroll = 0; this.rawScroll = 0;
+    this.setView('raw-events');
+  }
+  private moveRaw(delta: number): void {
+    const count = this.rawEvents().length;
+    if (!count) { this.rawIndex = -1; return; }
+    this.rawIndex = Math.max(0, Math.min(count - 1, this.rawIndex + delta)); this.rawListScroll = this.rawIndex; this.draw();
+  }
+  private toggleRawFilter(): void {
+    const index = this.rawIndex;
+    this.rawVisibleOnly = !this.rawVisibleOnly;
+    const count = this.rawEvents().length;
+    this.rawIndex = count ? Math.max(0, Math.min(count - 1, index)) : -1;
+    this.rawListScroll = this.rawIndex;
+    this.draw();
+  }
+  private openRawJson(): void {
+    const event = this.rawIndex < 0 ? undefined : this.rawEvents()[this.rawIndex];
+    if (!event) return;
+    this.selectedRawEvent = event;
+    this.rawListScroll = this.rawView.getScroll();
+    this.rawScroll = 0; this.setView('raw-event-json');
+  }
+  private scrollRawJson(delta: number): void {
+    const max = Math.max(0, this.rawView.getScrollHeight() - Number(this.rawView.height) + 2);
+    this.rawScroll = Math.max(0, Math.min(max, this.rawScroll + delta)); this.rawView.scrollTo(this.rawScroll); this.screen.render();
+  }
   private openChat(): void {
     if (this.sending) return;
     const agent = this.selected();
@@ -1420,7 +1469,7 @@ export class UI {
     this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.rawView.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     const composer = view === 'chat' || view === 'prompt';
     // Blessed's typings omit removable borders and their runtime side flags.
@@ -1439,6 +1488,8 @@ export class UI {
         this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
         this.input.show(); this.input.focus(); if (!this.sending) this.input.readInput();
       }
+    } else if (view === 'raw-events' || view === 'raw-event-json') {
+      this.rawView.show(); this.rawView.focus();
     } else if (view === 'agent-info' || view === 'skill-details') {
       this.details.show(); this.details.focus();
     } else if (['history-settings', 'settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'local-skill-confirm', 'catalog-manager', 'catalog-delete-confirm', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
@@ -1727,7 +1778,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ' Text: Enter interrupt/send  Ctrl+U clear  Esc tree' : ' ↑↓ select  Enter prompt  c chat  i info  a actions  n create  e edit  v view  q quit');
+      this.footer.setContent(this.view === 'prompt' ? ' Text: Enter interrupt/send  Ctrl+U clear  Esc tree' : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
@@ -1851,6 +1902,25 @@ export class UI {
         `${cell(type, typeWidth)}  ${this.settings.level(type)} ${LEVEL_NAMES[this.settings.level(type) - 1]}`));
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.view === 'filters' ? ' ↑↓ select   Space toggle tracked   Esc tree · changes saved automatically' : ' ↑↓ event  ←→ level  1–4 level  r examples  z inherit  Esc tree');
+    } else if (this.view === 'raw-events') {
+      const events = this.rawEvents();
+      this.rawIndex = events.length ? Math.max(0, Math.min(events.length - 1, this.rawIndex)) : -1;
+      const width = Math.max(1, Number(this.screen.width) - 4);
+      this.rawView.setLabel(` Raw events · ${this.rawVisibleOnly ? 'chat-visible' : 'all filterable'} `);
+      this.rawView.setContent(events.length ? events.map((event, index) => {
+        const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
+        const summary = clean(`${event.seq} · ${event.time} · ${event.type} · ${JSON.stringify(data) ?? String(data)}`).replace(/\s+/g, ' ');
+        const line = clip(summary, width - 2);
+        return `${index === this.rawIndex ? '› ' : '  '}${line}`;
+      }).join('\n') : 'No events in this loaded history window.');
+      this.rawView.scrollTo(Math.max(0, this.rawListScroll));
+      this.footer.setContent(' ↑↓ select event   Enter full JSON   a toggle filterable events   Esc tree');
+    } else if (this.view === 'raw-event-json') {
+      const event = this.selectedRawEvent;
+      this.rawView.setLabel(` Event JSON · ${event?.type ?? 'unavailable'} `);
+      this.rawView.setContent(event ? JSON.stringify(event, null, 2) : 'No event selected.');
+      this.rawView.scrollTo(this.rawScroll);
+      this.footer.setContent(' ↑↓ scroll   Esc event list');
     } else if (this.view === 'chat') {
       const events = this.session.chatEvents(this.chatAgent!);
       const groups = chatGroups(events, this.settings, store.renderings);
