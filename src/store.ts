@@ -29,8 +29,22 @@ function messageIdentity(event: ServerEvent): string | undefined {
   const messageId = object(event.data).messageId;
   return typeof messageId === 'string' ? createHash('sha256').update(messageId).digest('hex') : undefined;
 }
-type LivePreviewBoundary = { event: ServerEvent; streamKind?: string; messageIdentity?: string; startSeq?: number; historyCutoff?: number };
-type HistoricalLivePreviewBoundary = LivePreviewBoundary & { boundarySeq?: number };
+type HistoryCutoff = { seq: number; inclusive: boolean };
+type LivePreviewBoundary = { event: ServerEvent; streamKind?: string; messageIdentity?: string; startSeq?: number; historyCutoff?: number; historyCutoffInclusive?: boolean };
+type HistoricalLivePreviewBoundary = LivePreviewBoundary & { boundarySeq?: number; boundaryInclusive?: boolean };
+function latestHistoryCutoff(...cutoffs: (HistoryCutoff | undefined)[]): HistoryCutoff | undefined {
+  return cutoffs.reduce<HistoryCutoff | undefined>((latest, current) => {
+    if (!current || (latest && current.seq < latest.seq)) return latest;
+    if (!latest || current.seq > latest.seq) return current;
+    return { seq: current.seq, inclusive: current.inclusive || latest.inclusive };
+  }, undefined);
+}
+function historyBoundary(previous: ServerEvent, candidate: ServerEvent, renderings: ReadonlyMap<number, unknown>): HistoryCutoff {
+  const boundary = !isStreamedMessage(candidate) || renderings.has(candidate.seq)
+    ? candidate
+    : !isStreamedMessage(previous) || renderings.has(previous.seq) ? previous : candidate;
+  return { seq: boundary.seq, inclusive: renderings.has(boundary.seq) };
+}
 const TREE_PREVIEW_MAX_BYTES = 1024;
 const TREE_PREVIEW_MESSAGE_BYTES = 384;
 const TREE_PREVIEW_TYPES_PER_AGENT = 32;
@@ -183,58 +197,62 @@ export class Store extends EventEmitter {
   }
   private historyMessagePrefix(event: ServerEvent): HistoricalLivePreviewBoundary | undefined {
     let previous: ServerEvent | undefined;
-    let startSeq: number | undefined, boundarySeq: number | undefined;
+    let startSeq: number | undefined, boundary: HistoryCutoff | undefined;
     for (const candidate of this.orderedEvents()) {
       if (candidate.agentId !== event.agentId || candidate.seq >= event.seq) continue;
       const joined = previous && !this.renderings.has(previous.seq) && !this.renderings.has(candidate.seq)
         ? appendMessageChunk(previous, candidate) : undefined;
       if (joined) previous = joined;
       else {
-        if (previous) boundarySeq = !isStreamedMessage(candidate) || this.renderings.has(candidate.seq)
-          ? candidate.seq
-          : !isStreamedMessage(previous) || this.renderings.has(previous.seq) ? previous.seq : candidate.seq;
+        if (previous) boundary = historyBoundary(previous, candidate, this.renderings);
         previous = candidate; startSeq = candidate.seq;
       }
     }
     if (!previous || this.renderings.has(previous.seq) || this.renderings.has(event.seq)) return;
     const joined = appendMessageChunk(previous, event);
-    return joined ? { event: joined, streamKind: object(event.data).sessionUpdate, messageIdentity: messageIdentity(event), startSeq, boundarySeq } : undefined;
+    return joined ? {
+      event: joined, streamKind: object(event.data).sessionUpdate, messageIdentity: messageIdentity(event), startSeq,
+      boundarySeq: boundary?.seq, boundaryInclusive: boundary?.inclusive,
+    } : undefined;
   }
   private historyMessageThrough(agentId: string, throughSeq: number): HistoricalLivePreviewBoundary | undefined {
     let previous: ServerEvent | undefined;
-    let startSeq: number | undefined, boundarySeq: number | undefined;
+    let startSeq: number | undefined, boundary: HistoryCutoff | undefined;
     for (const candidate of this.orderedEvents()) {
       if (candidate.agentId !== agentId || candidate.seq > throughSeq) continue;
       const joined = previous && !this.renderings.has(previous.seq) && !this.renderings.has(candidate.seq)
         ? appendMessageChunk(previous, candidate) : undefined;
       if (joined) previous = joined;
       else {
-        if (previous) boundarySeq = !isStreamedMessage(candidate) || this.renderings.has(candidate.seq)
-          ? candidate.seq
-          : !isStreamedMessage(previous) || this.renderings.has(previous.seq) ? previous.seq : candidate.seq;
+        if (previous) boundary = historyBoundary(previous, candidate, this.renderings);
         previous = candidate; startSeq = candidate.seq;
       }
     }
     if (!previous || !isStreamedMessage(previous) || this.renderings.has(previous.seq)) return;
-    return { event: previous, streamKind: object(previous.data).sessionUpdate, messageIdentity: messageIdentity(previous), startSeq, boundarySeq };
+    return {
+      event: previous, streamKind: object(previous.data).sessionUpdate, messageIdentity: messageIdentity(previous), startSeq,
+      boundarySeq: boundary?.seq, boundaryInclusive: boundary?.inclusive,
+    };
   }
   private reconcileLivePreviewFromHistory(agentId: string, type: string): void {
     const current = this.livePreviews.get(agentId)?.get(type);
     const boundary = this.livePreviewStreams.get(agentId)?.get(type);
     if (!current || !boundary?.streamKind) return;
     const historical = this.historyMessageThrough(agentId, current.seq);
+    const cutoff = latestHistoryCutoff(
+      boundary.historyCutoff === undefined ? undefined : { seq: boundary.historyCutoff, inclusive: boundary.historyCutoffInclusive === true },
+      historical?.boundarySeq === undefined ? undefined : { seq: historical.boundarySeq, inclusive: historical.boundaryInclusive === true },
+    );
+    const historicalStart = historical?.startSeq ?? current.seq;
     if (!historical || historical.event.seq !== current.seq ||
-        (boundary.historyCutoff !== undefined && (historical.startSeq ?? current.seq) < boundary.historyCutoff) ||
-        (boundary.startSeq !== undefined && (historical.startSeq ?? current.seq) > boundary.startSeq &&
+        (cutoff && (historicalStart < cutoff.seq || (cutoff.inclusive && historicalStart === cutoff.seq))) ||
+        (boundary.startSeq !== undefined && historicalStart > boundary.startSeq &&
           (historical.boundarySeq === undefined || historical.boundarySeq < boundary.startSeq))) return;
     const candidate = compactPreview(historical.event);
     this.livePreviews.get(agentId)!.set(type, candidate);
-    const historyCutoff = historical.boundarySeq === undefined
-      ? boundary.historyCutoff
-      : Math.max(boundary.historyCutoff ?? historical.boundarySeq, historical.boundarySeq);
     const reconciledBoundary = {
       event: candidate, streamKind: historical.streamKind, messageIdentity: historical.messageIdentity, startSeq: historical.startSeq,
-      ...(historyCutoff !== undefined && { historyCutoff }),
+      ...(cutoff && { historyCutoff: cutoff.seq, historyCutoffInclusive: cutoff.inclusive }),
     };
     this.livePreviewStreams.get(agentId)!.set(type, reconciledBoundary);
     const latestBoundary = this.livePreviewBoundaries.get(agentId);
@@ -254,12 +272,14 @@ export class Store extends EventEmitter {
       previous.event.type === event.type && previous.event.agentId === event.agentId && previous.event.generation === event.generation &&
       previous.messageIdentity === messageIdentity(event) && typeof data.content?.text === 'string';
   }
-  private historicalBoundaryAfter(agentId: string, afterSeq: number, beforeSeq: number): number | undefined {
-    let boundarySeq: number | undefined;
+  private historicalBoundaryAfter(agentId: string, afterSeq: number, beforeSeq: number): HistoryCutoff | undefined {
+    let boundary: HistoryCutoff | undefined;
     for (const event of this.orderedEvents()) {
-      if (event.agentId === agentId && event.seq > afterSeq && event.seq < beforeSeq) boundarySeq = event.seq;
+      if (event.agentId === agentId && event.seq > afterSeq && event.seq < beforeSeq) {
+        boundary = { seq: event.seq, inclusive: this.renderings.has(event.seq) };
+      }
     }
-    return boundarySeq;
+    return boundary;
   }
   private rememberLivePreview(event: ServerEvent, replay = false): void {
     if (!event.agentId || event.type === 'agent.session_replaced') {
@@ -291,7 +311,8 @@ export class Store extends EventEmitter {
     const streamKind = isStreamedMessage(event) && !this.renderings.has(event.seq) ? object(event.data).sessionUpdate : undefined;
     let joined: ServerEvent | undefined;
     let historical: HistoricalLivePreviewBoundary | undefined;
-    let usedHistorical = false, historyCutoff: number | undefined, historicalBoundarySeq: number | undefined;
+    let usedHistorical = false, historyCutoff: number | undefined, historyCutoffInclusive = false;
+    let historicalBoundary: HistoryCutoff | undefined;
     let startSeq = event.seq;
     if (streamKind) {
       if (this.compatibleLiveStream(previousBoundary, event) && previous && !this.previewRenderings.has(previous.seq)) {
@@ -303,11 +324,27 @@ export class Store extends EventEmitter {
       historical = shouldReconcileHistory ? this.historyMessagePrefix(event) : undefined;
       const compatibleBoundary = this.compatibleLiveStream(previousBoundary, event);
       historyCutoff = compatibleBoundary ? previousBoundary?.historyCutoff : previousBoundary?.event.seq;
-      historicalBoundarySeq = needsHistory && previousBoundary
+      historyCutoffInclusive = compatibleBoundary
+        ? previousBoundary?.historyCutoffInclusive === true
+        : !!previousBoundary && this.renderings.has(previousBoundary.event.seq);
+      if (compatibleBoundary && previous && this.previewRenderings.has(previous.seq)) {
+        const cutoff = latestHistoryCutoff(
+          historyCutoff === undefined ? undefined : { seq: historyCutoff, inclusive: historyCutoffInclusive },
+          { seq: previousBoundary!.event.seq, inclusive: true },
+        );
+        historyCutoff = cutoff?.seq;
+        historyCutoffInclusive = cutoff?.inclusive === true;
+      }
+      historicalBoundary = needsHistory && previousBoundary
         ? this.historicalBoundaryAfter(event.agentId, previousBoundary.event.seq, event.seq)
         : undefined;
-      const crossesRetainedBoundary = !!historical && historyCutoff !== undefined &&
-        (historical.startSeq ?? event.seq) < historyCutoff;
+      const cutoff = latestHistoryCutoff(
+        historyCutoff === undefined ? undefined : { seq: historyCutoff, inclusive: historyCutoffInclusive },
+        historicalBoundary,
+      );
+      const historicalStart = historical?.startSeq ?? event.seq;
+      const crossesRetainedBoundary = !!historical && !!cutoff &&
+        (historicalStart < cutoff.seq || (cutoff.inclusive && historicalStart === cutoff.seq));
       let resolvedHistoryBoundary = false;
       if (historical && !crossesRetainedBoundary &&
           (joined === undefined || (historical.startSeq ?? event.seq) <= startSeq ||
@@ -315,15 +352,19 @@ export class Store extends EventEmitter {
         joined = historical.event;
         startSeq = historical.startSeq ?? event.seq;
         usedHistorical = true;
-      } else if (historicalBoundarySeq !== undefined) {
+      } else if (historicalBoundary !== undefined) {
         joined = undefined; startSeq = event.seq; resolvedHistoryBoundary = true;
       }
       if (shouldReconcileHistory && (historical || !needsHistory || resolvedHistoryBoundary)) this.livePreviewNeedsHistory.delete(event.agentId);
     }
     const candidate = compactPreview(joined ?? event);
-    const cutoffValues = [historyCutoff, historicalBoundarySeq, usedHistorical ? historical?.boundarySeq : undefined]
-      .filter((seq): seq is number => seq !== undefined);
-    const acceptedCutoff = cutoffValues.length ? Math.max(...cutoffValues) : undefined;
+    const acceptedCutoff = latestHistoryCutoff(
+      historyCutoff === undefined ? undefined : { seq: historyCutoff, inclusive: historyCutoffInclusive },
+      historicalBoundary,
+      usedHistorical && historical?.boundarySeq !== undefined
+        ? { seq: historical.boundarySeq, inclusive: historical.boundaryInclusive === true }
+        : undefined,
+    );
     if (previous) this.previewRenderings.delete(previous.seq);
     candidates.set(event.type, candidate);
     if (candidates.size > TREE_PREVIEW_TYPES_PER_AGENT) {
@@ -342,7 +383,7 @@ export class Store extends EventEmitter {
     if (streamKind) {
       streams.set(event.type, {
         event: candidate, streamKind, messageIdentity: messageIdentity(event), startSeq,
-        ...(acceptedCutoff !== undefined && { historyCutoff: acceptedCutoff }),
+        ...(acceptedCutoff && { historyCutoff: acceptedCutoff.seq, historyCutoffInclusive: acceptedCutoff.inclusive }),
       });
     }
     else streams.delete(event.type);
@@ -351,7 +392,7 @@ export class Store extends EventEmitter {
     this.livePreviewBoundaries.set(event.agentId, {
       event: candidate, streamKind, messageIdentity: streamKind ? messageIdentity(event) : undefined,
       ...(streamKind && { startSeq }),
-      ...(streamKind && acceptedCutoff !== undefined && { historyCutoff: acceptedCutoff }),
+      ...(streamKind && acceptedCutoff && { historyCutoff: acceptedCutoff.seq, historyCutoffInclusive: acceptedCutoff.inclusive }),
     });
     this.livePreviewWatermarks.set(event.agentId, Math.max(this.livePreviewWatermarks.get(event.agentId) ?? -1, event.seq));
   }
