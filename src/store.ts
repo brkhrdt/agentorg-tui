@@ -111,6 +111,7 @@ export class Store extends EventEmitter {
   // Independent, compact candidates for the live tree; raw history remains governed by cache policy.
   private livePreviews = new Map<string, Map<string, ServerEvent>>();
   private livePreviewBoundaries = new Map<string, LivePreviewBoundary>();
+  private livePreviewStreams = new Map<string, Map<string, LivePreviewBoundary>>();
   private livePreviewWatermarks = new Map<string, number>();
   private livePreviewNeedsHistory = new Set<string>();
   private previewGeneration = new Map<string, string | null | undefined>();
@@ -154,6 +155,7 @@ export class Store extends EventEmitter {
     if (candidates) for (const event of candidates.values()) this.previewRenderings.delete(event.seq);
     this.livePreviews.delete(agentId);
     this.livePreviewBoundaries.delete(agentId);
+    this.livePreviewStreams.delete(agentId);
     this.livePreviewNeedsHistory.delete(agentId);
     this.previewGeneration.delete(agentId);
   }
@@ -218,7 +220,7 @@ export class Store extends EventEmitter {
   }
   private reconcileLivePreviewFromHistory(agentId: string, type: string): void {
     const current = this.livePreviews.get(agentId)?.get(type);
-    const boundary = this.livePreviewBoundaries.get(agentId);
+    const boundary = this.livePreviewStreams.get(agentId)?.get(type);
     if (!current || !boundary?.streamKind) return;
     const historical = this.historyMessageThrough(agentId, current.seq);
     if (!historical || historical.event.seq !== current.seq ||
@@ -226,9 +228,12 @@ export class Store extends EventEmitter {
           (historical.boundarySeq === undefined || historical.boundarySeq < boundary.startSeq))) return;
     const candidate = compactPreview(historical.event);
     this.livePreviews.get(agentId)!.set(type, candidate);
-    this.livePreviewBoundaries.set(agentId, {
+    const reconciledBoundary = {
       event: candidate, streamKind: historical.streamKind, messageIdentity: historical.messageIdentity, startSeq: historical.startSeq,
-    });
+    };
+    this.livePreviewStreams.get(agentId)!.set(type, reconciledBoundary);
+    const latestBoundary = this.livePreviewBoundaries.get(agentId);
+    if (latestBoundary?.event.seq === current.seq && latestBoundary.streamKind) this.livePreviewBoundaries.set(agentId, reconciledBoundary);
     if (!this.orderedEvents().some(event => event.agentId === agentId && event.seq > current.seq)) this.livePreviewNeedsHistory.delete(agentId);
   }
   private joinLiveMessage(previous: ServerEvent, event: ServerEvent): ServerEvent {
@@ -301,11 +306,23 @@ export class Store extends EventEmitter {
     candidates.set(event.type, candidate);
     if (candidates.size > TREE_PREVIEW_TYPES_PER_AGENT) {
       const oldest = [...candidates.entries()].sort((a, b) => a[1].seq - b[1].seq)[0];
-      if (oldest) { candidates.delete(oldest[0]); this.previewRenderings.delete(oldest[1].seq); }
+      if (oldest) {
+        candidates.delete(oldest[0]); this.previewRenderings.delete(oldest[1].seq);
+        const streams = this.livePreviewStreams.get(event.agentId);
+        streams?.delete(oldest[0]);
+        if (!streams?.size) this.livePreviewStreams.delete(event.agentId);
+      }
     }
     this.livePreviews.set(event.agentId, candidates);
     const rendering = this.renderings.get(event.seq);
     if (rendering) this.previewRenderings.set(candidate.seq, this.compactRendering(rendering));
+    const streams = this.livePreviewStreams.get(event.agentId) ?? new Map<string, LivePreviewBoundary>();
+    if (streamKind) streams.set(event.type, {
+      event: candidate, streamKind, messageIdentity: messageIdentity(event), startSeq,
+    });
+    else streams.delete(event.type);
+    if (streams.size) this.livePreviewStreams.set(event.agentId, streams);
+    else this.livePreviewStreams.delete(event.agentId);
     this.livePreviewBoundaries.set(event.agentId, {
       event: candidate, streamKind, messageIdentity: streamKind ? messageIdentity(event) : undefined,
       ...(streamKind && { startSeq }),
@@ -387,7 +404,7 @@ export class Store extends EventEmitter {
   reset(): void {
     this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
-    this.livePreviews.clear(); this.livePreviewBoundaries.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear();
+    this.livePreviews.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
     this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined; this.activeAnchorSeq = undefined; this.browsingOlder = false;
