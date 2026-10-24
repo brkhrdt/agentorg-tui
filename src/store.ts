@@ -272,6 +272,9 @@ export class Store extends EventEmitter {
       previous.event.type === event.type && previous.event.agentId === event.agentId && previous.event.generation === event.generation &&
       previous.messageIdentity === messageIdentity(event) && typeof data.content?.text === 'string';
   }
+  private hasInterveningAgentEvent(agentId: string, afterSeq: number, beforeSeq: number): boolean {
+    return this.orderedEvents().some(event => event.agentId === agentId && event.seq > afterSeq && event.seq < beforeSeq);
+  }
   private historicalBoundaryAfter(previous: LivePreviewBoundary, beforeSeq: number): HistoryCutoff | undefined {
     let boundary: HistoryCutoff | undefined;
     let preceding = previous;
@@ -331,7 +334,8 @@ export class Store extends EventEmitter {
         joined = this.joinLiveMessage(previous, event);
         startSeq = previousBoundary!.startSeq ?? previousBoundary!.event.seq;
       }
-      const needsHistory = this.livePreviewNeedsHistory.has(event.agentId);
+      const needsHistory = this.livePreviewNeedsHistory.has(event.agentId) ||
+        (!!previousBoundary && this.hasInterveningAgentEvent(event.agentId, previousBoundary.event.seq, event.seq));
       const shouldReconcileHistory = !previousBoundary || needsHistory || (this.compatibleLiveStream(previousBoundary, event) && !previous);
       historical = shouldReconcileHistory ? this.historyMessagePrefix(event) : undefined;
       const compatibleBoundary = this.compatibleLiveStream(previousBoundary, event);
