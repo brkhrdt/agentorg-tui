@@ -234,6 +234,32 @@ describe('state and transcripts', () => {
     store.ingest(message(3, 'TAIL'));
     expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
   });
+  test('history reconciles a retained streamed message despite a later hidden event', () => {
+    const store = new Store(), settings = new Settings();
+    settings.excluded.add('operation.changed');
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    store.ingest(message(3, '.'));
+    store.ingest(event(4, 'operation.changed', { id: 'hidden', status: 'running' }));
+    store.ingest(message(1, 'Hello '), 'history');
+    store.ingest(message(2, 'world'), 'history');
+    expect(eventText(store.latest(settings).get('root')!)).toBe('Hello world.');
+  });
+  test('a late sidecar reconciles a retained message despite a later hidden event', () => {
+    const store = new Store(), settings = new Settings();
+    settings.excluded.add('operation.changed');
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
+    });
+    store.ingest(message(1, 'IGNORE '));
+    store.ingest(message(2, 'NEW '));
+    store.ingest(event(3, 'operation.changed', { id: 'hidden', status: 'running' }));
+    store.present(1, { rendererId: 'fixture', subtype: 'custom', summary: 'custom summary', extended: 'custom summary', full: 'custom summary' });
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW ');
+  });
   test('history arrival reconciles a pending live preview immediately', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
