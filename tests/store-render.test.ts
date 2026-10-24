@@ -133,6 +133,28 @@ describe('state and transcripts', () => {
     reordered.ingest(message(4, ' More'));
     expect(eventText(reordered.latest(settings).get('root')!)).toBe('Hello world. More');
   });
+  test('a late earlier chunk with a new message ID can extend the retained stream', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, text: string, messageId: string) => event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text },
+    });
+    store.ingest(message(3, 'TAIL', 'new'));
+    store.ingest(message(1, 'OLD ', 'old'));
+    store.ingest(message(2, 'NEW ', 'new'));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
+  test('a late earlier assistant chunk can extend past an older thought chunk', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const message = (seq: number, sessionUpdate: string, text: string) => event(seq, 'agent.message', {
+      sessionUpdate, content: { type: 'text', text },
+    });
+    store.ingest(message(3, 'agent_message_chunk', 'TAIL'));
+    store.ingest(message(1, 'agent_thought_chunk', 'OLD '));
+    store.ingest(message(2, 'agent_message_chunk', 'NEW '));
+    expect(eventText(store.latest(settings).get('root')!)).toBe('NEW TAIL');
+  });
   test('historical prompt boundaries separate later out-of-order live messages', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
