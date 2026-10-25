@@ -271,6 +271,7 @@ export function renderTreeEvent(event: ServerEvent, width: number, rendering?: E
 }
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   width = Math.max(1, width);
+  if (level === 0) return '';
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
   if (rendering?.toolPrompt !== undefined && isTool(event)) return renderAgentPrompt(event, level, width, rendering, colors);
   if (!rendering && isTool(event)) {
@@ -371,7 +372,7 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
     if (callId && raw) toolCalls.delete(callId);
     else if (callId) {
       const priorIndex = toolCalls.get(callId);
-      if (settings.tracked(event.type)) {
+      if (settings.visible(event.type, rendering?.subtype)) {
         if (priorIndex !== undefined) replace(priorIndex, event);
         else {
           const identity = `${event.agentId}\0${event.generation ?? ''}\0tool\0${data.toolCallId}\0${event.seq}`;
@@ -382,7 +383,7 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
       adjacent = false;
       continue;
     }
-    if (!settings.tracked(event.type)) { adjacent = false; continue; }
+    if (!settings.visible(event.type, rendering?.subtype)) { adjacent = false; continue; }
     const previous = adjacent ? groups[groups.length - 1] : undefined;
     const merged = !raw && !rendering && !(previous && renderings.has(previous.seq)) ? appendMessageChunk(previous, event) : undefined;
     if (merged && previous) replace(groups.length - 1, { ...previous, data: merged.data });

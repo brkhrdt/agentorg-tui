@@ -27,7 +27,7 @@ test('tree keeps an observed quiet-agent preview after pressure while chat recov
   });
   const config = join(mock.directory, 'config.json');
   await writeFile(config, JSON.stringify({
-    excluded: [], levels: {}, tableFields: ['name', 'event'], compactToolCalls: false,
+    levels: {}, tableFields: ['name', 'event'], compactToolCalls: false,
     history: { recentEvents: 3, chatPageSize: 2, cacheBytes: 32768, idleMinutes: 10 },
   }));
   const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });

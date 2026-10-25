@@ -259,7 +259,7 @@ test('edit extended uses semantic old/new colors and aligns using terminal cells
 });
 
 test('chat can replace tool call/update phases in place while preserving raw and unrelated events', () => {
-  const settings = new Settings(); settings.excluded.clear(); settings.compactToolCalls = true;
+  const settings = new Settings(); for (const type of settings.types([])) settings.levels[type] = 1; settings.compactToolCalls = true;
   const call = event(1, 'tool.call', { toolCallId: 'x', title: 'bash', rawInput: { command: 'echo hi' } });
   const update = event(3, 'tool.update', { toolCallId: 'x', title: 'bash', status: 'in_progress' });
   const result = event(4, 'tool.result', { toolCallId: 'x', title: 'bash', status: 'completed' });
@@ -295,13 +295,13 @@ test('compact groups honor filtered phases, close hidden results and retain mixe
   const update = event(2, 'tool.update', { toolCallId: 'x' });
   const result = event(3, 'tool.result', { toolCallId: 'x' });
   const events = [call, update, result];
-  settings.excluded.add('tool.call');
+  settings.levels['tool.call'] = 0;
   expect(chatGroups(events, settings).map(item => item.seq)).toEqual([3]);
-  settings.excluded.delete('tool.call'); settings.excluded.add('tool.update');
+  settings.levels['tool.call'] = 1; settings.levels['tool.update'] = 0;
   expect(chatGroups(events, settings).map(item => item.seq)).toEqual([3]);
-  settings.excluded.delete('tool.update'); settings.excluded.add('tool.result');
+  settings.levels['tool.update'] = 1; settings.levels['tool.result'] = 0;
   expect(chatGroups([...events, { ...call, seq: 4 }], settings).map(item => item.seq)).toEqual([2, 4]);
-  settings.excluded.delete('tool.result');
+  settings.levels['tool.result'] = 1;
   const sidecars = new Map([[2, { rendererId: 'pi/bash', subtype: 'bash', summary: '$ cmd', extended: '$ cmd', full: '$ cmd' }]]);
   settings.levels['tool.update:bash'] = 4;
   expect(chatGroups(events, settings, sidecars).map(item => item.seq)).toEqual([1, 2, 3]);
@@ -342,7 +342,7 @@ test('MCP level previews select alias-specific Pi examples and retain emitted id
     const canonical = example(tool), aliased = example(emitted, emitted);
     const metadata: RendererMetadata = { id: `core.mcp-${tool}`, name: tool, eventTypes: ['tool.call', 'tool.update', 'tool.result'], tool, aliases: [emitted], examples: [canonical], aliasExamples: { [emitted]: [aliased] } };
     for (const level of [1, 2, 3, 4] as const) {
-      const preview = rendererPreview(metadata, 'tool.result', level, 120, 40, {}, emitted);
+      const preview = rendererPreview(metadata, 'tool.result', level, 120, 60, {}, emitted);
       expect(preview).toContain(`Example ${emitted}`);
       if (level === 4) expect(preview).toContain(`"title": "${emitted}"`);
       expect(preview).not.toContain(`"title": "${tool}"`);
@@ -350,9 +350,11 @@ test('MCP level previews select alias-specific Pi examples and retain emitted id
   }
 });
 
-test('examples show all four levels when space allows, only the selected level on small terminals', () => {
+test('examples show all five levels when space allows, only the selected level on small terminals', () => {
   const large = rendererPreview(metadata, 'tool.result', 3, 55, 24);
-  for (const text of ['1 summary', '2 extended', '3 full', '4 raw', 'Pi read', 'Custom read complete']) expect(large).toContain(text);
+  for (const text of ['0 hidden', '1 summary', '2 extended', '3 full', '4 raw', 'Pi read', 'Custom read complete']) expect(large).toContain(text);
+  expect(large).toContain('\n\n○ 1 summary');
+  expect(large).toContain('\n\n○ 2 extended');
   const small = rendererPreview(metadata, 'tool.result', 2, 25, 7);
   expect(small).toContain('2 extended'); expect(small).not.toContain('4 raw');
   for (const line of small.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(25);
@@ -399,7 +401,7 @@ test('terminal level selector displays examples for the real Pi-prefixed AgentOr
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('connected');
-    tui.keys('vl'); await tui.visible('Event rendering levels');
+    tui.keys('vl'); await tui.visible('Event visibility / rendering levels');
     const type = `tool.result:${emitted}`;
     const subtypes = ['tool.call', 'tool.update', 'tool.result'].flatMap(phase => [`${phase}:create_subagent`, `${phase}:${emitted}`]);
     const index = new Settings().types(subtypes).indexOf(type);
@@ -447,7 +449,7 @@ test('z inheritance for default Pi subtypes survives save/reload and follows the
       const phases = ['tool.call', 'tool.update', 'tool.result'];
       const subtypes = phases.flatMap(phase => [`${phase}:${item.canonical}`, `${phase}:${emitted}`]);
       const index = (await Settings.load(config)).types(subtypes).indexOf(type);
-      tui.keys('vl'); await tui.visible('Event rendering levels');
+      tui.keys('vl'); await tui.visible('Event visibility / rendering levels');
       tui.keys('\x1b[B'.repeat(index)); await tui.visible(type);
       expect((await Settings.load(config)).level(item.phase, emitted)).toBe(item.defaultLevel);
       tui.keys('z');
@@ -467,7 +469,7 @@ test('terminal level selector previews renderer examples, saves subtype override
   const mock = await renderingServer(), tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('< src/main.ts');
-    tui.keys('vl'); await tui.visible('Event rendering levels');
+    tui.keys('vl'); await tui.visible('Event visibility / rendering levels');
     const settings = new Settings();
     const index = settings.types(['tool.result:read']).indexOf('tool.result:read');
     tui.keys('\x1b[B'.repeat(index));
@@ -506,7 +508,7 @@ test('terminal compact controls toggle via selection or shortcut with either set
     try {
       await tui.visible('connected');
       tui.keys('v'); await tui.visible('Compact tool phases in chat: off');
-      tui.keys('\x1b[B'.repeat(serverSettings ? 5 : 4) + '\r');
+      tui.keys('\x1b[B'.repeat(serverSettings ? 4 : 3) + '\r');
       await tui.visible('Compact tool phases in chat: on');
       await waitFor(saved(true));
       tui.keys('?'); await tui.visible('Toggle compact tool phases');
@@ -578,7 +580,7 @@ test('terminal changes only symbol colors across phases and independently colors
     else if (request.method === 'subscribe') respond(socket, request.id, { seq: 1, liveOnly: true });
     else if (request.method === 'events.history') respond(socket, request.id, { events: request.params.after < 1 ? [call] : [], renderings: { 1: bash }, oldestSeq: 1, latestSeq: 1, expired: false });
   });
-  const settings = new Settings(); settings.excluded.clear(); settings.levels['tool.result'] = 3;
+  const settings = new Settings(); for (const type of settings.types([])) settings.levels[type] = 1; settings.levels['tool.result'] = 3;
   await settings.save(join(mock.directory, 'config.json'));
   const tui = terminalClient(mock.path, mock.directory);
   const fg = (text: string) => {
@@ -610,7 +612,7 @@ test('terminal changes only symbol colors across phases and independently colors
     await tui.visible('-old text'); await tui.visible('+new text');
     expect(fg('Δ file.ts')).toBe(2); expect(fg('-old text')).toBe(1); expect(fg('+new text')).toBe(2);
     tui.keys('\x1b'); await tui.visible('LATEST TRACKED EVENT');
-    tui.keys('vl'); await tui.visible('Event rendering levels');
+    tui.keys('vl'); await tui.visible('Event visibility / rendering levels');
     const index = settings.types(['tool.call:bash', 'tool.update:bash', 'tool.result:bash', 'tool.result:edit']).indexOf('tool.result:edit');
     tui.keys('\x1b[B'.repeat(index) + '2');
     await waitFor(asyncReadGuard(join(mock.directory, 'config.json'), 'tool.result:edit', 2));
@@ -634,7 +636,7 @@ test('terminal level names use the available pane width before truncating long M
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('connected');
-    tui.keys('vl'); await tui.visible('Event rendering levels');
+    tui.keys('vl'); await tui.visible('Event visibility / rendering levels');
     const index = new Settings().types([type, tooLong]).indexOf(type);
     tui.keys('\x1b[B'.repeat(index));
     await tui.visible(type);

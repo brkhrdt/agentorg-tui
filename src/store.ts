@@ -642,7 +642,7 @@ export class Store extends EventEmitter {
       const agent = this.agents.get(agentId);
       if (agent && agent.removedAt !== null) continue;
       for (const event of types.values()) {
-        if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
+        if (settings.visible(event.type, this.renderings.get(event.seq)?.subtype) && event.seq > (this.previewFloors.get(agentId) ?? -1) && event.seq > (latest.get(agentId)?.seq ?? -1)) latest.set(agentId, event);
       }
     }
     // Only a preserved streamed-message candidate may win an equal-sequence tie;
@@ -652,13 +652,13 @@ export class Store extends EventEmitter {
       if (!agent || agent.removedAt !== null) continue;
       for (const event of types.values()) {
         const current = latest.get(agentId);
-        if (settings.tracked(event.type) && event.seq > (this.previewFloors.get(agentId) ?? -1) &&
+        if (settings.visible(event.type, this.renderings.get(event.seq)?.subtype) && event.seq > (this.previewFloors.get(agentId) ?? -1) &&
             (event.seq > (current?.seq ?? -1) || (event.seq === current?.seq && isStreamedMessage(event)))) latest.set(agentId, event);
       }
     }
     return latest;
   }
   transcript(agentId: string, settings: Settings): ServerEvent[] {
-    return this.orderedEvents().filter(event => event.agentId === agentId && settings.tracked(event.type));
+    return this.orderedEvents().filter(event => event.agentId === agentId && settings.visible(event.type, this.renderings.get(event.seq)?.subtype));
   }
 }

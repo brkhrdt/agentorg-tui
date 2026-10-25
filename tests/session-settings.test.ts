@@ -5,21 +5,11 @@ import { Session } from '../src/session.js';
 import { DEFAULT_LEVELS, DEFAULT_TABLE_FIELDS, Settings } from '../src/settings.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
-test('settings round-trip defaults, exclusions, plugin levels and invalid config', async () => {
+test('settings round-trip defaults, level-zero visibility, plugin levels and invalid config', async () => {
   const mock = await mockServer(() => {});
   try {
     const path = join(mock.directory, 'config', 'settings.json');
     const settings = await Settings.load(path);
-    expect(settings.levels).toEqual({
-      'agent.message': 3, 'prompt.queued': 3, 'tool.update': 3, 'tool.result': 2, 'agent.plan': 3,
-      'tool.call:mcp__agentorg__prompt_subagent': 3, 'tool.call:mcp__agentorg__prompt_parent': 3, 'tool.call:cancel_operation': 2, 'tool.result:bash': 2,
-      'tool.result:mcp__agentorg__modify_subagent': 2, 'tool.result:mcp__agentorg__get_completion': 2,
-      'tool.result:cancel_operation': 2, 'tool.result:create_subagent': 2, 'tool.result:get_completion': 2,
-      'tool.result:get_operation': 2, 'tool.result:get_subagent': 2, 'tool.result:mcp__agentorg__cancel_operation': 2,
-      'tool.result:mcp__agentorg__create_subagent': 2, 'tool.result:mcp__agentorg__get_operation': 2,
-      'tool.result:mcp__agentorg__get_subagent': 2, 'tool.result:mcp__agentorg__prompt_subagent': 2, 'tool.result:mcp__agentorg__prompt_parent': 2,
-      'tool.result:mcp__agentorg__remove_subagent': 2,
-    });
     expect(settings.levels).toEqual(DEFAULT_LEVELS);
     expect(settings.inheritedLevels.size).toBe(0);
     expect(settings.level('agent.message')).toBe(3);
@@ -29,11 +19,18 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     expect(settings.level('tool.call', 'mcp__agentorg__create_subagent')).toBe(1);
     expect(settings.level('tool.result', 'mcp__agentorg__get_operation')).toBe(2);
     expect(settings.level('tool.result', 'read')).toBe(2);
-    expect(['agent.message', 'prompt.queued', 'tool.call', 'tool.result'].filter(type => settings.tracked(type))).toEqual(['agent.message', 'prompt.queued', 'tool.call', 'tool.result']);
-    expect(['agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed', 'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed', 'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling', 'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped'].filter(type => settings.tracked(type))).toEqual([]);
-    expect(settings.tracked('tool.update')).toBe(true);
+    settings.levels['tool.result'] = 3;
+    settings.levels['tool.result:read'] = 0;
+    expect(settings.level('tool.result', 'read')).toBe(0);
+    expect(settings.level('tool.result', 'write')).toBe(3);
+    expect(settings.visible('tool.result', 'read')).toBe(false);
+    expect(settings.visible('tool.result', 'write')).toBe(true);
+    delete settings.levels['tool.result:read'];
+    expect(['agent.message', 'prompt.queued', 'tool.call', 'tool.result'].filter(type => settings.visible(type))).toEqual(['agent.message', 'prompt.queued', 'tool.call', 'tool.result']);
+    expect(['agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed', 'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed', 'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling', 'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped'].filter(type => settings.visible(type))).toEqual([]);
+    expect(settings.visible('tool.update')).toBe(true);
     expect(settings.level('tool.update')).toBe(3);
-    settings.toggle('agent.message');
+    settings.levels['agent.message'] = 0;
     settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;
     settings.levels['tool.result'] = 4;
@@ -48,7 +45,7 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     settings.colors.toolCall = 'magenta';
     await settings.save(path);
     const loaded = await Settings.load(path);
-    expect(loaded.tracked('agent.message')).toBe(false);
+    expect(loaded.visible('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
     expect(loaded.inheritedLevels).toEqual(new Set(['tool.call:mcp__agentorg__prompt_subagent', 'tool.result:mcp__agentorg__get_operation']));
     expect(loaded.level('tool.result', 'mcp__agentorg__get_operation')).toBe(4);
@@ -57,25 +54,26 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     expect(loaded.tableFields).toEqual(['error', 'name', 'status']);
     expect(loaded.compactToolCalls).toBe(true);
     expect(loaded.colors).toMatchObject({ selectionBg: 'white', selectionFg: 'black', toolCall: 'magenta' });
-    expect(JSON.parse(await readFile(path, 'utf8')).levels['plugin.custom']).toBe(4);
+    const persisted = JSON.parse(await readFile(path, 'utf8'));
+    expect(persisted.levels['plugin.custom']).toBe(4);
     for (const tableFields of [undefined, null, [], ['unknown', 3], ['harness', 'harness', null, 'event', 'unknown']]) {
-      await writeFile(path, JSON.stringify({ excluded: [], levels: {}, tableFields }));
+      await writeFile(path, JSON.stringify({ levels: {}, tableFields }));
       const compatible = await Settings.load(path);
       expect(compatible.compactToolCalls).toBe(false);
       expect(compatible.tableFields).toEqual(Array.isArray(tableFields) && tableFields.includes('harness')
         ? ['harness', 'event'] : [...DEFAULT_TABLE_FIELDS]);
     }
     for (const compactToolCalls of [null, 1, 'true', [], {}]) {
-      await writeFile(path, JSON.stringify({ excluded: [], levels: {}, compactToolCalls }));
+      await writeFile(path, JSON.stringify({ levels: {}, compactToolCalls }));
       await expect(Settings.load(path)).rejects.toThrow('Invalid compactToolCalls setting');
     }
-    await writeFile(path, JSON.stringify({ excluded: [], levels: { 'tool.result': 4, 'tool.call': 1, 'tool.result:create_subagent': 3 } }));
+    await writeFile(path, JSON.stringify({ levels: { 'tool.result': 4, 'tool.call': 1, 'tool.result:create_subagent': 3 } }));
     const legacy = await Settings.load(path);
     expect(legacy.level('tool.result', 'mcp__agentorg__get_operation')).toBe(4);
     expect(legacy.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(1);
     expect(legacy.level('tool.result', 'create_subagent')).toBe(3);
     expect(legacy.inheritedLevels).toContain('tool.result:mcp__agentorg__get_operation');
-    await writeFile(path, '{"excluded":[],"levels":{"agent.message":5}}');
+    await writeFile(path, '{"levels":{"agent.message":5}}');
     await expect(Settings.load(path)).rejects.toThrow('Invalid rendering level');
   } finally { await mock.close(); }
 });

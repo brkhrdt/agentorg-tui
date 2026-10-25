@@ -3,19 +3,19 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { renderEvent, renderTreeEvent } from '../src/render.js';
 import { rendererPreview } from '../src/renderer-preview.js';
-import { ansiColor, DEFAULT_COLORS, Settings } from '../src/settings.js';
-import { agent, event, mockServer, respond } from './helpers.js';
+import { ansiColor, COLOR_SETTINGS, DEFAULT_COLORS, Settings } from '../src/settings.js';
+import { agent, event, mockServer, respond, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 
 test('color preferences validate partial palettes and retain defaults for older configurations', async () => {
   const mock = await mockServer(() => {});
   const path = join(mock.directory, 'config.json');
-  const save = (colors?: unknown) => writeFile(path, JSON.stringify({ excluded: [], levels: {}, colors }));
+  const save = (colors?: unknown) => writeFile(path, JSON.stringify({ levels: {}, colors }));
   try {
     await save();
     expect((await Settings.load(path)).colors).toEqual(DEFAULT_COLORS);
-    await save({ toolCall: 'default', title: 'orange', futurePreference: 'ignored' });
-    expect((await Settings.load(path)).colors).toEqual({ ...DEFAULT_COLORS, toolCall: 'default', title: 'orange' });
+    await save({ toolCall: 'default', title: 'orange', hiddenRows: 'red', futurePreference: 'ignored' });
+    expect((await Settings.load(path)).colors).toEqual({ ...DEFAULT_COLORS, toolCall: 'default', title: 'orange', hiddenRows: 'red' });
     for (const colors of [null, [], 'blue', { title: 'not-a-color' }, { title: 208 }]) {
       await save(colors);
       await expect(Settings.load(path)).rejects.toThrow(/Invalid color/);
@@ -51,6 +51,41 @@ test('event palettes affect symbols, Markdown, diffs and previews without stale 
   const metadata = { id: rendering.rendererId, name: 'Colors', eventTypes: [raw.type], examples: [{ ...rendering, type: raw.type, raw: JSON.stringify(raw) }] };
   expect(rendererPreview(metadata, raw.type, 3, 80, 12, settings.colors)).toContain('\x1b[36m+new');
   expect(renderEvent(raw, 4, 10000, rendering, settings.colors)).toBe(renderEvent(raw, 4, 10000, rendering));
+});
+
+test('hidden event row color is configurable and persisted from the TUI', async () => {
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory);
+  const path = join(mock.directory, 'config.json');
+  try {
+    await tui.visible('connected');
+    tui.keys('vt'); await tui.visible('TUI colors');
+    tui.keys('\x1b[B'.repeat(Object.keys(COLOR_SETTINGS).length - 1));
+    await tui.visible('Hidden event rows: gray');
+    tui.keys('\x1b[C'.repeat(3));
+    await tui.visible('Hidden event rows: red');
+    let saved = false;
+    await waitFor(() => { void Settings.load(path).then(settings => { saved = settings.color('hiddenRows') === 'red'; }); return saved; });
+    tui.keys('\x1b'); await tui.visible('AGENT');
+    tui.keys('l'); await tui.visible('Event visibility / rendering levels');
+    tui.keys('\x1b[B'); // Leave agent.created unselected so its row color is visible.
+    await tui.visible('agent.created');
+    const rowIndex = tui.screen().split('\n').findIndex(line => line.includes('agent.created'));
+    const column = tui.screen().split('\n')[rowIndex]!.indexOf('agent.created');
+    expect(tui.cell(rowIndex, column)?.getFgColor()).toBe(1);
+    const visibleRowIndex = tui.screen().split('\n').findIndex(line => line.includes('agent.message'));
+    const visibleColumn = tui.screen().split('\n')[visibleRowIndex]!.indexOf('agent.message');
+    expect(tui.cell(visibleRowIndex, visibleColumn)?.getFgColor()).not.toBe(1);
+    expect((await Settings.load(path)).colors.hiddenRows).toBe('red');
+    tui.keys('\x1b'); await tui.visible('AGENT');
+    tui.keys('vt'); await tui.visible('Hidden event rows: red');
+    const colorRowIndex = tui.screen().split('\n').findIndex(line => line.includes('Hidden event rows: red'));
+    const colorColumn = tui.screen().split('\n')[colorRowIndex]!.indexOf('Hidden event rows: red');
+    expect(tui.cell(colorRowIndex, colorColumn)?.getFgColor()).not.toBe(1);
+  } finally { await tui.close(); await mock.close(); }
 });
 
 test('orange preferences render consistently in widgets, selection and event summaries', async () => {

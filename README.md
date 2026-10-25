@@ -101,19 +101,18 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | i | View all information about the selected agent (read-only) |
 | r / x | Start/restart / stop selected agent (confirmation required) |
 | R / p / d | Restart subtree / replace session / remove subtree (confirmation required) |
-| f / l | Event filters / rendering levels directly |
+| l | Open event visibility / rendering level selector |
 | n | Create a root in an empty organization, otherwise a child of the selected agent |
 | e | Modify the selected agent |
 | Skills field | In the ordinary `n` create / `e` modify form when the server advertises the skills plugin |
 | v, then s | Organization / plugin server settings (when supported) |
 | v, then t | Configure TUI colors (client only) |
 | v, then b | Choose and reorder table fields (client only) |
-| v, then f | Configure tracked events (client only) |
-| v, then l | Configure rendering levels |
+| v, then l | Configure event visibility / rendering levels |
 | v, then h | Configure history cache limits and idle expiry (client only) |
 | q / Ctrl+C | Quit the client, leaving server work running |
 
-Rows default to **name, status, model, latest tracked event**. Use `v`, then
+Rows default to **name, status, model, latest visible event**. Use `v`, then
 `b` to choose visible table fields: Space toggles a field, Left/Right moves it,
 `1`–`9` / `0` assigns its position (`0` = 10), and `z` restores defaults. At least
 one field must remain visible. Changes are saved in the client config. The first
@@ -141,12 +140,12 @@ or generation changes, or the connection's store is reset. This is not startup
 backfill: an event the client never received cannot appear in the tree. Chat
 continues to use real events and renderings from its bounded history window, and
 explicit chat history can recover retained server events. Loading older history
-does not replace a newer live preview; filters still control which event types
+does not replace a newer live preview; level 0 still controls which event types
 appear in the tree.
 
 ### Raw events: `z`
 
-From the tree, `z` opens a snapshot of the selected agent's currently loaded events only. The initial list contains events not excluded by chat filters; `a` toggles inclusion of filterable events. Use ↑/↓ to select an event, Enter for its complete pretty-printed JSON, and Esc to return (JSON Esc returns to the same list). The viewer does not fetch history or alter chat retention; reopen it to capture a fresh snapshot.
+From the tree, `z` opens a snapshot of the selected agent's currently loaded events whose effective rendering level is not hidden. Level-zero events are never included in this viewer. Use ↑/↓ to select an event, Enter for its complete pretty-printed JSON, and Esc to return (JSON Esc returns to the same list). The viewer does not fetch history or alter chat retention; reopen it to capture a fresh snapshot.
 
 ### Agent info: `i` (or `a`, then `i`)
 
@@ -166,7 +165,7 @@ summaries. Chat/events and organization-wide settings remain separate views.
 ### Settings: `v`
 
 The settings menu separates **server-wide organization/plugin configuration**
-from **client-only event filters and rendering levels**. Press `s` for server
+from **client-only event visibility levels and rendering levels**. Press `s` for server
 settings on compatible servers. Organization facts (paths, harnesses, loaded
 plugins) are read-only; plugins without declarations are listed as read-only.
 Older servers retain client preferences without calling unavailable APIs.
@@ -392,47 +391,42 @@ The registration action appears only when the server advertises `repositoryRegis
 
 Use ↑/↓ to select a component, then Space, Enter or → to cycle colors; ← cycles
 backward. `z` restores defaults and Escape returns to the tree. Preferences cover
-selection, headers, borders, notices, footer, Markdown, tool phases, AgentOrg target accents and diffs.
+selection, headers, borders, notices, footer, Markdown, tool phases, AgentOrg target accents, diffs, and the color of hidden event rows.
 `default` uses the terminal's own foreground/background; orange uses xterm color
 208. Changes are saved automatically in the client config and never affect the
 server. Renderer examples use the same palette as tree and chat.
 
-### Event filters: `v f`
+### Event visibility / rendering levels: `v l`
 
-Use ↑ / ↓ to select a type and Space to toggle it. Checked types are displayed
-in both the tree and chat. Escape returns to the tree. Changing a filter also
-recalculates the tree's latest event from previously received types.
+One selector controls event visibility and detail, with level 0 hiding the event
+from tree summaries, chat, raw-event lists, and other filter-aware views. Levels are client-only; the client stays
+subscribed to all events, so hiding state/operation events cannot freeze agent
+state. All built-in event types appear alongside discovered plugin/unknown types.
+Types formerly hidden by default remain hidden at level 0; unknown types default
+to summary.
 
-Filters are **local presentation filters**. The socket stays subscribed to all
-events, so hiding state/operation events cannot freeze agent status. All built-in
-event types are listed, plus unknown/plugin types as they arrive. By default,
-`agent.message`, `prompt.queued`, `tool.call`, and `tool.result` are tracked;
-other listed built-in events are hidden. New unknown/plugin types are tracked.
-Existing saved filters are preserved.
+Use ↑ / ↓ to select an event type. Choose a level with 0–4, or cycle with ← / →,
+Space, or Enter. Hidden rows are gray. Escape returns to the tree.
 
-### Rendering levels: `v l`
-
-Use ↑ / ↓ to select an event type. Choose a level with 1–4, or cycle with
-← / →, Space, or Enter. Escape returns to the tree.
-
+0. **Hidden**: omit the event from filter-aware views.
 1. **Summary**: one line, truncated to terminal cell width.
 2. **Extended**: at most two logical lines from the renderer, with a truncation
    indicator when capped. These may wrap onto additional terminal rows.
-3. **Full**: all available event text, with terminal Markdown rendering
-   (headings, emphasis, lists, tables, fenced code, and links).
+3. **Full**: all available event text, with terminal Markdown rendering.
 4. **Raw**: the complete event JSON envelope, pretty-printed and wrapped.
 
-`agent.message`, `prompt.queued`, `agent.plan`, and `tool.update` default to full;
-`tool.result` defaults to extended; other events default to summary.
+`agent.message`, `prompt.queued`, and `tool.update` default to full;
+`tool.result` defaults to extended; built-in lifecycle and status events default
+to hidden. Other events default to summary.
 
 On compatible servers, harnesses choose event-specific Markdown formats; tool
 subtypes such as **`tool.call:edit`** and **`tool.result:read`** also appear in the
-level selector. A subtype inherits its event-type level unless explicitly set;
-`z` removes the selected override and restores inheritance/default. Filters remain
-per parent event type. Subtype levels do not change server renderer selection.
+selector. A subtype uses its exact override before falling back to its parent
+level; `z` removes the selected override and restores inheritance/default.
+Subtype levels do not change server renderer selection.
 
 The inline **Renderer examples** panel shows generated synthetic examples for
-all four levels when space allows (only the selected level on smaller terminals).
+all five levels when space allows (only the selected level on smaller terminals).
 `r` cycles matching renderer examples for comparison; this is a preview only,
 not a server configuration change. The panel hides below 60 columns/16 rows;
 level controls still work. Full/raw previews are explicitly bounded excerpts,
@@ -488,7 +482,7 @@ presentations may stay cached until history is reloaded. Changing an agent's
 harness may also change historical rendering; events store no historical harness
 identity. No tools are rerun. See [the server contract](../agentorg/EXTENSIONS.md#event-renderers-presentation-contract-v1).
 
-Colors, table fields, filters and levels are saved automatically to
+Colors, table fields, visibility and rendering levels are saved automatically to
 `$XDG_CONFIG_HOME/org-tui/settings.json`, or `~/.config/org-tui/settings.json`
 when XDG_CONFIG_HOME is unset. `--config` overrides the path. Only presentation
 settings are saved, not prompts, agent settings, or transcript data.
@@ -566,7 +560,7 @@ UTF-8 JSONL, response/event races, history replay, database replacement,
 filtering, rendering, presentation-sidecar negotiation, raw preservation, subtype
 level inheritance, renderer previews, and saved settings. The UI test launches the actual Bun CLI
 in a pseudo-terminal via `script` (util-linux) and checks the rendered screen
-using a headless terminal emulator, including selection highlight, `v f`, `v l`,
+using a headless terminal emulator, including selection highlight, `v l`,
 live events, interrupting tree/chat prompts, Escape navigation, empty-tree root
 creation, child creation, revision-fenced edits, conflicts, lifecycle confirmation,
 and start/stop/restart/subtree/session/removal actions. Additional PTY tests cover

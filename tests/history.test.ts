@@ -69,10 +69,10 @@ test('history settings round-trip, inherit defaults from older configs, and reje
     expect((await Settings.load(path)).history).toEqual(policy);
     expect(JSON.parse(await readFile(path, 'utf8')).history).toEqual(policy);
     for (const history of [{ recentEvents: 0 }, { cacheBytes: -1 }, { cacheBytes: 100 }, { chatPageSize: 1.5 }, { idleMinutes: null }, []]) {
-      await writeFile(path, JSON.stringify({ excluded: [], levels: {}, history }));
+      await writeFile(path, JSON.stringify({ levels: {}, history }));
       await expect(Settings.load(path)).rejects.toThrow('Invalid history');
     }
-    await writeFile(path, JSON.stringify({ excluded: [], levels: {} }));
+    await writeFile(path, JSON.stringify({ levels: {} }));
     expect((await Settings.load(path)).history.recentEvents).toBe(2000);
   } finally { await mock.close(); }
 });

@@ -48,11 +48,14 @@ export function rendererPreview(renderer: RendererMetadata, type: string, select
   try { event = JSON.parse(example.raw); }
   catch { return clip(`${title} · Invalid example`, width); }
   const rendering = { ...example, updateMode: example.updateMode ?? renderer.updateMode, extendedLayout: example.extendedLayout ?? renderer.extendedLayout, rendererId: renderer.id };
-  const levels: Level[] = height >= 15 ? [1, 2, 3, 4] : [selected];
-  const budget = Math.max(1, Math.floor((height - 2 - levels.length) / levels.length));
+  const levels: Level[] = height >= 15 ? [0, 1, 2, 3, 4] : [selected];
+  const separators = Math.max(0, levels.length - 1);
+  const budget = Math.max(1, Math.floor((height - 2 - levels.length - separators) / levels.length));
   const lines = [clip(title, width), clip('Synthetic examples · preview excerpts', width)];
-  for (const level of levels) {
-    lines.push(clip(`${level === selected ? '●' : '○'} ${level} ${LEVEL_NAMES[level - 1]}`, width));
+  for (const [index, level] of levels.entries()) {
+    if (index) lines.push('');
+    lines.push(clip(`${level === selected ? '●' : '○'} ${level} ${LEVEL_NAMES[level]}`, width));
+    if (level === 0) continue;
     const rendered = renderEvent(event, level, Math.max(1, width), renderer.id === 'client.generic' ? undefined : rendering, colors).split('\n');
     lines.push(...rendered.slice(0, budget).map(line => styledCell(line, width).trimEnd()));
     if (rendered.length > budget) lines[lines.length - 1] = clip(`${clean(lines.at(-1)!)} …`, width);

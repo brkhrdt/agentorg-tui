@@ -7,7 +7,7 @@ import { clip } from '../src/render.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
 // Exercise the real Bun CLI in a Unix pseudo-terminal, then inspect its rendered screen.
-test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live events and Escape', async () => {
+test('terminal tree selection, interrupt prompt, unified visibility levels, raw chat, live events and Escape', async () => {
   let seq = 3;
   const root = agent('root', null, { name: 'coordinator' });
   const child = agent('worker', 'root', { name: 'worker' });
@@ -74,6 +74,9 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     await waitFor(() => selectedBg(3) === 4); // Selected agent is highlighted in blue.
     keys('?'); await visible('Keys · tree');
     await visible('Restart subtree');
+    keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    keys('f'); await visible('LATEST TRACKED EVENT');
+    expect(screen()).not.toContain('Event visibility / rendering levels');
     keys('c'); await visible('Chat · coordinator / worker');
     keys('q?e'); // Navigation shortcuts must be ordinary text in chat.
     await visible('q?e');
@@ -100,13 +103,13 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
 
     keys('v'); await visible('View settings');
     keys('?'); await visible('Keys · view');
-    keys('f'); await visible('Event filters');
-    keys('?'); await visible('Keys · filters');
-    keys('\x1b'); await visible('Event filters');
-    keys('\x1b[B\x1b[B '); // agent.message, alphabetically third.
-    await visible('[ ] agent.message');
+    keys('l'); await visible('Event visibility / rendering levels');
+    keys('?'); await visible('Keys · levels');
+    keys('\x1b'); await visible('Event visibility / rendering levels');
+    keys('\x1b[B\x1b[B0'); // agent.message, alphabetically third.
+    await visible('agent.message');
     await waitFor(() => screen().includes('Saved '));
-    expect(JSON.parse(await readFile(config, 'utf8')).excluded).toContain('agent.message');
+    expect(JSON.parse(await readFile(config, 'utf8')).levels['agent.message']).toBe(0);
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
     for (const socket of mock.sockets) {
       send(socket, event(++seq, 'prompt.started', { operationId: 'live-op' }, { agentId: 'worker' }));
@@ -114,11 +117,11 @@ test('terminal tree selection, interrupt prompt, vf/vl settings, raw chat, live 
     }
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(screen()).not.toContain('Live worker answer');
-    keys('v'); await visible('View settings'); keys('f'); await visible('Event filters');
-    keys('\x1b[B\x1b[B '); await visible('[x] agent.message');
+    keys('v'); await visible('View settings'); keys('l'); await visible('Event visibility / rendering levels');
+    keys('\x1b[B\x1b[B3'); await visible('3 full');
     keys('\x1b'); await visible('Live worker answer');
 
-    keys('v'); await visible('View settings'); keys('l'); await visible('Event rendering levels');
+    keys('v'); await visible('View settings'); keys('l'); await visible('Event visibility / rendering levels');
     keys('\x1b[B\x1b[B4'); await visible('4 raw');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('c'); await visible('Chat · coordinator / worker');

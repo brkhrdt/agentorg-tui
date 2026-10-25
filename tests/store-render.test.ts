@@ -40,7 +40,7 @@ describe('state and transcripts', () => {
     expect(store.latest(settings).get('root')!.seq).toBe(4);
     expect(settings.types(store.discovered)).toContain('plugin.custom');
     expect(store.transcript('root', settings)).toHaveLength(3);
-    settings.toggle('agent.message');
+    settings.levels['agent.message'] = settings.level('agent.message') === 0 ? 3 : 0;
     expect(store.transcript('root', settings)).toHaveLength(2);
   });
   test('latest message combines chunks per agent and keeps raw records intact', () => {
@@ -50,7 +50,7 @@ describe('state and transcripts', () => {
     store.ingest(event(2, 'agent.message', undefined, { agentId: 'worker' }));
     store.ingest(chunk(3, 'answer'));
     store.ingest(chunk(4, '.'));
-    settings.excluded.add('prompt.finished');
+    settings.levels['prompt.finished'] = 0;
     store.ingest(event(5, 'prompt.finished', { status: 'completed' }));
     settings.levels['agent.message'] = 4; // Tree summaries are independent of chat levels.
     const latest = store.latest(settings).get('root')!;
@@ -437,7 +437,7 @@ describe('state and transcripts', () => {
   });
   test('history reconciles a retained streamed message despite a later hidden event', () => {
     const store = new Store(), settings = new Settings();
-    settings.excluded.add('operation.changed');
+    settings.levels['operation.changed'] = 0;
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
     const message = (seq: number, text: string) => event(seq, 'agent.message', {
       sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
@@ -450,7 +450,7 @@ describe('state and transcripts', () => {
   });
   test('a late sidecar reconciles a retained message despite a later hidden event', () => {
     const store = new Store(), settings = new Settings();
-    settings.excluded.add('operation.changed');
+    settings.levels['operation.changed'] = 0;
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
     const message = (seq: number, text: string) => event(seq, 'agent.message', {
       sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text },
@@ -530,7 +530,7 @@ describe('state and transcripts', () => {
     expect(stripAnsi(row).slice(2)).toStartWith('TREE_ANCHOR');
   });
   test('message summaries respect generation, kind, message ID and hidden boundaries', () => {
-    const settings = new Settings(); settings.excluded.add('prompt.started');
+    const settings = new Settings(); settings.levels['prompt.started'] = 0;
     const first = event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'Old ' } });
     const next = event(3, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'New' } });
     for (const boundary of [
@@ -605,7 +605,7 @@ describe('static tree previews', () => {
   });
 });
 
-describe('four rendering levels', () => {
+describe('four non-hidden rendering levels', () => {
   const message = event(1, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '# Heading\n\n**bold** and _italic_\n\n- list entry\n\n```ts\nconst x = 1;\n```\n' } });
   test('summary is one terminal-width-aware line; indentation and Unicode are preserved', () => {
     const summary = renderEvent(message, 1, 24);
@@ -656,7 +656,7 @@ describe('four rendering levels', () => {
     expect(eventText(groups[0]!)).toBe('Hello world');
     expect(eventText(a)).toBe('Hello '); // Original records remain intact for raw.
     expect(chatGroups([a, { ...b, generation: 'g2' }], settings)).toHaveLength(2);
-    settings.excluded.add('prompt.started');
+    settings.levels['prompt.started'] = 0;
     expect(chatGroups([a, event(3, 'prompt.started'), b], settings)).toHaveLength(2);
     settings.levels['agent.message'] = 4;
     expect(chatGroups([a, b], settings)).toHaveLength(2);

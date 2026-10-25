@@ -26,7 +26,7 @@ test('a no-op PageDown at chat bottom must not pause live messages; reopening re
     }
   });
   await writeFile(join(mock.directory, 'config.json'), JSON.stringify({
-    excluded: [], levels: {}, compactToolCalls: false,
+    levels: {}, compactToolCalls: false,
     history: { recentEvents: 40, chatPageSize: 10, cacheBytes: 131_072, idleMinutes: 10 },
   }));
   const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });

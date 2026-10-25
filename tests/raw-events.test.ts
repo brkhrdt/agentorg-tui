@@ -17,7 +17,7 @@ function fixtureEvents(count = 3) {
   return [...rootEvents, event(2, 'agent.message', { content: { type: 'text', text: 'CHILD_ONLY_PAYLOAD' } }, { agentId: 'child', generation: 'g2' })];
 }
 
-async function startDemo(initial = fixtureEvents(), excluded?: string[], size = { cols: 120, rows: 26 }) {
+async function startDemo(initial = fixtureEvents(), hiddenTypes?: string[], size = { cols: 120, rows: 26 }) {
   let history = [...initial];
   const requests: any[] = [];
   const mock = await mockServer((socket, request) => {
@@ -36,7 +36,7 @@ async function startDemo(initial = fixtureEvents(), excluded?: string[], size = 
       });
     }
   });
-  if (excluded) await writeFile(join(mock.directory, 'config.json'), JSON.stringify({ excluded, levels: {}, tableFields: ['name'], compactToolCalls: false }));
+  if (hiddenTypes) await writeFile(join(mock.directory, 'config.json'), JSON.stringify({ levels: Object.fromEntries(hiddenTypes.map(type => [type, 0])), tableFields: ['name'], compactToolCalls: false }));
   const tui = terminalClient(mock.path, mock.directory, size);
   await tui.visible('root');
   await tui.visible('connected');
@@ -52,7 +52,7 @@ async function startDemo(initial = fixtureEvents(), excluded?: string[], size = 
 async function openLoadedChat(demo: Awaited<ReturnType<typeof startDemo>>) {
   demo.tui.keys('c');
   await demo.tui.visible('Chat · root');
-  await waitFor(() => ['ROOT_PAYLOAD_', 'FIRST_SNAPSHOT', 'badTYPE', 'No tracked events yet.'].some(marker => demo.tui.screen().includes(marker)));
+  await waitFor(() => ['ROOT_PAYLOAD_', 'FIRST_SNAPSHOT', 'badTYPE', 'No visible events yet.'].some(marker => demo.tui.screen().includes(marker)));
   demo.tui.keys('\x1b');
   await demo.tui.visible('z raw events');
 }
@@ -70,15 +70,10 @@ test('raw list navigates a selected-agent loaded snapshot and preserves visible 
     expect(firstPageSeqs).not.toContain(2); // visible-range child event is agent-scoped out
     expect(firstPageSeqs).not.toContain(3); // root agent.state is chat-filtered
     demo.tui.keys('\x1b[B'); await demo.tui.visible('› 4');
-    demo.tui.keys('a');
-    await demo.tui.visible('all filterable');
-    await demo.tui.visible('› 3'); // row index 1 now selects filtered event 3, not the former event 4
-    await demo.tui.visible('› 3 · 2026-10-08');
+    demo.tui.keys('a'); // No raw-view bypass can reveal level-zero events.
+    await demo.tui.visible('› 4');
+    expect(demo.tui.screen().split('\n').some(line => /│[› ]*3 · 2026-10-08/.test(line))).toBe(false);
     const allCount = demo.historyRequests();
-    demo.tui.keys('a');
-    await demo.tui.visible('chat-visible');
-    await demo.tui.visible('› 4'); // same row index maps back to event 4
-    expect(demo.historyRequests()).toBe(allCount);
     expect(allCount).toBe(beforeViewer);
     demo.tui.keys('\x1b[B'.repeat(18));
     await demo.tui.visible('› 22');
@@ -88,7 +83,7 @@ test('raw list navigates a selected-agent loaded snapshot and preserves visible 
     await demo.tui.visible('Event JSON');
     await demo.tui.visible('"seq": 22');
     demo.tui.keys('\x1b');
-    await demo.tui.visible('chat-visible');
+    await demo.tui.visible('Raw events · visible events');
     await demo.tui.visible('› 22');
     const afterRows = demo.tui.screen().split('\n').filter(line => line.includes('2026-10-08'));
     expect(afterRows).toEqual(beforeRows);
@@ -135,16 +130,17 @@ test('JSON exposes complete escaped payloads safely and sanitizes hostile event 
   } finally { await demo.close(); }
 }, 15_000);
 
-test('all-excluded snapshots support empty state, reversible filter toggle and row-index clamping', async () => {
+test('level-zero snapshots stay empty even when pressing the removed raw filter key', async () => {
   const events = [event(1, 'agent.state', { payload: 'FILTERED_ONE' }, { agentId: 'root' }), event(2, 'agent.error', { payload: 'FILTERED_TWO' }, { agentId: 'root' })];
   const demo = await startDemo(events, ['agent.state', 'agent.error']);
   try {
     await openLoadedChat(demo);
     demo.tui.keys('z'); await demo.tui.visible('No events in this loaded history window.');
     const before = demo.historyRequests();
-    demo.tui.keys('a'); await demo.tui.visible('1 · 2026-10-08'); await demo.tui.visible('2 · 2026-10-08');
-    demo.tui.keys('\x1b[B'); await demo.tui.visible('› 2');
-    demo.tui.keys('a'); await demo.tui.visible('No events in this loaded history window.');
+    demo.tui.keys('a');
+    await demo.tui.visible('No events in this loaded history window.');
+    expect(demo.tui.screen()).not.toContain('FILTERED_ONE');
+    expect(demo.tui.screen()).not.toContain('FILTERED_TWO');
     expect(demo.historyRequests()).toBe(before);
     demo.tui.keys('\r'); // empty list has no selection
     expect(demo.tui.screen()).toContain('No events in this loaded history window.');

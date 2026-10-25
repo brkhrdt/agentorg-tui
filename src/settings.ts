@@ -2,17 +2,20 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
-export type Level = 1 | 2 | 3 | 4;
-export const LEVEL_NAMES = ['summary', 'extended', 'full', 'raw'] as const;
+export type Level = 0 | 1 | 2 | 3 | 4;
+export const LEVEL_NAMES = ['hidden', 'summary', 'extended', 'full', 'raw'] as const;
 export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
 export type TableField = typeof TABLE_FIELDS[number];
 export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'model', 'event'];
 export const DEFAULT_LEVELS: Record<string, Level> = {
+  'agent.created': 0, 'agent.error': 0, 'agent.modified': 0, 'agent.plan': 0, 'agent.removed': 0,
+  'agent.session_replaced': 0, 'agent.state': 0, 'agent.update': 0, 'operation.changed': 0,
+  'permission.requested': 0, 'permission.resolved': 0, 'plugin.error': 0, 'prompt.cancelling': 0,
+  'prompt.finished': 0, 'prompt.started': 0, 'server.ready': 0, 'server.stopped': 0,
   'agent.message': 3,
   'prompt.queued': 3,
   'tool.update': 3,
   'tool.result': 2,
-  'agent.plan': 3,
   'tool.call:mcp__agentorg__prompt_subagent': 3,
   'tool.call:mcp__agentorg__prompt_parent': 3,
   'tool.call:cancel_operation': 2,
@@ -37,14 +40,14 @@ export const COLOR_SETTINGS = {
   selectionBg: 'Selection background', selectionFg: 'Selection text', title: 'Title', headings: 'Table headings',
   notice: 'Notices', footerBg: 'Footer background', footerFg: 'Footer text', border: 'Borders',
   eventHeading: 'Event headings', eventCode: 'Event code', eventLink: 'Event links', toolCall: 'Tool call',
-  toolUpdate: 'Tool update', toolSuccess: 'Tool success', toolFailure: 'Tool failure', agentTarget: 'Agent target', diffAdd: 'Diff additions', diffRemove: 'Diff deletions',
+  toolUpdate: 'Tool update', toolSuccess: 'Tool success', toolFailure: 'Tool failure', agentTarget: 'Agent target', diffAdd: 'Diff additions', diffRemove: 'Diff deletions', hiddenRows: 'Hidden event rows',
 } as const;
 export type ColorSetting = keyof typeof COLOR_SETTINGS;
 export const DEFAULT_COLORS: Record<ColorSetting, string> = {
   selectionBg: 'blue', selectionFg: 'white', title: 'cyan', headings: 'gray', notice: 'yellow',
   footerBg: 'white', footerFg: 'black', border: 'cyan', eventHeading: 'cyan', eventCode: 'yellow',
   eventLink: 'blue', toolCall: 'yellow', toolUpdate: 'orange', toolSuccess: 'green', toolFailure: 'red', agentTarget: 'cyan',
-  diffAdd: 'green', diffRemove: 'red',
+  diffAdd: 'green', diffRemove: 'red', hiddenRows: 'gray',
 };
 export const ANSI_COLORS: Record<string, string> = { default: '39', black: '30', red: '31', green: '32', yellow: '33', orange: '38;5;208', blue: '34', magenta: '35', cyan: '36', white: '37', gray: '90' };
 export function ansiColor(color: string, background = false): string {
@@ -92,12 +95,6 @@ export function historySettings(value: unknown): HistorySettings {
 
 export class Settings {
   history: HistorySettings = { ...DEFAULT_HISTORY };
-  excluded = new Set([
-    'agent.created', 'agent.error', 'agent.modified', 'agent.plan', 'agent.removed',
-    'agent.session_replaced', 'agent.state', 'agent.update', 'operation.changed',
-    'permission.requested', 'permission.resolved', 'plugin.error', 'prompt.cancelling',
-    'prompt.finished', 'prompt.started', 'server.ready', 'server.stopped',
-  ]);
   levels: Record<string, Level> = { ...DEFAULT_LEVELS };
   /** Subtype defaults explicitly set to inherit their parent level. */
   inheritedLevels = new Set<string>();
@@ -105,28 +102,23 @@ export class Settings {
   compactToolCalls = false;
   colors: Record<ColorSetting, string> = { ...DEFAULT_COLORS };
   color(key: ColorSetting): string { return resolveColor(this.colors, key); }
-  tracked(type: string): boolean { return !this.excluded.has(type); }
+  visible(type: string, subtype?: string): boolean { return this.level(type, subtype) !== 0; }
   level(type: string, subtype?: string): Level {
     const key = subtype ? `${type}:${subtype}` : type;
     const parent = type.split(':')[0]!;
     if (this.inheritedLevels.has(key)) return this.levels[parent] ?? 1;
     return this.levels[key] ?? this.levels[parent] ?? 1;
   }
-  toggle(type: string): void {
-    if (!this.excluded.delete(type)) this.excluded.add(type);
-  }
   types(discovered: Iterable<string>): string[] {
-    return [...new Set([...EVENT_TYPES, ...discovered, ...this.excluded, ...Object.keys(this.levels), ...this.inheritedLevels])].sort();
+    return [...new Set([...EVENT_TYPES, ...discovered, ...Object.keys(this.levels), ...this.inheritedLevels])].sort();
   }
   static async load(path: string): Promise<Settings> {
     const settings = new Settings();
     try {
       const data = JSON.parse(await readFile(path, 'utf8'));
-      if (!Array.isArray(data.excluded) || !data.excluded.every((v: unknown) => typeof v === 'string') ||
-          !data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels) ||
+      if (!data.levels || typeof data.levels !== 'object' || Array.isArray(data.levels) ||
           (data.inheritedLevels !== undefined && (!Array.isArray(data.inheritedLevels) || !data.inheritedLevels.every((v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 256)))) throw new Error('Invalid settings format');
       if (data.history !== undefined) settings.history = historySettings(data.history);
-      settings.excluded = new Set(data.excluded);
       settings.tableFields = normalizeTableFields(data.tableFields);
       if (data.compactToolCalls !== undefined && typeof data.compactToolCalls !== 'boolean') throw new Error('Invalid compactToolCalls setting');
       settings.compactToolCalls = data.compactToolCalls ?? false;
@@ -142,7 +134,7 @@ export class Settings {
       }
       settings.levels = { ...DEFAULT_LEVELS };
       for (const [type, level] of Object.entries(data.levels)) {
-        if (![1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
+        if (![0, 1, 2, 3, 4].includes(level as number)) throw new Error(`Invalid rendering level for ${type}`);
         settings.levels[type] = level as Level;
       }
       if (data.inheritedLevels !== undefined) settings.inheritedLevels = new Set(data.inheritedLevels);
@@ -160,7 +152,7 @@ export class Settings {
   async save(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify({ excluded: [...this.excluded].sort(), levels: this.levels, inheritedLevels: [...this.inheritedLevels].sort(), tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors, history: this.history }, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ levels: this.levels, inheritedLevels: [...this.inheritedLevels].sort(), tableFields: this.tableFields, compactToolCalls: this.compactToolCalls, colors: this.colors, history: this.history }, null, 2) + '\n', { mode: 0o600 });
     await rename(temporary, path);
   }
 }

@@ -41,9 +41,9 @@ describe('observed tree previews across history eviction', () => {
     store.ingest(message(5, 'quiet', marker), 'live');
     store.ingest(message(4, 'quiet', 'OLDER_HISTORY'), 'history');
     expect(eventText(store.latest(settings).get('quiet')!)).toContain(marker);
-    settings.toggle('agent.message');
+    settings.levels['agent.message'] = settings.level('agent.message') === 0 ? 3 : 0;
     expect(store.latest(settings).has('quiet')).toBe(false);
-    settings.toggle('agent.message');
+    settings.levels['agent.message'] = settings.level('agent.message') === 0 ? 3 : 0;
     expect(eventText(store.latest(settings).get('quiet')!)).toContain(marker);
   });
 

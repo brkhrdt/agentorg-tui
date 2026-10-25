@@ -12,7 +12,7 @@ Usage: org-tui [--socket PATH] [--config PATH] [--no-history]
   --no-history   Skip startup history; chat can still load history on demand
   -h, --help     Show help
 
-Tree: ↑↓ select, Enter interrupting prompt, c chat, v f filters, v l levels, q quit.
+Tree: ↑↓ select, Enter interrupting prompt, c chat, v l visibility / rendering levels, q quit.
 Chat: Enter sends an interrupting message; Escape returns to the tree.
 `;
 async function main(): Promise<void> {

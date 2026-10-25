@@ -22,7 +22,7 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
-type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'filters' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function urlLikeSkillSource(source: string): boolean { return /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith('//') || /^[^/\s]+@[^:\s]+:/.test(source); }
 function pathCompletionAllowed(source: string): boolean {
@@ -131,7 +131,6 @@ export class UI {
   private rawView = blessed.box({ parent: this.screen, top: 2, bottom: 2, left: 0, right: 0, hidden: true, tags: false, scrollable: true, alwaysScroll: true, keys: false, mouse: false, border: 'line', label: ' Raw events ', style: { border: { fg: 'cyan' } } });
   private rawSnapshot: ServerEvent[] = [];
   private selectedRawEvent?: ServerEvent;
-  private rawVisibleOnly = true;
   private rawIndex = 0;
   private rawListScroll = 0;
   private rawScroll = 0;
@@ -414,7 +413,7 @@ export class UI {
     const type = this.menuTypes[this.menuIndex];
     if (!type) return;
     this.settings.inheritedLevels.delete(type);
-    this.settings.levels[type] = absolute ?? ((this.settings.level(type) - 1 + delta + 4) % 4 + 1) as Level;
+    this.settings.levels[type] = absolute ?? ((this.settings.level(type) + delta + 5) % 5) as Level;
     this.saveSettings(); this.draw();
   }
   private selected(): Agent | undefined { return this.selectedAgent ? this.session.store.agents.get(this.selectedAgent) : undefined; }
@@ -442,10 +441,9 @@ export class UI {
       if (offset && this.menuIndex === 0) void this.openServerSettings();
       else if (this.menuIndex === offset) this.setView('colors');
       else if (this.menuIndex === offset + 1) this.setView('table-fields');
-      else if (this.menuIndex === offset + 2) this.setView('filters');
-      else if (this.menuIndex === offset + 3) this.setView('levels');
-      else if (this.menuIndex === offset + 4) this.toggleCompactToolCalls();
-      else if (this.menuIndex === offset + 5) this.setView('history-settings');
+      else if (this.menuIndex === offset + 2) this.setView('levels');
+      else if (this.menuIndex === offset + 3) this.toggleCompactToolCalls();
+      else if (this.menuIndex === offset + 4) this.setView('history-settings');
     } else if (this.view === 'settings-options') {
       const choice = this.genericChoices[this.menuIndex];
       try {
@@ -513,10 +511,8 @@ export class UI {
         this.saveSettings(); this.draw();
       }
     } else if (this.view === 'colors') this.changeColor(1);
-    else if (this.view === 'filters') {
-      const type = this.menuTypes[this.menuIndex];
-      if (type) { this.settings.toggle(type); this.saveSettings(); this.draw(); }
-    } else if (this.view === 'agent-skills') this.cycleSkill();
+    else if (this.view === 'levels') this.changeLevel(1);
+    else if (this.view === 'agent-skills') this.cycleSkill();
   }
   private lifecycle(method: LifecycleMethod, label: string): void {
     if (this.sending) return;
@@ -545,7 +541,7 @@ export class UI {
     const cycle = () => this.cycleMenu();
     if (this.view === 'raw-events') return [
       action('up', 'Previous event', () => this.moveRaw(-1)), action('down', 'Next event', () => this.moveRaw(1)),
-      action('enter', 'View full event JSON', () => this.openRawJson()), action('a', this.rawVisibleOnly ? 'Include filtered events' : 'Show chat-visible events', () => this.toggleRawFilter()),
+      action('enter', 'View full event JSON', () => this.openRawJson()),
       action('escape', 'Return to tree', () => this.setView('tree')),
     ];
     if (this.view === 'raw-event-json') return [
@@ -597,10 +593,10 @@ export class UI {
         action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
         ] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
-      action('f', 'Event filters', () => this.setView('filters')), action('l', 'Rendering levels', () => this.setView('levels')),
+      action('l', 'Event visibility / rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('f', 'Client-only event filters', () => this.setView('filters')), action('l', 'Client-only event rendering levels', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
     if (this.view === 'history-settings') return [action('enter', 'Edit selected history limit', choose), action('z', 'Restore history cache defaults', () => { this.settings.history = { ...DEFAULT_HISTORY }; this.session.configureHistory(this.settings.history); this.saveSettings(); this.draw(); }), back];
     if (this.view === 'colors') return [action('space', 'Cycle selected color', cycle), action('left', 'Previous color', () => this.changeColor(-1)), action('right', 'Next color', () => this.changeColor(1)), action('enter', 'Next color', () => this.changeColor(1)), action('z', 'Reset all colors', () => { this.settings.colors = { ...DEFAULT_COLORS }; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
@@ -645,8 +641,7 @@ export class UI {
       action('enter', 'Apply filter', () => this.applySkillFilter()),
       action('escape', 'Cancel filter', () => this.cancelSkillFilter()),
     ];
-    if (this.view === 'filters') return [action('space', 'Toggle selected event', cycle), back];
-    if (this.view === 'levels') return [1, 2, 3, 4].map(level => action(String(level), LEVEL_NAMES[level - 1]!, () => this.changeLevel(0, level as Level))).concat([
+    if (this.view === 'levels') return [0, 1, 2, 3, 4].map(level => action(String(level), LEVEL_NAMES[level]!, () => this.changeLevel(0, level as Level))).concat([
       action('r', 'Next renderer example (does not change server selection)', () => { this.previewIndex++; this.draw(); }),
       action('z', 'Inherit parent / default rendering level', () => {
         const type = this.menuTypes[this.menuIndex];
@@ -1373,27 +1368,21 @@ export class UI {
     this.skillPicker.filter = this.input.getValue(); this.menuIndex = 0; this.setView('agent-skills'); this.draw();
   }
   private cancelSkillFilter(): void { this.setView('agent-skills'); this.draw(); }
-  private rawEvents(): ServerEvent[] { return this.rawSnapshot.filter(event => !this.rawVisibleOnly || this.settings.tracked(event.type)); }
+  private rawEvents(): ServerEvent[] { return this.rawSnapshot; }
   private openRawEvents(): void {
     const agent = this.selected();
     if (!agent) return;
-    // Copy loaded records at entry so subsequent store/filter changes cannot alter this session.
-    this.rawSnapshot = this.session.chatEvents(agent.id).map(event => JSON.parse(JSON.stringify(event)) as ServerEvent);
-    this.rawVisibleOnly = true; this.rawIndex = this.rawSnapshot.length ? 0 : -1; this.rawListScroll = 0; this.rawScroll = 0;
+    // Capture only currently visible loaded records; hidden events cannot be revealed here.
+    this.rawSnapshot = this.session.chatEvents(agent.id)
+      .filter(event => this.settings.visible(event.type, this.session.store.renderings.get(event.seq)?.subtype))
+      .map(event => JSON.parse(JSON.stringify(event)) as ServerEvent);
+    this.rawIndex = this.rawSnapshot.length ? 0 : -1; this.rawListScroll = 0; this.rawScroll = 0;
     this.setView('raw-events');
   }
   private moveRaw(delta: number): void {
     const count = this.rawEvents().length;
     if (!count) { this.rawIndex = -1; return; }
     this.rawIndex = Math.max(0, Math.min(count - 1, this.rawIndex + delta)); this.rawListScroll = this.rawIndex; this.draw();
-  }
-  private toggleRawFilter(): void {
-    const index = this.rawIndex;
-    this.rawVisibleOnly = !this.rawVisibleOnly;
-    const count = this.rawEvents().length;
-    this.rawIndex = count ? Math.max(0, Math.min(count - 1, index)) : -1;
-    this.rawListScroll = this.rawIndex;
-    this.draw();
   }
   private openRawJson(): void {
     const event = this.rawIndex < 0 ? undefined : this.rawEvents()[this.rawIndex];
@@ -1460,6 +1449,11 @@ export class UI {
     }
   }
   private setView(view: View): void {
+    if (this.view === 'levels' && view !== 'levels')
+      for (let index = 0; index < this.menuTypes.length; index++) {
+        const item = this.menu.getItem(index);
+        item.style = { ...item.style, fg: undefined };
+      }
     ++this.navigationGeneration;
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     if (this.view === 'chat' && view !== 'chat') {
@@ -1496,7 +1490,7 @@ export class UI {
       this.rawView.show(); this.rawView.focus();
     } else if (view === 'agent-info' || view === 'skill-details') {
       this.details.show(); this.details.focus();
-    } else if (['history-settings', 'settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'filters', 'levels', 'agent-skills', 'local-skill-confirm', 'catalog-manager', 'catalog-delete-confirm', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
+    } else if (['history-settings', 'settings-options', 'settings-records', 'server-settings', 'server-group', 'server-confirm', 'server-facts', 'structured', 'entry-type', 'keys', 'view', 'colors', 'table-fields', 'levels', 'agent-skills', 'local-skill-confirm', 'catalog-manager', 'catalog-delete-confirm', 'actions', 'agent-edit', 'harness-options', 'image-scope', 'confirm'].includes(view)) {
       this.menu.show(); this.menu.focus();
     } else {
       if (view === 'chat') this.chat.show();
@@ -1687,8 +1681,7 @@ export class UI {
       this.view === 'confirm' ? `Confirm · ${this.pendingAction?.label}` :
       this.view === 'table-fields' ? 'Table fields / order · client preferences · changes saved automatically' :
       this.view === 'colors' ? 'TUI colors · client preferences · changes saved automatically' :
-      this.view === 'filters' ? 'Event filters · checked events appear in tree and chat' :
-      this.view === 'levels' ? 'Event rendering levels · chat uses these; tree always uses summary' :
+      this.view === 'levels' ? 'Event visibility / rendering levels · hidden events are omitted throughout the client' :
       this.view === 'agent-skills' ? `Skills: ${agent?.name} · staged in draft` :
       this.view === 'local-skill-path' ? 'Add skill repository · one source locator' :
       this.view === 'local-skill-confirm' ? 'Confirm skill repository registration' :
@@ -1851,10 +1844,10 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter row / field  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsEnabled ? '  c refresh catalog' : ''}${editor?.group.namespace === 'skills' && this.session.skillRepositoryRegistrationAvailable ? '  a add skill repository' : ''}${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry legacy seeds' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'f  Event filters (CLIENT ONLY)', 'l  Event rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
-      this.footer.setContent(' s server settings   t TUI colors   b table fields   f event filters   l rendering levels   c compact phases   h history cache   ↑↓ select   Enter open   Esc tree');
+      this.footer.setContent(' s server settings   t TUI colors   b table fields   l event visibility / rendering levels   c compact phases   h history cache   ↑↓ select   Enter open   Esc tree');
     } else if (this.view === 'history-settings') {
       this.updating = true;
       this.menu.setItems((Object.keys(HISTORY_FIELDS) as (keyof HistorySettings)[]).map(key => `${HISTORY_FIELDS[key]}: ${this.settings.history[key]}`));
@@ -1876,17 +1869,17 @@ export class UI {
       }));
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' ↑↓ field  Space toggle  ←→ reorder  1–9/0 position  z defaults  ? keys  Esc tree');
-    } else if (this.view === 'filters' || this.view === 'levels') {
+    } else if (this.view === 'levels') {
       const currentType = this.menuTypes[this.menuIndex];
       const subtypes = rendererSubtypes(this.session.renderers, agent?.settings.harness);
-      this.menuTypes = this.settings.types([...store.discovered, ...(this.view === 'levels' ? subtypes : [])]).filter(type => this.view === 'levels' || !type.includes(':'));
+      this.menuTypes = this.settings.types([...store.discovered, ...subtypes]);
       if (currentType) this.menuIndex = Math.max(0, this.menuTypes.indexOf(currentType));
       const type = this.menuTypes[this.menuIndex] ?? '';
       const [parent, subtype] = type.split(':');
       const candidates = rendererCandidates(this.session.renderers, parent!, subtype, agent?.settings.harness);
       const preview = candidates[this.previewIndex % Math.max(1, candidates.length)] ?? genericPreview(parent!);
       const height = Number(this.screen.height);
-      const showPreview = this.view === 'levels' && preview && width >= 60 && height >= 16;
+      const showPreview = preview && width >= 60 && height >= 16;
       const menuWidth = showPreview && width >= 90 ? Math.floor(width / 2) : width;
       // Use the whole pane: reserve only the level label, gap and list scrollbar.
       const levelWidth = Math.max(...LEVEL_NAMES.map(name => name.length)) + 2;
@@ -1901,16 +1894,28 @@ export class UI {
         this.preview.setContent(rendererPreview(preview, parent!, this.settings.level(type), Math.max(1, (side ? Math.floor(width / 2) : width) - 3), Math.max(1, (side ? height - 4 : 9) - 2), this.settings.colors, subtype));
       } else this.menu.bottom = 2;
       this.updating = true;
-      this.menu.setItems(this.menuTypes.map(type => this.view === 'filters' ?
-        `[${this.settings.tracked(type) ? 'x' : ' '}] ${clean(type)}` :
-        `${cell(type, typeWidth)}  ${this.settings.level(type)} ${LEVEL_NAMES[this.settings.level(type) - 1]}`));
+      this.menu.setItems(this.menuTypes.map(type => {
+        const level = this.settings.level(type);
+        return `${cell(type, typeWidth)}  ${level} ${LEVEL_NAMES[level]}`;
+      }));
+      for (let index = 0; index < this.menuTypes.length; index++) {
+        const item = this.menu.getItem(index);
+        item.style = { ...item.style, fg: undefined };
+      }
+      const hiddenColor = this.settings.color('hiddenRows') === 'orange' ? 208 : this.settings.color('hiddenRows');
+      this.menuTypes.forEach((type, index) => {
+        if (this.settings.level(type) === 0) {
+          const item = this.menu.getItem(index);
+          item.style = { ...item.style, fg: hiddenColor };
+        }
+      });
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.view === 'filters' ? ' ↑↓ select   Space toggle tracked   Esc tree · changes saved automatically' : ' ↑↓ event  ←→ level  1–4 level  r examples  z inherit  Esc tree');
+      this.footer.setContent(' ↑↓ event  ←→ level  0–4 level  r examples  z inherit  Esc tree');
     } else if (this.view === 'raw-events') {
       const events = this.rawEvents();
       this.rawIndex = events.length ? Math.max(0, Math.min(events.length - 1, this.rawIndex)) : -1;
       const width = Math.max(1, Number(this.screen.width) - 4);
-      this.rawView.setLabel(` Raw events · ${this.rawVisibleOnly ? 'chat-visible' : 'all filterable'} `);
+      this.rawView.setLabel(` Raw events · visible events `);
       this.rawView.setContent(events.length ? events.map((event, index) => {
         const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
         const summary = clean(`${event.seq} · ${event.time} · ${event.type} · ${JSON.stringify(data) ?? String(data)}`).replace(/\s+/g, ' ');
@@ -1918,7 +1923,7 @@ export class UI {
         return `${index === this.rawIndex ? '› ' : '  '}${line}`;
       }).join('\n') : 'No events in this loaded history window.');
       this.rawView.scrollTo(Math.max(0, this.rawListScroll));
-      this.footer.setContent(' ↑↓ select event   Enter full JSON   a toggle filterable events   Esc tree');
+      this.footer.setContent(' ↑↓ select event   Enter full JSON   Esc tree');
     } else if (this.view === 'raw-event-json') {
       const event = this.selectedRawEvent;
       this.rawView.setLabel(rawEventJsonLabel(event?.type, width));
@@ -1989,7 +1994,7 @@ export class UI {
         parts.push({ text: block.text, event: block.event, identity: this.chatGroupIdentity(block.event) });
         previousIndex = index;
       }
-      if (!parts.length) parts.push({ text: 'No tracked events yet.' });
+      if (!parts.length) parts.push({ text: 'No visible events yet.' });
       const content = parts.map(part => part.text).join('\n\n');
       let nextLayout = this.chatLayout;
       if (content !== this.lastChat) {

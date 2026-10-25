@@ -34,8 +34,7 @@ test('chat appends while scrolled, preserves the viewport and outgoing prompt, t
     }
   });
   await writeFile(join(mock.directory, 'config.json'), JSON.stringify({
-    excluded: ['agent.modified', 'operation.changed', 'prompt.queued'],
-    levels: { 'agent.message': 3 }, compactToolCalls: false,
+    levels: { 'agent.modified': 0, 'operation.changed': 0, 'prompt.queued': 0, 'agent.message': 3 }, compactToolCalls: false,
     history: { recentEvents: 100, chatPageSize: 30, cacheBytes: 1_048_576, idleMinutes: 10 },
   }));
   const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });
@@ -145,7 +144,7 @@ test('appending preserves the exact screen row when the viewport begins on a bla
       respond(socket, request.id, { events: matches.slice(-request.params.limit), hasMore: matches.length > request.params.limit, oldestSeq: 1, latestSeq: latest, expired: false });
     }
   });
-  await writeFile(join(mock.directory, 'config.json'), JSON.stringify({ excluded: ['agent.modified'], levels: { 'agent.message': 1 }, history: { recentEvents: 100, chatPageSize: 30, cacheBytes: 1_048_576, idleMinutes: 10 } }));
+  await writeFile(join(mock.directory, 'config.json'), JSON.stringify({ levels: { 'agent.modified': 0, 'agent.message': 1 }, history: { recentEvents: 100, chatPageSize: 30, cacheBytes: 1_048_576, idleMinutes: 10 } }));
   const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });
   const targetRow = () => tui.screen().split('\n').findIndex(line => line.trimStart().startsWith('MESSAGE_2 '));
   const onSeparator = () => {
@@ -192,7 +191,7 @@ test('prepend plus a newly wrapped gap notice preserves the visible logical anch
     }
   });
   await writeFile(join(mock.directory, 'config.json'), JSON.stringify({
-    excluded: ['agent.modified', 'operation.changed'], levels: { 'agent.message': 3 },
+    levels: { 'agent.modified': 0, 'operation.changed': 0, 'agent.message': 3 },
     history: { recentEvents: 100, chatPageSize: 6, cacheBytes: 32_768, idleMinutes: 10 },
   }));
   const tui = terminalClient(mock.path, mock.directory, { cols: 40, rows: 30 });

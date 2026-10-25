@@ -17,7 +17,7 @@ test('history preferences are editable in the TUI, persist, and apply immediatel
     }
   });
   const path = join(mock.directory, 'config.json');
-  await writeFile(path, JSON.stringify({ excluded: [], levels: {}, history: { recentEvents: 6, chatPageSize: 2, cacheBytes: 32768, idleMinutes: 10 } }));
+  await writeFile(path, JSON.stringify({ levels: {}, history: { recentEvents: 6, chatPageSize: 2, cacheBytes: 32768, idleMinutes: 10 } }));
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('MESSAGE_30');
