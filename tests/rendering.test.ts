@@ -194,6 +194,8 @@ test('get_operation uses generic operation details and highlights the associated
 test('completion lifecycle events render named receipt and review progress', () => {
   const ready = event(1, 'completion.ready', { childNames: ['Reviewer'], childCount: 1, operationCount: 1 });
   expect(eventText(ready)).toBe('Message received from Reviewer.');
+  expect(eventText(event(6, 'completion.ready', { operationCount: 1 }))).toBe('Message received.');
+  expect(eventText(event(7, 'completion.ready', { operationCount: 2 }))).toBe('Messages received.');
   expect(stripAnsi(renderEvent(ready, 3, 100))).toContain('Message received from Reviewer.');
   const multiple = event(2, 'completion.ready', { childNames: ['Coder', 'Tester'], childCount: 2, operationCount: 2 });
   expect(eventText(multiple)).toBe('Messages received from Coder and Tester.');

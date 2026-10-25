@@ -119,9 +119,10 @@ export function eventText(event: ServerEvent): string {
       return `${data.status ?? event.type.split('.')[1]} · ${data.operationId ?? ''}`;
     case 'completion.ready': {
       const childCount = Number.isInteger(data.childCount) && data.childCount >= 0 ? data.childCount : 0;
-      const childNames = Array.isArray(data.childNames) ? data.childNames.map((name: unknown) => clean(String(name)).replace(/\\s+/g, ' ').trim()).filter(Boolean).slice(0, 8) : [];
+      const operationCount = Number.isInteger(data.operationCount) && data.operationCount >= 0 ? data.operationCount : 0;
+      const childNames = Array.isArray(data.childNames) ? data.childNames.map((name: unknown) => typeof name === 'string' ? clean(name).replace(/\s+/g, ' ').trim() : '').filter(Boolean).slice(0, 8) : [];
       const totalChildren = Math.max(childCount, childNames.length);
-      if (!childNames.length) return totalChildren > 1 ? `Messages received from ${totalChildren} child agents.` : 'Message received from a child agent.';
+      if (!childNames.length) return operationCount > 1 ? 'Messages received.' : 'Message received.';
       const names = childNames.map(literalMarkdown);
       const listed = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} and ${names.at(-1)}`;
       const more = Math.max(0, totalChildren - childNames.length);
