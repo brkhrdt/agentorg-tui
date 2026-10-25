@@ -83,6 +83,61 @@ test('the scrollable suggestion window lets later matches be selected and accept
   } finally { await tui.close(); await mock.close(); }
 });
 
+test('buffered query narrowing clamps a prior nonzero selection before accepting', async () => {
+  const mock = await mentionServer(Array.from({ length: 9 }, (_, index) => `Alpha${index}`));
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+  try {
+    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
+    tui.keys('@a'); await tui.visible('@Alpha3');
+    tui.keys('\x1b[B'.repeat(6));
+    tui.keys('8 '); await new Promise(resolve => setTimeout(resolve, 30));
+    expect(tui.screen()).toContain('@Alpha8');
+    expect(tui.screen()).not.toContain('@a8');
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('opening a prompt with many children keeps the selected recipient visible when completion shrinks the tree', async () => {
+  const children = Array.from({ length: 60 }, (_, index) => agent(`worker-${index}`, 'root', { name: `Worker${String(index).padStart(2, '0')}` }));
+  children.push(agent('descendant', 'worker-59', { name: 'Descendant' }));
+  const agents = [agent('root', null, { name: 'Root' }), ...children];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+  try {
+    await tui.visible('Root'); tui.keys('\x1b[B'.repeat(60)); await tui.visible('Worker59');
+    tui.keys('\r'); await tui.visible('Interrupting prompt · Worker59');
+    tui.keys('@'); await tui.visible('@Descendant'); await tui.flush();
+    const selectedRow = tui.screen().split('\n').find(line => line.includes('Worker59') && !line.includes('Interrupting prompt'));
+    expect(selectedRow).toBeDefined();
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('store event bursts keep suggestions fresh while coalescing screen updates', async () => {
+  const records: ReturnType<typeof event>[] = [];
+  const agents = [agent('root', null, { name: 'Root' }), agent('child', 'root', { name: 'Child' })];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: records.length, agents, operations: [] });
+    else if (request.method === 'events.history') {
+      const matches = records.filter(item => item.seq > request.params.after && item.seq < request.params.before && (!request.params.agentId || item.agentId === request.params.agentId));
+      respond(socket, request.id, { events: matches.slice(-request.params.limit), hasMore: matches.length > request.params.limit, oldestSeq: 1, latestSeq: records.length, expired: false });
+    }
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+  try {
+    await tui.visible('Root'); tui.keys('c'); await tui.visible('Chat · Root');
+    tui.keys('@'); await tui.visible('@Child');
+    const socket = [...mock.sockets][0]!;
+    for (let seq = 1; seq <= 40; seq++) {
+      const item = event(seq, 'agent.message', { sessionUpdate: 'agent_message_chunk', messageId: `burst-${seq}`, content: { type: 'text', text: `BURST_${seq}` } }, { agentId: 'root', generation: 'g1' });
+      records.push(item); send(socket, item);
+    }
+    await tui.visible('BURST_40'); await tui.flush();
+    expect(tui.screen()).toContain('@Child');
+  } finally { await tui.close(); await mock.close(); }
+});
+
 test('opening completion preserves the following chat tail when composer row count is unchanged', async () => {
   const records = Array.from({ length: 40 }, (_, index) => event(index + 1, 'agent.message', {
     sessionUpdate: 'agent_message_chunk', messageId: `m${index}`, content: { type: 'text', text: index === 39 ? 'TAIL_MARKER' : `HISTORY_${index}` },

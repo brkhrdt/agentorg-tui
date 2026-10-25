@@ -359,8 +359,8 @@ export class UI {
       this.scheduleDraw();
     });
     this.session.store.on('change', () => {
-      if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) this.updateMentionCompletion();
-      else this.scheduleDraw();
+      if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) this.refreshMentionCompletion();
+      this.scheduleDraw();
     });
     this.session.on('status', () => this.scheduleDraw());
     this.session.on('notice', (message: string) => this.showNotice(message));
@@ -1473,14 +1473,14 @@ export class UI {
     const fuzzyQuery = query.slice(1).split('/').at(-1) ?? '';
     return matchMentionChoices(choices, fuzzyQuery);
   }
-  private updateMentionCompletion(): void {
+  private refreshMentionCompletion(): void {
     const recipient = this.currentMentionRecipient();
     const query = mentionQuery(this.composer.getValue());
     if (!recipient || !query) {
       this.dismissedMention = undefined;
       if (!this.mentionOpen) return;
       this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0;
-      this.mentionPanel.hide(); this.resizeComposer(); this.draw();
+      this.mentionPanel.hide();
       return;
     }
     if (this.dismissedMention === query) return;
@@ -1490,12 +1490,16 @@ export class UI {
     if (this.mentionOpen) this.composeShift = true;
     this.mentionIndex = Math.min(this.mentionIndex, Math.max(0, this.mentionResults.length - 1));
     if (this.mentionOpen) this.mentionPanel.show(); else this.mentionPanel.hide();
+  }
+  private updateMentionCompletion(): void {
+    this.refreshMentionCompletion();
     this.resizeComposer(); this.draw();
   }
   private acceptMention(): void {
     const value = this.composer.getValue();
     const query = mentionQuery(value);
     const freshResults = query ? this.currentMentionResults(query) : [];
+    this.mentionIndex = Math.min(this.mentionIndex, Math.max(0, freshResults.length - 1));
     const choice = freshResults[this.mentionIndex];
     const replaced = query && choice ? replaceMentionQuery(value, query, choice.token) : undefined;
     if (!choice || replaced === undefined) { this.clearMentionCompletion(); this.draw(); return; }
@@ -1507,6 +1511,7 @@ export class UI {
     if (this.view !== 'prompt' && this.view !== 'chat') return;
     const previous = Number(this.composer.height);
     const previousChatHeight = Number(this.chat.height);
+    const previousTreeHeight = Number(this.tree.height);
     const anchor = this.view === 'chat' && !this.follow ? this.captureChatAnchor() : undefined;
     const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - (this.composeShift ? 11 : 7)));
     this.promptTop.bottom = rows + 3;
@@ -1514,7 +1519,8 @@ export class UI {
     this.tree.bottom = rows + (this.composeShift ? 8 : 4);
     this.chat.bottom = rows + (this.composeShift ? 8 : 4);
     const chatGeometryChanged = this.view === 'chat' && Number(this.chat.height) !== previousChatHeight;
-    if (rows !== previous || chatGeometryChanged) {
+    const treeGeometryChanged = this.view === 'prompt' && Number(this.tree.height) !== previousTreeHeight;
+    if (rows !== previous || chatGeometryChanged || treeGeometryChanged) {
       if (this.view === 'prompt') this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
       else if (this.follow) {
         this.adjustingChatViewport = true;
