@@ -19,7 +19,7 @@ interface CoreRegistry {
 const registry = (): CoreRegistry => { const registry: CoreRegistry = new coreModule!.RendererRegistry(); registry.registerHarness('pi', [], names => Object.fromEntries(names.map(name => [`mcp__agentorg__${name}`, name]))); return registry; };
 const event = (tool: string, value: unknown, rawInput: unknown = { operationId: 'operation-' + 'x'.repeat(80) }): ServerEvent => ({ kind: 'event', seq: 1, time: 'now', type: 'tool.result', data: { title: tool, status: 'completed', rawInput, rawOutput: { content: [{ type: 'text', text: JSON.stringify(value) }], isError: false } } });
 
-test.skipIf(!coreModule)('real core MCP sidecars/catalog preserve all 14 Pi identities, symbol and semantic hints', () => {
+test.skipIf(!coreModule)('real core MCP sidecars/catalog preserve all 15 Pi identities, symbol and semantic hints', () => {
   const core = registry();
   for (const row of core.catalog()) expect(validRendererMetadata(row)).toBe(true);
   for (const tool of MCP_TOOL_NAMES) {
@@ -29,6 +29,7 @@ test.skipIf(!coreModule)('real core MCP sidecars/catalog preserve all 14 Pi iden
     expect(validEventRendering(rendering)).toBe(true); expect(rendering.subtype).toBe(emitted);
     for (const level of [1, 2, 3] as const) expect(stripAnsi(renderEvent(e, level, 80, rendering))).toStartWith('∴ ');
     if (tool === 'prompt_subagent') expect(stripAnsi(renderEvent(e, 1, 80, rendering))).toBe('∴ @child-7 Review this change');
+    if (tool === 'prompt_parent') expect(stripAnsi(renderEvent(e, 1, 80, rendering))).toContain('∴ @parent');
     expect(JSON.parse(renderEvent(e, 4, 10000, rendering))).toEqual(e);
     const preview = rendererPreview(row, 'tool.update', 2, 80, 12, {}, emitted);
     expect(preview).toContain('∴'); expect(preview).not.toContain('lines received');

@@ -332,7 +332,7 @@ test('presentation sidecars select tree summaries independently of chat subtype 
 });
 
 test('MCP level previews select alias-specific Pi examples and retain emitted identity for all public tools', () => {
-  const names = ['create_subagent', 'prompt_subagent', 'get_subagent', 'snapshot_organization', 'stop_subagent', 'restart_subagent', 'restart_subagent_subtree', 'replace_subagent_session', 'remove_subagent', 'modify_subagent', 'get_completion', 'get_operation', 'wait_operation', 'cancel_operation'];
+  const names = ['create_subagent', 'prompt_subagent', 'prompt_parent', 'get_subagent', 'snapshot_organization', 'stop_subagent', 'restart_subagent', 'restart_subagent_subtree', 'replace_subagent_session', 'remove_subagent', 'modify_subagent', 'get_completion', 'get_operation', 'wait_operation', 'cancel_operation'];
   for (const tool of names) {
     const emitted = `mcp__agentorg__${tool}`;
     const example = (identity: string, subtype?: string) => {

@@ -14,6 +14,7 @@ export const DEFAULT_LEVELS: Record<string, Level> = {
   'tool.result': 2,
   'agent.plan': 3,
   'tool.call:mcp__agentorg__prompt_subagent': 3,
+  'tool.call:mcp__agentorg__prompt_parent': 3,
   'tool.call:cancel_operation': 2,
   'tool.result:bash': 2,
   'tool.result:mcp__agentorg__modify_subagent': 2,
@@ -28,6 +29,7 @@ export const DEFAULT_LEVELS: Record<string, Level> = {
   'tool.result:mcp__agentorg__get_operation': 2,
   'tool.result:mcp__agentorg__get_subagent': 2,
   'tool.result:mcp__agentorg__prompt_subagent': 2,
+  'tool.result:mcp__agentorg__prompt_parent': 2,
   'tool.result:mcp__agentorg__remove_subagent': 2,
 };
 export const COLOR_OPTIONS = ['default', 'black', 'red', 'green', 'yellow', 'orange', 'blue', 'magenta', 'cyan', 'white', 'gray'] as const;
