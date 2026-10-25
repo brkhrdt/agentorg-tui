@@ -45,7 +45,7 @@ test('event palettes affect symbols, Markdown, diffs and previews without stale 
   expect(render(original)).toBe(first); // Reuse the original cache entry after mutating its source object.
   const message = event(2, 'agent.message', { content: { text: '# Heading\n\n`code` and [link](https://example.com)' } });
   const markdown = renderEvent(message, 3, 80, undefined, settings.colors);
-  expect(markdown).toContain('\x1b[1;31m# Heading');
+  expect(markdown).toContain('\x1b[1;31mHeading');
   expect(markdown).toContain('\x1b[32mcode');
   expect(markdown).toContain('\x1b[36mlink');
   const metadata = { id: rendering.rendererId, name: 'Colors', eventTypes: [raw.type], examples: [{ ...rendering, type: raw.type, raw: JSON.stringify(raw) }] };

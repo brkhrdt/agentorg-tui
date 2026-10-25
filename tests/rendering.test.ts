@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { renderEvent, renderTreeEvent, chatGroups } from '../src/render.js';
+import { eventText, renderEvent, renderTreeEvent, chatGroups } from '../src/render.js';
 import { renderTable } from '../src/table.js';
 import { rendererPreview } from '../src/renderer-preview.js';
 import { Settings } from '../src/settings.js';
@@ -171,6 +171,50 @@ test('AgentOrg tools use the triangle marker and prompt targets get an independe
   }
 });
 
+test('get_operation uses generic operation details and highlights the associated agent name', () => {
+  const e = event(1, 'tool.result', { title: 'mcp__agentorg__get_operation', status: 'completed' });
+  const presentation: EventRendering = {
+    rendererId: 'core.mcp-get-operation', subtype: 'mcp__agentorg__get_operation',
+    summary: 'Inspect operation · op-1 · Reviewer',
+    extended: 'Inspect operation · op-1 · Reviewer\nAgent: Reviewer · Operation type: agent.prompt',
+    full: 'Inspect operation · op-1 · Reviewer\n\nAgent: Reviewer\nOperation type: agent.prompt',
+    toolSymbol: '∴', toolTargets: ['Reviewer'], extendedLayout: 'header-detail',
+  };
+  for (const level of [1, 2, 3] as const) {
+    const text = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+    expect(text).toContain('\x1b[35mReviewer\x1b[0m');
+    expect(text).not.toContain('@Coordinator');
+  }
+  expect(stripAnsi(renderEvent(e, 2, 100, presentation)).split('\n')).toEqual([
+    '∴ Inspect operation · op-1 · Reviewer',
+    'Agent: Reviewer · Operation type: agent.prompt',
+  ]);
+});
+
+test('completion lifecycle events render named receipt and review progress', () => {
+  const ready = event(1, 'completion.ready', { childNames: ['Reviewer'], childCount: 1, operationCount: 1 });
+  expect(eventText(ready)).toBe('Message received from Reviewer.');
+  expect(eventText(event(6, 'completion.ready', { operationCount: 1 }))).toBe('Message received.');
+  expect(eventText(event(7, 'completion.ready', { operationCount: 2 }))).toBe('Messages received.');
+  expect(renderEvent(ready, 3, 100)).toContain('\x1b[1;36m∴\x1b[0m');
+  expect(stripAnsi(renderEvent(ready, 3, 100))).toContain('Message received from Reviewer.');
+  const multiple = event(2, 'completion.ready', { childNames: ['Coder', 'Tester'], childCount: 2, operationCount: 2 });
+  expect(eventText(multiple)).toBe('Messages received from Coder and Tester.');
+  const duplicateNames = event(8, 'completion.ready', { childNames: ['Reviewer', 'Reviewer'], childCount: 2, operationCount: 2 });
+  expect(eventText(duplicateNames)).toBe('Messages received from 2 child agents named Reviewer.');
+  const partialNames = event(9, 'completion.ready', { childNames: [...Array(8).fill('Reviewer'), 'Other'], childCount: 9, operationCount: 9 });
+  expect(eventText(partialNames)).toBe('Messages received from Reviewer, Reviewer, Reviewer, Reviewer, Reviewer, Reviewer, Reviewer, Reviewer and 1 more.');
+  const started = event(3, 'completion.dispatch_started', { batchId: 'batch' });
+  expect(eventText(started)).toBe('Reviewing messages...');
+  const renderedStarted = renderEvent(started, 3, 100);
+  expect(renderedStarted).toContain('\x1b[1;36m∴\x1b[0m');
+  expect(stripAnsi(renderedStarted)).toContain('∴ Reviewing messages...');
+  expect(stripAnsi(renderedStarted)).not.toContain('completion.dispatch_started');
+  expect(stripAnsi(renderTreeEvent(started, 100))).toBe('∴ Reviewing messages...');
+  expect(eventText(event(4, 'completion.dispatch_finished', { status: 'completed' }))).toBe('Done reviewing messages.');
+  expect(eventText(event(5, 'completion.dispatch_finished', { status: 'failed' }))).toBe('Done reviewing messages (failed).');
+});
+
 test('long prompt targets do not steal or clip the prompt body at narrow widths', () => {
   const target = '@research-worker-with-a-long-name', prompt = 'FIRST second';
   const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} ${prompt}`, extended: `${target} ${prompt}`, full: `${target} ${prompt}`, toolSymbol: '∴', toolTarget: target, toolPrompt: prompt };
@@ -186,6 +230,15 @@ test('long prompt targets do not steal or clip the prompt body at narrow widths'
     expect(stripAnsi(extended)).toMatch(/FIRST\s+second/);
     expect(extended.split('\n').length).toBeLessThanOrEqual(2);
   }
+});
+
+test('multiline prompt_subagent bodies keep continuation lines flush-left', () => {
+  const prompt = 'First response line\n\nSecond response line\n\nThird response line';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', summary: '@Reviewer ' + prompt, extended: '@Reviewer ' + prompt, full: '@Reviewer ' + prompt, toolSymbol: '∴', toolTarget: '@Reviewer', toolPrompt: prompt };
+  const e = event(1, 'tool.call', { title: 'mcp__agentorg__prompt_subagent', status: 'pending', rawInput: { agentId: 'reviewer', text: prompt } });
+  const lines = stripAnsi(renderEvent(e, 3, 80, presentation)).split('\n');
+  expect(lines).toEqual(['∴ @Reviewer First response line', '', 'Second response line', '', 'Third response line']);
+  expect(lines.slice(1).every(line => !line.startsWith(' '))).toBe(true);
 });
 
 test('prompt_subagent levels bound summaries/details and preserve full Markdown prompts', () => {
