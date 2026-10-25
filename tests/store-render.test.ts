@@ -656,6 +656,14 @@ describe('four rendering levels', () => {
     expect(stripAnsi(full)).toContain('const x = 1;');
     expect(JSON.parse(renderEvent(message, 4, 1000))).toEqual(message);
   });
+  test('inline emphasis and code render inside tight Markdown lists', () => {
+    const list = event(5, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '- **Markdown Researcher** found `docs/tui.md`.' } });
+    const rendered = renderEvent(list, 3, 120);
+    expect(rendered).toContain('\x1b[1mMarkdown Researcher\x1b[0m');
+    expect(rendered).toContain('\x1b[33mdocs/tui.md\x1b[0m');
+    expect(stripAnsi(rendered)).not.toContain('**Markdown Researcher**');
+    expect(stripAnsi(rendered)).toContain('Markdown Researcher found docs/tui.md.');
+  });
   test('nontext/unknown/truncated content is tolerant and marked incomplete', () => {
     const unknown = event(1, 'plugin.custom', { mystery: 42 });
     expect(renderEvent(unknown, 3, 80)).toContain('mystery');

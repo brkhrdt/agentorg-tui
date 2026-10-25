@@ -156,7 +156,15 @@ function markdown(text: string, width: number, summary = false, colors: RenderCo
       link: style(ansiColor(palette.eventLink!)), href: style(`4;${ansiColor(palette.eventLink!)}`),
     }) as unknown as MarkedExtension);
     // Semantic diff colors are local and deterministic, even without FORCE_COLOR/TTY.
-    parser.use({ renderer: { code({ text, lang }) {
+    parser.use({ renderer: {
+      text(token) {
+        // marked-terminal's tight-list renderer passes block text tokens through as source,
+        // leaving nested strong/emphasis markers literal. Reparse their inline tokens.
+        const tokens = object(token).tokens;
+        if (Array.isArray(tokens)) return this.parser.parseInline(tokens);
+        return false;
+      },
+      code({ text, lang }) {
       if (lang?.split(/\s/)[0] !== 'diff') return false;
       let inHunk = false;
       return '\n' + text.split('\n').map(line => {
