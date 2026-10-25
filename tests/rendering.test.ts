@@ -171,6 +171,26 @@ test('AgentOrg tools use the triangle marker and prompt targets get an independe
   }
 });
 
+test('get_operation accents both child and parent names at every chat level', () => {
+  const e = event(1, 'tool.result', { title: 'mcp__agentorg__get_operation', status: 'completed' });
+  const presentation: EventRendering = {
+    rendererId: 'core.mcp-get-operation', subtype: 'mcp__agentorg__get_operation',
+    summary: 'Reviewer: @Coordinator A useful response',
+    extended: 'Reviewer: @Coordinator A useful response\nSecond line',
+    full: 'Reviewer: @Coordinator\n\n# Findings\nA useful response',
+    toolSymbol: '∴', toolTargets: ['Reviewer', '@Coordinator'],
+  };
+  for (const level of [1, 2, 3] as const) {
+    const text = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+    expect(text).toContain('\x1b[35mReviewer\x1b[0m');
+    expect(text).toContain('\x1b[35m@Coordinator\x1b[0m');
+  }
+  expect(stripAnsi(renderEvent(e, 2, 100, presentation)).split('\n')).toEqual([
+    '∴ Reviewer: @Coordinator A useful response',
+    'Second line',
+  ]);
+});
+
 test('long prompt targets do not steal or clip the prompt body at narrow widths', () => {
   const target = '@research-worker-with-a-long-name', prompt = 'FIRST second';
   const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} ${prompt}`, extended: `${target} ${prompt}`, full: `${target} ${prompt}`, toolSymbol: '∴', toolTarget: target, toolPrompt: prompt };
@@ -186,6 +206,15 @@ test('long prompt targets do not steal or clip the prompt body at narrow widths'
     expect(stripAnsi(extended)).toMatch(/FIRST\s+second/);
     expect(extended.split('\n').length).toBeLessThanOrEqual(2);
   }
+});
+
+test('multiline prompt_subagent bodies keep continuation lines flush-left', () => {
+  const prompt = 'First response line\n\nSecond response line\n\nThird response line';
+  const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', summary: '@Reviewer ' + prompt, extended: '@Reviewer ' + prompt, full: '@Reviewer ' + prompt, toolSymbol: '∴', toolTarget: '@Reviewer', toolPrompt: prompt };
+  const e = event(1, 'tool.call', { title: 'mcp__agentorg__prompt_subagent', status: 'pending', rawInput: { agentId: 'reviewer', text: prompt } });
+  const lines = stripAnsi(renderEvent(e, 3, 80, presentation)).split('\n');
+  expect(lines).toEqual(['∴ @Reviewer First response line', '', 'Second response line', '', 'Third response line']);
+  expect(lines.slice(1).every(line => !line.startsWith(' '))).toBe(true);
 });
 
 test('prompt_subagent levels bound summaries/details and preserve full Markdown prompts', () => {

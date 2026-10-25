@@ -49,13 +49,27 @@ function toolColor(event: ServerEvent, tool?: string, invocationError?: boolean)
   if (failedOutput || ['failed', 'cancelled', 'canceled'].includes(data.status)) return 'toolFailure';
   return data.status === 'completed' ? 'toolSuccess' : 'gray';
 }
+function paintToolTargets(text: string, targets: string[], colors: RenderColors): string {
+  const matches = [...new Set(targets.map(clean).filter(Boolean))]
+    .map(target => ({ target, start: text.indexOf(target) }))
+    .filter(match => match.start >= 0)
+    .sort((a, b) => a.start - b.start || b.target.length - a.target.length);
+  let output = '', cursor = 0;
+  for (const match of matches) {
+    if (match.start < cursor) continue;
+    output += text.slice(cursor, match.start) + paint(match.target, 'agentTarget', colors);
+    cursor = match.start + match.target.length;
+  }
+  return output + text.slice(cursor);
+}
 /** Only the symbol carries lifecycle color; edit's signed counts have independent diff colors. */
-function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}, rendering?: Pick<EventRendering, 'toolSymbol' | 'toolTarget' | 'invocationError'>): string {
+function toolHeader(text: string, event: ServerEvent, tool?: string, colors: RenderColors = {}, rendering?: Pick<EventRendering, 'toolSymbol' | 'toolTarget' | 'toolTargets' | 'invocationError'>): string {
   const plain = clean(text);
   if (rendering?.toolSymbol) {
     const symbol = clean(rendering.toolSymbol).replace(/\s/g, '');
     const target = rendering.toolTarget && clean(rendering.toolTarget);
-    const body = target && plain.startsWith(target) ? paint(target, 'agentTarget', colors) + plain.slice(target.length) : plain;
+    const body = rendering.toolTargets?.length ? paintToolTargets(plain, rendering.toolTargets, colors)
+      : target && plain.startsWith(target) ? paint(target, 'agentTarget', colors) + plain.slice(target.length) : plain;
     return paint(symbol, toolColor(event, tool, rendering.invocationError), colors) + (body ? ` ${body}` : '');
   }
   const match = /^([\s]*)([$<>Δ•])(?=\s|$)(.*)$/u.exec(plain);
@@ -243,8 +257,7 @@ function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: 
   if (level === 1) return clipStyled(prefix + markdown(prompt.replace(/\s+/g, ' ').trim(), bodyWidth, true, colors), width);
   const formatted = markdown(prompt, bodyWidth, false, colors);
   const bodyRows = logicalLines(formatted).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
-  const indent = ' '.repeat(Math.min(prefixWidth, Math.max(0, width - 1)));
-  const rows = bodyRows.map((line, index) => clipStyled((index === 0 ? prefix : indent) + line, width));
+  const rows = bodyRows.map((line, index) => clipStyled((index === 0 ? prefix : '') + line, width));
   if (level === 3) return rows.join('\n');
   if (rows.length <= 2) return rows.join('\n');
   const tailWidth = Math.max(1, width - stringWidth(' …'));
