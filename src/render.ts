@@ -117,6 +117,20 @@ export function eventText(event: ServerEvent): string {
     case 'agent.removed': return `Removed ${data.removedAt ?? ''}`;
     case 'prompt.started': case 'prompt.cancelling': case 'prompt.finished':
       return `${data.status ?? event.type.split('.')[1]} · ${data.operationId ?? ''}`;
+    case 'completion.ready': {
+      const childCount = Number.isInteger(data.childCount) && data.childCount >= 0 ? data.childCount : 0;
+      const childNames = Array.isArray(data.childNames) ? data.childNames.map((name: unknown) => clean(String(name)).replace(/\\s+/g, ' ').trim()).filter(Boolean).slice(0, 8) : [];
+      const totalChildren = Math.max(childCount, childNames.length);
+      if (!childNames.length) return totalChildren > 1 ? `Messages received from ${totalChildren} child agents.` : 'Message received from a child agent.';
+      const names = childNames.map(literalMarkdown);
+      const listed = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} and ${names.at(-1)}`;
+      const more = Math.max(0, totalChildren - childNames.length);
+      const suffix = more ? ` and ${more} more` : '';
+      return `${totalChildren === 1 ? 'Message' : 'Messages'} received from ${listed}${suffix}.`;
+    }
+    case 'completion.dispatch_started': return 'Reviewing messages...';
+    case 'completion.dispatch_finished':
+      return data.status && data.status !== 'completed' ? `Done reviewing messages (${clean(String(data.status))}).` : 'Done reviewing messages.';
     case 'operation.changed':
       // Prompt result.text is not another assistant chunk.
       return `${data.type ?? 'operation'} · ${data.status ?? ''}${data.error ? ` · ${data.error.message}` : ''}`;

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { renderEvent, renderTreeEvent, chatGroups } from '../src/render.js';
+import { eventText, renderEvent, renderTreeEvent, chatGroups } from '../src/render.js';
 import { renderTable } from '../src/table.js';
 import { rendererPreview } from '../src/renderer-preview.js';
 import { Settings } from '../src/settings.js';
@@ -189,6 +189,17 @@ test('get_operation uses generic operation details and highlights the associated
     '∴ Inspect operation · op-1 · Reviewer',
     'Agent: Reviewer · Operation type: agent.prompt',
   ]);
+});
+
+test('completion lifecycle events render named receipt and review progress', () => {
+  const ready = event(1, 'completion.ready', { childNames: ['Reviewer'], childCount: 1, operationCount: 1 });
+  expect(eventText(ready)).toBe('Message received from Reviewer.');
+  expect(stripAnsi(renderEvent(ready, 3, 100))).toContain('Message received from Reviewer.');
+  const multiple = event(2, 'completion.ready', { childNames: ['Coder', 'Tester'], childCount: 2, operationCount: 2 });
+  expect(eventText(multiple)).toBe('Messages received from Coder and Tester.');
+  expect(eventText(event(3, 'completion.dispatch_started', { batchId: 'batch' }))).toBe('Reviewing messages...');
+  expect(eventText(event(4, 'completion.dispatch_finished', { status: 'completed' }))).toBe('Done reviewing messages.');
+  expect(eventText(event(5, 'completion.dispatch_finished', { status: 'failed' }))).toBe('Done reviewing messages (failed).');
 });
 
 test('long prompt targets do not steal or clip the prompt body at narrow widths', () => {
