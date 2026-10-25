@@ -288,7 +288,8 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   const data = object(event.data), text = typeof data.text === 'string' ? data.text : pretty(event.data);
   const cue = promptCue(event);
   const mention = cue ? paint(clean(targetName ? `@${targetName}` : cue.mention), 'agentTarget', colors) : '';
-  const prefix = cue ? targetName ? `${clean(cue.mention.slice(1))}: ${mention} ` : `${mention} ` : '';
+  const parent = cue && targetName ? paint(clean(cue.mention.slice(1)), 'agentTarget', colors) : '';
+  const prefix = cue ? targetName ? `${parent}: ${mention} ` : `${mention} ` : '';
   const body = cue?.body ?? text;
   if (level === 1) return clipStyled(prefix + markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors), width);
   const prefixWidth = stringWidth(stripAnsi(prefix));
@@ -307,7 +308,8 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
   if (event.type === 'prompt.queued') {
     const data = object(event.data), text = typeof data.text === 'string' ? data.text : pretty(event.data), cue = promptCue(event);
     const mention = cue ? paint(clean(targetName ? `@${targetName}` : cue.mention), 'agentTarget', colors) : '';
-    const prefix = cue ? targetName ? `${clean(cue.mention.slice(1))}: ${mention} ` : `${mention} ` : '';
+    const parent = cue && targetName ? paint(clean(cue.mention.slice(1)), 'agentTarget', colors) : '';
+    const prefix = cue ? targetName ? `${parent}: ${mention} ` : `${mention} ` : '';
     return clipStyled(prefix + clean(cue?.body ?? text).replace(/\s+/g, ' ').trim(), width);
  }
   if (width <= 0) return '';
