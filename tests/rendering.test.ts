@@ -197,7 +197,12 @@ test('completion lifecycle events render named receipt and review progress', () 
   expect(stripAnsi(renderEvent(ready, 3, 100))).toContain('Message received from Reviewer.');
   const multiple = event(2, 'completion.ready', { childNames: ['Coder', 'Tester'], childCount: 2, operationCount: 2 });
   expect(eventText(multiple)).toBe('Messages received from Coder and Tester.');
-  expect(eventText(event(3, 'completion.dispatch_started', { batchId: 'batch' }))).toBe('Reviewing messages...');
+  const started = event(3, 'completion.dispatch_started', { batchId: 'batch' });
+  expect(eventText(started)).toBe('Reviewing messages...');
+  const renderedStarted = renderEvent(started, 3, 100);
+  expect(stripAnsi(renderedStarted)).toContain('∴ Reviewing messages...');
+  expect(stripAnsi(renderedStarted)).not.toContain('completion.dispatch_started');
+  expect(stripAnsi(renderTreeEvent(started, 100))).toBe('∴ Reviewing messages...');
   expect(eventText(event(4, 'completion.dispatch_finished', { status: 'completed' }))).toBe('Done reviewing messages.');
   expect(eventText(event(5, 'completion.dispatch_finished', { status: 'failed' }))).toBe('Done reviewing messages (failed).');
 });

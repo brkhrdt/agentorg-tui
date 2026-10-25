@@ -318,7 +318,12 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   if (rows.length > 2) rows[1] = clip(rows[1]! + ' …', width);
   return rows.slice(0, 2).map(line => clipStyled(line, width)).join('\n');
 }
+function renderCompletionNotice(event: ServerEvent, width: number, colors: RenderColors): string {
+  const summary = markdown(eventText(event), width, true, colors);
+  return clipStyled(toolHeader(summary, event, undefined, colors, { toolSymbol: '∴' }), width);
+}
 function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean, targetName?: string): string {
+  if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
   if (event.type === 'prompt.queued') {
     const data = object(event.data), text = typeof data.text === 'string' ? data.text : pretty(event.data), cue = promptCue(event);
     const mention = cue ? paint(clean(targetName ? `@${targetName}` : cue.mention), 'agentTarget', colors) : '';
@@ -351,6 +356,10 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
   width = Math.max(1, width);
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
   if (event.type === 'prompt.queued') return renderPromptCue(event, level, width, colors, targetName);
+  if (event.type.startsWith('completion.')) {
+    const notice = renderCompletionNotice(event, width, colors);
+    return level === 3 ? `${paint(clip(event.time, width), 'gray', colors)}\n${notice}` : notice;
+  }
   if (rendering?.toolPrompt !== undefined && isTool(event)) return renderAgentPrompt(event, level, width, rendering, colors);
   if (!rendering && isTool(event)) {
     const full = eventText(event), data = object(event.data);
