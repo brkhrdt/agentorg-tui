@@ -129,8 +129,10 @@ Latest events always use the summary strategy, regardless of chat levels.
 Compatible message chunks are combined per agent, so the preview shows the
 message rather than only its last streamed chunk. Assistant previews omit the
 role label and use all available cells in the event column, truncating with `…`.
-Event previews render Markdown styles and fold blocks into a single line;
-clipping preserves styles and terminal-cell boundaries.
+Streamed tree previews intentionally preserve literal Markdown source and fold
+blocks into a single line; authenticated agent-origin prompt mentions are the
+exception and receive a local accent. Full chat parses message Markdown and
+renders the original prompt body separately from that issuer cue.
 The tree keeps a separate, bounded summary of observed live events for active,
 known agents, so unrelated history eviction does not blank a quiet agent's last
 preview. Each agent retains at most 32 event-type candidates, with at most 1 KiB

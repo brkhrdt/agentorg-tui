@@ -70,6 +70,11 @@ function boundedGraphemePrefix(value: string, maxBytes: number): { text: string;
 function compactPreview(event: ServerEvent): ServerEvent {
   const data = object(event.data);
   const streamKind = data.sessionUpdate;
+  if (event.type === 'prompt.queued' && typeof data.text === 'string' && object(data.promptCue).version === 1) {
+    const prefix = boundedGraphemePrefix(data.text, TREE_PREVIEW_MESSAGE_BYTES);
+    const cue = object(data.promptCue);
+    return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: prefix.text, promptCue: cue, ...(prefix.truncated && { previewTruncated: true }) } };
+  }
   if (event.type === 'agent.message' && STREAMED_MESSAGE_KINDS.has(streamKind) && typeof data.content?.text === 'string') {
     // Keep a bounded source prefix rather than JSON-truncating an accumulated
     // message. Subsequent chunks can then extend it without replacing its start.

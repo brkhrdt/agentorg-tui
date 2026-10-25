@@ -613,7 +613,7 @@ describe('four rendering levels', () => {
     expect(stringWidth(summary)).toBeLessThanOrEqual(24);
     expect(summary).toBe('# Heading  **bold** and…');
     expect(summary).not.toContain('assistant:');
-    expect(renderEvent(event(2, 'agent.message', { sessionUpdate: 'user_message_chunk', content: { text: 'Hello' } }), 1, 80)).toBe('user: Hello');
+    expect(renderEvent(event(2, 'agent.message', { sessionUpdate: 'user_message_chunk', content: { text: 'Hello' } }), 1, 80)).toBe('Hello');
     expect(clip('  child', 20)).toBe('  child');
     expect(clip('🦊🦊🦊', 5)).toBe('🦊🦊…');
     expect(clip('test', 0)).toBe('');
@@ -630,10 +630,27 @@ describe('four rendering levels', () => {
     for (const line of extended.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(20);
     expect(extended).toEndWith('…');
   });
+  test('agent prompt cue is accented while its untouched Markdown body parses at block start in chat and tree', () => {
+    const body = '# Heading\n\n- item with `code`';
+    const text = `@Research lead ${body}`;
+    const queued = event(3, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Research lead '.length } });
+    const full = renderEvent(queued, 3, 80, undefined, { agentTarget: 'magenta' });
+    expect(stripAnsi(full)).toContain('@Research lead Heading');
+    expect(full).toContain('\x1b[35m@Research lead\x1b[0m');
+    expect(stripAnsi(full)).toContain('item with code');
+    expect(stripAnsi(full)).not.toContain('# Heading');
+    const tree = renderTreeEvent(queued, 80, undefined, { agentTarget: 'magenta' });
+    expect(stripAnsi(tree)).toBe(text.replace(/\s+/g, ' '));
+    expect(tree).toContain('\x1b[35m@Research lead\x1b[0m');
+    const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
+    expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
+  });
   test('full renders Markdown without dropping text, raw retains the complete wire event', () => {
     const full = renderEvent(message, 3, 80);
     expect(full).toContain('\x1b[');
     expect(stripAnsi(full)).toContain('Heading');
+    expect(stripAnsi(full)).not.toContain('# Heading');
+    expect(stripAnsi(full)).not.toContain('`code`');
     expect(stripAnsi(full)).toContain('bold');
     expect(stripAnsi(full)).not.toContain('**bold**');
     expect(stripAnsi(full)).toContain('const x = 1;');
