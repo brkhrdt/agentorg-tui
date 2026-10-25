@@ -12,12 +12,12 @@ test('settings round-trip defaults, exclusions, plugin levels and invalid config
     const settings = await Settings.load(path);
     expect(settings.levels).toEqual({
       'agent.message': 3, 'prompt.queued': 3, 'tool.update': 3, 'tool.result': 2, 'agent.plan': 3,
-      'tool.call:mcp__agentorg__prompt_subagent': 3, 'tool.call:cancel_operation': 2, 'tool.result:bash': 2,
+      'tool.call:mcp__agentorg__prompt_subagent': 3, 'tool.call:mcp__agentorg__prompt_parent': 3, 'tool.call:cancel_operation': 2, 'tool.result:bash': 2,
       'tool.result:mcp__agentorg__modify_subagent': 2, 'tool.result:mcp__agentorg__get_completion': 2,
       'tool.result:cancel_operation': 2, 'tool.result:create_subagent': 2, 'tool.result:get_completion': 2,
       'tool.result:get_operation': 2, 'tool.result:get_subagent': 2, 'tool.result:mcp__agentorg__cancel_operation': 2,
       'tool.result:mcp__agentorg__create_subagent': 2, 'tool.result:mcp__agentorg__get_operation': 2,
-      'tool.result:mcp__agentorg__get_subagent': 2, 'tool.result:mcp__agentorg__prompt_subagent': 2,
+      'tool.result:mcp__agentorg__get_subagent': 2, 'tool.result:mcp__agentorg__prompt_subagent': 2, 'tool.result:mcp__agentorg__prompt_parent': 2,
       'tool.result:mcp__agentorg__remove_subagent': 2,
     });
     expect(settings.levels).toEqual(DEFAULT_LEVELS);
