@@ -645,6 +645,16 @@ describe('four rendering levels', () => {
     const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
     expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
   });
+  test('child prompt chat labels the issuer and cues the recipient', () => {
+    const text = '@Root Coordinator # Review the plan';
+    const queued = event(4, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } }, { agentId: 'child-id' });
+    const full = renderEvent(queued, 3, 100, undefined, { agentTarget: 'magenta' }, 'Child Reviewer');
+    expect(stripAnsi(full)).toContain('Root Coordinator: @Child Reviewer Review the plan');
+    expect(full).toContain('\x1b[35m@Child Reviewer\x1b[0m');
+    expect(full).not.toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    const tree = renderTreeEvent(queued, 100, undefined, { agentTarget: 'magenta' }, 'Child Reviewer');
+    expect(stripAnsi(tree)).toBe('Root Coordinator: @Child Reviewer # Review the plan');
+  });
   test('full renders Markdown without dropping text, raw retains the complete wire event', () => {
     const full = renderEvent(message, 3, 80);
     expect(full).toContain('\x1b[');

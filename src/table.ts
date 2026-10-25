@@ -84,7 +84,7 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
         const prefix = index === 0 ? indent(row.depth) : '';
         if (field !== 'event') return cell(prefix + values[r]![index]!, size);
         const event = latest.get(row.agent.id);
-        const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq), colors) : '—';
+        const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq), colors, row.agent.name) : '—';
         return styledCell(prefix + preview, size);
       });
       const rowText = cells.join(separator);
