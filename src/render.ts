@@ -34,15 +34,15 @@ export function chatGroupIdentity(event: ServerEvent): string {
   return chatGroupIdentities.get(event) ?? `${event.agentId ?? ''}\0${event.generation ?? ''}\0${event.type}\0${event.seq}`;
 }
 export type RenderColors = Partial<Record<ColorSetting, string>>;
-const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: RenderColors = {}) => {
+const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: RenderColors = {}, bold = false) => {
   const code = color === '38;5;250' ? color
     : ansiColor(color in DEFAULT_COLORS ? resolveColor(colors, color as ColorSetting) : color);
-  return `\x1b[${code}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${code}m`)}\x1b[0m`;
+  const sgr = bold ? `1;${code}` : code;
+  return `\x1b[${sgr}m${text.replace(/\x1b\[0m/g, `\x1b[0m\x1b[${sgr}m`)}\x1b[0m`;
 };
 function toolColor(event: ServerEvent, tool?: string, invocationError?: boolean): ColorSetting | 'gray' {
   if (event.type === 'tool.call') return 'toolCall';
-  if (event.type === 'tool.update' || event.type === 'completion.dispatch_started') return 'toolUpdate';
-  if (event.type === 'completion.ready') return 'toolSuccess';
+  if (event.type === 'tool.update') return 'toolUpdate';
   const data = object(event.data), result = object(data.rawOutput);
   const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
     ((tool ?? data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/\bexit(?:ed)?(?: with)? (?:code|status):?\s*(-?\d+)/i)?.[1] : undefined);
@@ -322,7 +322,8 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
 }
 function renderCompletionNotice(event: ServerEvent, width: number, colors: RenderColors): string {
   const summary = markdown(eventText(event), width, true, colors);
-  return clipStyled(toolHeader(summary, event, undefined, colors, { toolSymbol: '∴' }), width);
+  const symbol = paint('∴', 'agentTarget', colors, true);
+  return clipStyled(`${symbol} ${summary}`, width);
 }
 function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean, targetName?: string): string {
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
