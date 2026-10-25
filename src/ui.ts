@@ -1,6 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
+import { matchMentionChoices, mentionChoices, mentionQuery, type MentionChoice } from './mention-completion.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
@@ -92,6 +93,12 @@ export class UI {
   });
   private promptTop = blessed.box({ parent: this.screen, bottom: 4, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private promptBottom = blessed.box({ parent: this.screen, bottom: 2, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
+  private mentionPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
+  private mentionResults: MentionChoice[] = [];
+  private mentionIndex = 0;
+  private mentionOpen = false;
+  private composeShift = false;
+  private mentionBase = '';
   private editorInput = blessed.textbox({
     parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
   });
@@ -303,6 +310,20 @@ export class UI {
         else this.setView(this.view === 'history-field' ? 'history-settings' : this.view === 'settings-choice-setup' ? 'settings-options' : this.view === 'server-field' ? 'server-group' : this.view === 'agent-field' ? 'agent-edit' : 'tree');
       });
     }
+    const composerListener = this.composer._listener;
+    this.composer._listener = function(ch, key) {
+      if (thisUI.mentionOpen && thisUI.mentionResults.length && (key.name === 'up' || key.name === 'down')) {
+        thisUI.mentionIndex = (thisUI.mentionIndex + (key.name === 'down' ? 1 : -1) + thisUI.mentionResults.length) % thisUI.mentionResults.length;
+        thisUI.draw(); return;
+      }
+      if (thisUI.mentionOpen && thisUI.mentionResults.length && key.name === 'tab') { thisUI.acceptMention(); return; }
+      if (thisUI.mentionOpen && thisUI.mentionResults.length && ch === ' ') thisUI.acceptMention();
+      composerListener.call(this, ch, key);
+    };
+    const thisUI = this;
+    this.composer.on('keypress', () => {
+      if (this.view === 'chat' || this.view === 'prompt') setTimeout(() => this.updateMentionCompletion(), 0);
+    });
     this.composer.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
       if (key.full === 'C-end') {
@@ -396,6 +417,7 @@ export class UI {
     this.paths.style.selected = { bg: c('selectionBg'), fg: c('selectionFg') };
     this.notice.style.fg = c('notice'); this.footer.style = { fg: c('footerFg'), bg: c('footerBg') };
     this.input.style.border = { fg: c('border') }; this.promptTop.style.fg = c('border'); this.promptBottom.style.fg = c('border');
+    this.mentionPanel.style.selected = { bg: c('selectionBg'), fg: c('selectionFg'), bold: true };
     this.preview.style.border = { fg: c('border') }; this.form.style.border = { fg: c('border') };
   }
   private toggleCompactToolCalls(): void {
@@ -1435,14 +1457,43 @@ export class UI {
     this.composer.setValue('');
     this.setView('prompt');
   }
+  private currentMentionRecipient(): string | undefined { return this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined; }
+  private updateMentionCompletion(): void {
+    const recipient = this.currentMentionRecipient();
+    const query = mentionQuery(this.composer.getValue());
+    if (!recipient || !query) {
+      if (!this.mentionOpen) return;
+      this.mentionOpen = false; this.mentionResults = [];
+      this.mentionPanel.hide(); this.resizeComposer(); this.draw();
+      return;
+    }
+    const choices = mentionChoices(this.session.store.agents.values(), recipient);
+    const fuzzyQuery = query.slice(1).split('/').at(-1) ?? '';
+    // Keep the fixed-height panel concise; ranking is deterministic and name-based.
+    this.mentionResults = matchMentionChoices(choices, fuzzyQuery).slice(0, 4);
+    this.mentionOpen = this.mentionResults.length > 0;
+    if (this.mentionOpen) this.composeShift = true;
+    this.mentionIndex = Math.min(this.mentionIndex, Math.max(0, this.mentionResults.length - 1));
+    this.mentionBase = query;
+    if (this.mentionOpen) this.mentionPanel.show(); else this.mentionPanel.hide();
+    this.resizeComposer(); this.draw();
+  }
+  private acceptMention(): void {
+    const choice = this.mentionResults[this.mentionIndex];
+    if (!choice) return;
+    const value = this.composer.getValue();
+    this.composer.setValue(value.slice(0, value.length - this.mentionBase.length) + choice.token);
+    this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide(); this.draw();
+  }
   private resizeComposer(): void {
     if (this.view !== 'prompt' && this.view !== 'chat') return;
     const previous = Number(this.composer.height);
     const anchor = this.view === 'chat' && !this.follow ? this.captureChatAnchor() : undefined;
-    const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - 7));
+    const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - (this.composeShift ? 11 : 7)));
     this.promptTop.bottom = rows + 3;
-    this.tree.bottom = rows + 4;
-    this.chat.bottom = rows + 4;
+    this.mentionPanel.bottom = rows + 4;
+    this.tree.bottom = rows + (this.composeShift ? 8 : 4);
+    this.chat.bottom = rows + (this.composeShift ? 8 : 4);
     if (rows !== previous) {
       if (this.view === 'prompt') this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
       else if (this.follow) {
@@ -1466,12 +1517,15 @@ export class UI {
       this.chat.setContent(''); this.lastChat = ''; this.chatLayout = []; this.renderedEvents.clear();
       this.adjustingChatViewport = false;
     }
+    if ((this.view === 'chat' || this.view === 'prompt') && view !== 'chat' && view !== 'prompt') {
+      this.composeShift = false; this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide();
+    }
     this.view = view;
     this.menuIndex = 0;
     this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.rawView.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.rawView.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.mentionPanel.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     const composer = view === 'chat' || view === 'prompt';
     // Blessed's typings omit removable borders and their runtime side flags.
@@ -1503,7 +1557,7 @@ export class UI {
       this.input.show(); this.input.focus();
       if (!this.sending) this.input.readInput();
     }
-    if (composer) { this.promptTop.show(); this.promptBottom.show(); }
+    if (composer) { this.promptTop.show(); this.promptBottom.show(); if (this.mentionOpen) this.mentionPanel.show(); }
     this.draw();
   }
   private async submit(value: string): Promise<void> {
@@ -1653,6 +1707,12 @@ export class UI {
     if (this.closing) return;
     this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
+    if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) {
+      const lines = this.mentionResults.slice(0, 4).map((choice, index) => clip(`${index === this.mentionIndex ? '›' : ' '} ${choice.token}`, width));
+      this.mentionPanel.setItems(lines);
+      this.mentionPanel.select(this.mentionIndex);
+      this.mentionPanel.show();
+    } else this.mentionPanel.hide();
     const promptLabel = ' > ';
     this.promptTop.setContent(clip(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`, width));
     this.promptBottom.setContent('─'.repeat(width));
