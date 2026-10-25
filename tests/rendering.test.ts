@@ -171,23 +171,23 @@ test('AgentOrg tools use the triangle marker and prompt targets get an independe
   }
 });
 
-test('get_operation accents both child and parent names at every chat level', () => {
+test('get_operation uses generic operation details and highlights the associated agent name', () => {
   const e = event(1, 'tool.result', { title: 'mcp__agentorg__get_operation', status: 'completed' });
   const presentation: EventRendering = {
     rendererId: 'core.mcp-get-operation', subtype: 'mcp__agentorg__get_operation',
-    summary: 'Reviewer: @Coordinator A useful response',
-    extended: 'Reviewer: @Coordinator A useful response\nSecond line',
-    full: 'Reviewer: @Coordinator\n\n# Findings\nA useful response',
-    toolSymbol: '∴', toolTargets: ['Reviewer', '@Coordinator'],
+    summary: 'Inspect operation · op-1 · Reviewer',
+    extended: 'Inspect operation · op-1 · Reviewer\nAgent: Reviewer · Operation type: agent.prompt',
+    full: 'Inspect operation · op-1 · Reviewer\n\nAgent: Reviewer\nOperation type: agent.prompt',
+    toolSymbol: '∴', toolTargets: ['Reviewer'], extendedLayout: 'header-detail',
   };
   for (const level of [1, 2, 3] as const) {
     const text = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
     expect(text).toContain('\x1b[35mReviewer\x1b[0m');
-    expect(text).toContain('\x1b[35m@Coordinator\x1b[0m');
+    expect(text).not.toContain('@Coordinator');
   }
   expect(stripAnsi(renderEvent(e, 2, 100, presentation)).split('\n')).toEqual([
-    '∴ Reviewer: @Coordinator A useful response',
-    'Second line',
+    '∴ Inspect operation · op-1 · Reviewer',
+    'Agent: Reviewer · Operation type: agent.prompt',
   ]);
 });
 
