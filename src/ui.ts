@@ -1,7 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
-import { matchMentionChoices, mentionChoices, mentionQuery, type MentionChoice } from './mention-completion.js';
+import { matchMentionChoices, mentionChoices, mentionQuery, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
@@ -98,7 +98,7 @@ export class UI {
   private mentionIndex = 0;
   private mentionOpen = false;
   private composeShift = false;
-  private mentionBase = '';
+  private dismissedMention?: string;
   private editorInput = blessed.textbox({
     parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
   });
@@ -288,6 +288,7 @@ export class UI {
     for (const input of [this.editorInput, this.composer]) input.key('C-u', () => {
       if (!this.sending) {
         this.input.setValue('');
+        if (this.view === 'chat' || this.view === 'prompt') this.clearMentionCompletion();
         if (this.isPathInput()) this.refreshPaths();
         if (this.isVolumeInput()) this.refreshVolumes();
         if (this.view === 'structured-filter') { this.structured!.filter = ''; this.menuIndex = 0; this.draw(); }
@@ -357,7 +358,10 @@ export class UI {
       this.lastTreeItems = []; this.lastChat = ''; this.renderedEvents.clear();
       this.scheduleDraw();
     });
-    this.session.store.on('change', () => this.scheduleDraw());
+    this.session.store.on('change', () => {
+      if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) this.updateMentionCompletion();
+      else this.scheduleDraw();
+    });
     this.session.on('status', () => this.scheduleDraw());
     this.session.on('notice', (message: string) => this.showNotice(message));
     this.tree.focus();
@@ -1431,7 +1435,7 @@ export class UI {
     const agent = this.selected();
     if (!agent) return;
     this.chatAgent = agent.id; this.follow = true; this.chatAnchorLost = false; this.chatLayout = []; this.chatScrollGeneration++; this.lastChat = ''; this.renderedEvents.clear();
-    this.composer.setValue('');
+    this.clearMentionCompletion(); this.composer.setValue('');
     this.setView('chat');
     void this.session.openChat(agent.id).catch(error => this.showNotice(`Chat history: ${error.message}`));
   }
@@ -1454,47 +1458,63 @@ export class UI {
     const agent = this.selected();
     if (this.sending || !agent) return;
     this.promptAgent = agent.id;
-    this.composer.setValue('');
+    this.clearMentionCompletion(); this.composer.setValue('');
     this.setView('prompt');
   }
   private currentMentionRecipient(): string | undefined { return this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined; }
+  private clearMentionCompletion(): void {
+    this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
+    this.mentionPanel.hide();
+  }
+  private currentMentionResults(query: string): MentionChoice[] {
+    const recipient = this.currentMentionRecipient();
+    if (!recipient) return [];
+    const choices = mentionChoices(this.session.store.agents.values(), recipient);
+    const fuzzyQuery = query.slice(1).split('/').at(-1) ?? '';
+    return matchMentionChoices(choices, fuzzyQuery);
+  }
   private updateMentionCompletion(): void {
     const recipient = this.currentMentionRecipient();
     const query = mentionQuery(this.composer.getValue());
     if (!recipient || !query) {
+      this.dismissedMention = undefined;
       if (!this.mentionOpen) return;
-      this.mentionOpen = false; this.mentionResults = [];
+      this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0;
       this.mentionPanel.hide(); this.resizeComposer(); this.draw();
       return;
     }
-    const choices = mentionChoices(this.session.store.agents.values(), recipient);
-    const fuzzyQuery = query.slice(1).split('/').at(-1) ?? '';
-    // Keep the fixed-height panel concise; ranking is deterministic and name-based.
-    this.mentionResults = matchMentionChoices(choices, fuzzyQuery).slice(0, 4);
+    if (this.dismissedMention === query) return;
+    if (this.dismissedMention) this.dismissedMention = undefined;
+    this.mentionResults = this.currentMentionResults(query);
     this.mentionOpen = this.mentionResults.length > 0;
     if (this.mentionOpen) this.composeShift = true;
     this.mentionIndex = Math.min(this.mentionIndex, Math.max(0, this.mentionResults.length - 1));
-    this.mentionBase = query;
     if (this.mentionOpen) this.mentionPanel.show(); else this.mentionPanel.hide();
     this.resizeComposer(); this.draw();
   }
   private acceptMention(): void {
-    const choice = this.mentionResults[this.mentionIndex];
-    if (!choice) return;
     const value = this.composer.getValue();
-    this.composer.setValue(value.slice(0, value.length - this.mentionBase.length) + choice.token);
+    const query = mentionQuery(value);
+    const freshResults = query ? this.currentMentionResults(query) : [];
+    const choice = freshResults[this.mentionIndex];
+    const replaced = query && choice ? replaceMentionQuery(value, query, choice.token) : undefined;
+    if (!choice || replaced === undefined) { this.clearMentionCompletion(); this.draw(); return; }
+    this.composer.setValue(replaced);
+    this.dismissedMention = choice.token;
     this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide(); this.draw();
   }
   private resizeComposer(): void {
     if (this.view !== 'prompt' && this.view !== 'chat') return;
     const previous = Number(this.composer.height);
+    const previousChatHeight = Number(this.chat.height);
     const anchor = this.view === 'chat' && !this.follow ? this.captureChatAnchor() : undefined;
     const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - (this.composeShift ? 11 : 7)));
     this.promptTop.bottom = rows + 3;
     this.mentionPanel.bottom = rows + 4;
     this.tree.bottom = rows + (this.composeShift ? 8 : 4);
     this.chat.bottom = rows + (this.composeShift ? 8 : 4);
-    if (rows !== previous) {
+    const chatGeometryChanged = this.view === 'chat' && Number(this.chat.height) !== previousChatHeight;
+    if (rows !== previous || chatGeometryChanged) {
       if (this.view === 'prompt') this.tree.scrollTo(Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent)));
       else if (this.follow) {
         this.adjustingChatViewport = true;
@@ -1518,7 +1538,7 @@ export class UI {
       this.adjustingChatViewport = false;
     }
     if ((this.view === 'chat' || this.view === 'prompt') && view !== 'chat' && view !== 'prompt') {
-      this.composeShift = false; this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide();
+      this.composeShift = false; this.clearMentionCompletion();
     }
     this.view = view;
     this.menuIndex = 0;
@@ -1693,6 +1713,7 @@ export class UI {
       await this.session.prompt(agentId, value);
       if (this.view === view) {
         this.input.setValue('');
+        this.clearMentionCompletion();
         if (view === 'prompt') this.setView('tree');
       }
     } catch (error) { this.showNotice((error as Error).message); }
@@ -1708,9 +1729,10 @@ export class UI {
     this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
     if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) {
-      const lines = this.mentionResults.slice(0, 4).map((choice, index) => clip(`${index === this.mentionIndex ? '›' : ' '} ${choice.token}`, width));
+      const window = mentionWindow(this.mentionResults, this.mentionIndex, 4);
+      const lines = window.items.map((_choice, index) => clip(`${window.start + index === this.mentionIndex ? '›' : ' '} ${window.items[index]!.token}`, width));
       this.mentionPanel.setItems(lines);
-      this.mentionPanel.select(this.mentionIndex);
+      this.mentionPanel.select(this.mentionIndex - window.start);
       this.mentionPanel.show();
     } else this.mentionPanel.hide();
     const promptLabel = ' > ';

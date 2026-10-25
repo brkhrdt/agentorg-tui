@@ -53,3 +53,16 @@ export function mentionQuery(value: string): string | undefined {
   const match = value.match(/(?:^|\s)(@[\p{L}\p{N}_./-]*)$/u);
   return match?.[1];
 }
+
+/** Replace only the still-active @ word; reject cached queries after draft edits. */
+export function replaceMentionQuery(value: string, query: string, token: string): string | undefined {
+  if (!query || !value.endsWith(query) || mentionQuery(value) !== query) return;
+  return value.slice(0, -query.length) + token;
+}
+
+/** Return a bounded menu viewport that always includes the active selection. */
+export function mentionWindow<T>(items: T[], selected: number, size = 4): { items: T[]; start: number } {
+  const count = Math.max(0, Math.min(size, items.length));
+  const start = Math.max(0, Math.min(items.length - count, selected - Math.floor((count - 1) / 2)));
+  return { items: items.slice(start, start + count), start };
+}

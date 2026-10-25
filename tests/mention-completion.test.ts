@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { fuzzyNameScore, matchMentionChoices, mentionChoices, mentionQuery } from '../src/mention-completion.js';
+import { fuzzyNameScore, matchMentionChoices, mentionChoices, mentionQuery, mentionWindow, replaceMentionQuery } from '../src/mention-completion.js';
 import type { Agent } from '../src/protocol.js';
 
 const agent = (id: string, name: string, parentId: string | null, removedAt: string | null = null): Agent => ({ id, name, parentId, removedAt, state: 'idle', settings: { harness: 'test' }, revision: 1, generation: null });
@@ -15,5 +15,13 @@ describe('compose mentions', () => {
     expect(matchMentionChoices([{ token: '@child/grand', name: 'grand', depth: 1 }, { token: '@child', name: 'child', depth: 0 }], 'ch').map(choice => choice.token)).toEqual(['@child']);
     expect(mentionQuery('send @chi')).toBe('@chi');
     expect(mentionQuery('send @chi now')).toBeUndefined();
+  });
+  test('active suffix replacement rejects stale queries and the four-row viewport follows selection', () => {
+    expect(replaceMentionQuery('hello @chi', '@chi', '@child')).toBe('hello @child');
+    expect(replaceMentionQuery('hello @child', '@chi', '@child')).toBeUndefined();
+    expect(replaceMentionQuery('hello @chi more', '@chi', '@child')).toBeUndefined();
+    const choices = Array.from({ length: 9 }, (_, index) => index);
+    const window = mentionWindow(choices, 8, 4);
+    expect(window).toEqual({ items: [5, 6, 7, 8], start: 5 });
   });
 });
