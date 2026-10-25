@@ -200,6 +200,15 @@ export class UI {
 
   constructor(private session: Session, private settings: Settings, private configPath: string) {
     this.session.configureHistory(settings.history);
+    const itemForeground = this.menu.style.item.fg;
+    this.menu.style.item.fg = (item: blessed.Widgets.BlessedElement) => {
+      const index = this.menu.getItemIndex(item);
+      if (this.view === 'levels' && this.settings.level(this.menuTypes[index] ?? '') === 0) {
+        const color = this.settings.color('hiddenRows');
+        return color === 'orange' ? 208 : color;
+      }
+      return typeof itemForeground === 'function' ? itemForeground(item) : itemForeground;
+    };
     this.screen.on('prerender', () => this.resizeComposer());
     // Rows are already cell-clipped. Blessed otherwise word-wraps an exactly
     // full styled row just because trailing ANSI resets increase string.length.
@@ -1449,11 +1458,6 @@ export class UI {
     }
   }
   private setView(view: View): void {
-    if (this.view === 'levels' && view !== 'levels')
-      for (let index = 0; index < this.menuTypes.length; index++) {
-        const item = this.menu.getItem(index);
-        item.style = { ...item.style, fg: undefined };
-      }
     ++this.navigationGeneration;
     ++this.editorRequest; // Navigation cancels any pending new-draft defaults load.
     if (this.view === 'chat' && view !== 'chat') {
@@ -1898,17 +1902,6 @@ export class UI {
         const level = this.settings.level(type);
         return `${cell(type, typeWidth)}  ${level} ${LEVEL_NAMES[level]}`;
       }));
-      for (let index = 0; index < this.menuTypes.length; index++) {
-        const item = this.menu.getItem(index);
-        item.style = { ...item.style, fg: undefined };
-      }
-      const hiddenColor = this.settings.color('hiddenRows') === 'orange' ? 208 : this.settings.color('hiddenRows');
-      this.menuTypes.forEach((type, index) => {
-        if (this.settings.level(type) === 0) {
-          const item = this.menu.getItem(index);
-          item.style = { ...item.style, fg: hiddenColor };
-        }
-      });
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' ↑↓ event  ←→ level  0–4 level  r examples  z inherit  Esc tree');
     } else if (this.view === 'raw-events') {

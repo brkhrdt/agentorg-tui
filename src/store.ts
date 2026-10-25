@@ -109,6 +109,7 @@ function compactPreview(event: ServerEvent): ServerEvent {
 export interface TreeRow { agent: Agent; depth: number }
 
 type HistoryCacheEntry = { bytes: number; recent: boolean; loadedAt?: number; pending?: boolean; older?: boolean };
+type LivePreviewFallback = { event: ServerEvent; subtype?: string; rendering?: EventRendering; lineage?: ServerEvent[] };
 
 export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
@@ -124,6 +125,9 @@ export class Store extends EventEmitter {
   private lastByAgent = new Map<string, ServerEvent>();
   // Independent, compact candidates for the live tree; raw history remains governed by cache policy.
   private livePreviews = new Map<string, Map<string, ServerEvent>>();
+  private livePreviewFallbacks = new Map<string, Map<string, LivePreviewFallback>>();
+  private previewSources = new Map<number, ServerEvent>();
+  private previewMessageIdentities = new Map<number, string>();
   private livePreviewBoundaries = new Map<string, LivePreviewBoundary>();
   private livePreviewStreams = new Map<string, Map<string, LivePreviewBoundary>>();
   private livePreviewWatermarks = new Map<string, number>();
@@ -131,6 +135,7 @@ export class Store extends EventEmitter {
   private previewGeneration = new Map<string, string | null | undefined>();
   private previewFloors = new Map<string, number>();
   private previewRenderings = new Map<number, EventRendering>();
+  private previewSubtypeIds = new Map<number, string>();
   private latestIndexedSeq = -1;
   private latestDirty = false;
   private policy: HistorySettings = { ...DEFAULT_HISTORY };
@@ -166,8 +171,17 @@ export class Store extends EventEmitter {
   }
   private clearLivePreview(agentId: string): void {
     const candidates = this.livePreviews.get(agentId);
-    if (candidates) for (const event of candidates.values()) this.previewRenderings.delete(event.seq);
+    const fallbacks = this.livePreviewFallbacks.get(agentId);
     this.livePreviews.delete(agentId);
+    this.livePreviewFallbacks.delete(agentId);
+    const ownedSeqs = new Set<number>();
+    if (candidates) for (const event of candidates.values()) ownedSeqs.add(event.seq);
+    if (fallbacks) for (const fallback of fallbacks.values()) {
+      ownedSeqs.add(fallback.event.seq);
+      for (const event of fallback.lineage ?? []) ownedSeqs.add(event.seq);
+    }
+    for (const seq of ownedSeqs) this.forgetPreviewRendering(seq, true);
+    this.prunePreviewSources(agentId);
     this.livePreviewBoundaries.delete(agentId);
     this.livePreviewStreams.delete(agentId);
     this.livePreviewNeedsHistory.delete(agentId);
@@ -234,9 +248,135 @@ export class Store extends EventEmitter {
       boundarySeq: boundary?.seq, boundaryInclusive: boundary?.inclusive,
     };
   }
+  private retainedPreviewMessageThrough(agentId: string, throughSeq: number): HistoricalLivePreviewBoundary | undefined {
+    const events = new Map<number, ServerEvent>();
+    for (const event of this.orderedEvents()) if (event.agentId === agentId && event.seq <= throughSeq) events.set(event.seq, event);
+    for (const event of this.previewSources.values()) if (event.agentId === agentId && event.seq <= throughSeq && !events.has(event.seq)) events.set(event.seq, event);
+    for (const fallback of this.livePreviewFallbacks.get(agentId)?.values() ?? [])
+      for (const event of fallback.lineage ?? []) if (event.seq <= throughSeq && !events.has(event.seq)) events.set(event.seq, event);
+    let previous: ServerEvent | undefined;
+    let startSeq: number | undefined, boundary: HistoryCutoff | undefined;
+    for (const candidate of [...events.values()].sort((a, b) => a.seq - b.seq)) {
+      const joined = previous && !this.hasPreviewRendering(previous.seq) && !this.hasPreviewRendering(candidate.seq)
+        ? this.appendRetainedPreviewChunk(previous, candidate) : undefined;
+      if (joined) previous = joined;
+      else {
+        if (previous) {
+          const boundaryEvent = !isStreamedMessage(candidate) || this.hasPreviewRendering(candidate.seq)
+            ? candidate
+            : !isStreamedMessage(previous) || this.hasPreviewRendering(previous.seq) ? previous : candidate;
+          boundary = { seq: boundaryEvent.seq, inclusive: this.hasPreviewRendering(boundaryEvent.seq) };
+        }
+        previous = candidate; startSeq = candidate.seq;
+      }
+    }
+    if (!previous || !isStreamedMessage(previous) || this.hasPreviewRendering(previous.seq)) return;
+    return {
+      event: previous, streamKind: object(previous.data).sessionUpdate, messageIdentity: messageIdentity(previous), startSeq,
+      boundarySeq: boundary?.seq, boundaryInclusive: boundary?.inclusive,
+    };
+  }
+  private appendRetainedPreviewChunk(previous: ServerEvent, candidate: ServerEvent): ServerEvent | undefined {
+    const previousData = object(previous.data), candidateData = object(candidate.data);
+    const previousId = previousData.messageId, candidateId = candidateData.messageId;
+    if (typeof previousId === 'string' && typeof candidateId === 'string') {
+      const previousIdentity = this.previewMessageIdentities.get(previous.seq) ?? messageIdentity(previous);
+      const candidateIdentity = this.previewMessageIdentities.get(candidate.seq) ?? messageIdentity(candidate);
+      if (previousIdentity !== candidateIdentity) return undefined;
+      // appendMessageChunk also compares messageId; normalize only that field after
+      // the collision-resistant identity check, then restore the candidate's wire ID.
+      const normalizedPrevious = { ...previous, data: { ...previousData, messageId: previousIdentity } };
+      const normalizedCandidate = { ...candidate, data: { ...candidateData, messageId: candidateIdentity } };
+      const joined = appendMessageChunk(normalizedPrevious, normalizedCandidate);
+      return joined ? { ...joined, data: { ...object(joined.data), messageId: candidateId } } : undefined;
+    }
+    return appendMessageChunk(previous, candidate);
+  }
+  private reconcileRetainedStreamCandidates(agentId: string, type: string, changedSeq: number): void {
+    const candidates = this.livePreviews.get(agentId);
+    const reconcile = (candidate: ServerEvent): ServerEvent => {
+      if (candidate.seq < changedSeq || candidate.type !== type || !isStreamedMessage(candidate)) return candidate;
+      const historical = this.retainedPreviewMessageThrough(agentId, candidate.seq);
+      return historical?.event.seq === candidate.seq ? compactPreview(historical.event) : candidate;
+    };
+    if (candidates) for (const [key, candidate] of candidates) {
+      const corrected = reconcile(candidate);
+      if (corrected === candidate) continue;
+      candidates.set(key, corrected);
+      const fallback = this.livePreviewFallbacks.get(agentId)?.get(type);
+      if (fallback?.event.seq === candidate.seq) fallback.event = corrected;
+      const stream = this.livePreviewStreams.get(agentId)?.get(type);
+      if (stream?.event.seq === candidate.seq) stream.event = corrected;
+      const latestBoundary = this.livePreviewBoundaries.get(agentId);
+      if (latestBoundary?.event.seq === candidate.seq) latestBoundary.event = corrected;
+    }
+    const fallback = this.livePreviewFallbacks.get(agentId)?.get(type);
+    if (fallback) {
+      const corrected = reconcile(fallback.event);
+      if (corrected !== fallback.event) {
+        fallback.event = corrected;
+        const stream = this.livePreviewStreams.get(agentId)?.get(type);
+        if (stream?.event.seq === corrected.seq) stream.event = corrected;
+        const latestBoundary = this.livePreviewBoundaries.get(agentId);
+        if (latestBoundary?.event.seq === corrected.seq) latestBoundary.event = corrected;
+      }
+    }
+  }
+  private previewCandidateKey(event: ServerEvent, rendering?: EventRendering): string {
+    if (rendering?.subtype) return `${event.type}\0${rendering.subtype}`;
+    if (rendering) return event.type;
+    // Sidecars may give any event a subtype override. Keep unresolved candidates
+    // independent until that identity arrives, including streamed custom events.
+    return `${event.type}\0seq:${event.seq}`;
+  }
+  private hasFallback(seq: number): boolean {
+    for (const fallbacks of this.livePreviewFallbacks.values())
+      if ([...fallbacks.values()].some(candidate => candidate.event.seq === seq || candidate.lineage?.some(event => event.seq === seq))) return true;
+    return false;
+  }
+  private hasLiveCandidate(agentId: string, seq: number): boolean {
+    return [...(this.livePreviews.get(agentId)?.values() ?? [])].some(candidate => candidate.seq === seq);
+  }
+  private releaseFallback(agentId: string, fallback: LivePreviewFallback): void {
+    const sequences = new Set([fallback.event.seq, ...(fallback.lineage ?? []).map(event => event.seq)]);
+    for (const seq of sequences) if (!this.hasFallback(seq) && !this.hasLiveCandidate(agentId, seq)) this.forgetPreviewRendering(seq);
+  }
+  private forgetPreviewRendering(seq: number, force = false): void {
+    if (!force && this.hasFallback(seq)) return;
+    this.previewRenderings.delete(seq);
+    this.previewSubtypeIds.delete(seq);
+  }
+  private prunePreviewSources(agentId: string): void {
+    const retained = new Set<number>();
+    for (const event of this.livePreviews.get(agentId)?.values() ?? []) retained.add(event.seq);
+    for (const fallback of this.livePreviewFallbacks.get(agentId)?.values() ?? []) {
+      retained.add(fallback.event.seq);
+      for (const event of fallback.lineage ?? []) retained.add(event.seq);
+    }
+    for (const [seq, event] of this.previewSources) if (event.agentId === agentId && !retained.has(seq)) {
+      this.previewSources.delete(seq);
+      this.previewMessageIdentities.delete(seq);
+    }
+  }
+  private previewSubtype(seq: number): string | undefined {
+    for (const fallbacks of this.livePreviewFallbacks.values()) {
+      for (const candidate of fallbacks.values()) if (candidate.event.seq === seq) return candidate.subtype;
+    }
+    return this.previewSubtypeIds.get(seq) ?? this.previewRenderings.get(seq)?.subtype ?? this.renderings.get(seq)?.subtype;
+  }
+  private hasPreviewRendering(seq: number): boolean {
+    if (this.renderings.has(seq) || this.previewRenderings.has(seq)) return true;
+    for (const fallbacks of this.livePreviewFallbacks.values())
+      for (const candidate of fallbacks.values()) if (candidate.event.seq === seq && candidate.rendering) return true;
+    return false;
+  }
   private reconcileLivePreviewFromHistory(agentId: string, type: string): void {
-    const current = this.livePreviews.get(agentId)?.get(type);
     const boundary = this.livePreviewStreams.get(agentId)?.get(type);
+    const candidates = this.livePreviews.get(agentId);
+    const currentEntry = boundary && candidates
+      ? [...candidates].find(([, event]) => event.seq === boundary.event.seq)
+      : undefined;
+    const current = currentEntry?.[1];
     if (!current || !boundary?.streamKind) return;
     const historical = this.historyMessageThrough(agentId, current.seq);
     const provisionalStreamStart = historical?.boundarySeq !== undefined && historical.boundarySeq === historical.startSeq && !historical.boundaryInclusive;
@@ -253,7 +393,15 @@ export class Store extends EventEmitter {
         (boundary.startSeq !== undefined && historicalStart > boundary.startSeq &&
           (historical.boundarySeq === undefined || historical.boundarySeq < boundary.startSeq))) return;
     const candidate = compactPreview(historical.event);
-    this.livePreviews.get(agentId)!.set(type, candidate);
+    const candidateRendering = this.previewRenderings.get(current.seq) ?? this.renderings.get(current.seq);
+    const candidateKey = this.previewCandidateKey(candidate, candidateRendering);
+    const candidateMap = this.livePreviews.get(agentId)!;
+    if (currentEntry![0] !== candidateKey) candidateMap.delete(currentEntry![0]);
+    const displaced = candidateMap.get(candidateKey);
+    if (displaced && displaced.seq !== candidate.seq) this.forgetPreviewRendering(displaced.seq);
+    candidateMap.set(candidateKey, candidate);
+    const fallback = this.livePreviewFallbacks.get(agentId)?.get(type);
+    if (fallback?.event.seq === candidate.seq) fallback.event = candidate;
     const reconciledBoundary = {
       event: candidate, streamKind: historical.streamKind, messageIdentity: historical.messageIdentity, startSeq: historical.startSeq,
       ...(cutoff && { historyCutoff: cutoff.seq, historyCutoffInclusive: cutoff.inclusive }),
@@ -320,13 +468,19 @@ export class Store extends EventEmitter {
     if (!replay && previousBoundary && event.seq <= previousBoundary.event.seq) {
       this.livePreviewNeedsHistory.add(event.agentId);
       if (isStreamedMessage(event)) this.reconcileLivePreviewFromHistory(event.agentId, event.type);
-      else for (const [type, candidate] of this.livePreviews.get(event.agentId) ?? []) {
-        if (candidate.seq > event.seq) this.reconcileLivePreviewFromHistory(event.agentId, type);
+      else for (const candidate of this.livePreviews.get(event.agentId)?.values() ?? []) {
+        if (candidate.seq > event.seq) this.reconcileLivePreviewFromHistory(event.agentId, candidate.type);
       }
       return; // Raw cache rebuild handles late/out-of-order records.
     }
     const candidates = this.livePreviews.get(event.agentId) ?? new Map<string, ServerEvent>();
-    const previous = candidates.get(event.type);
+    const candidateRendering = this.previewRenderings.get(event.seq) ?? this.renderings.get(event.seq);
+    const candidateKey = this.previewCandidateKey(event, candidateRendering);
+    const previousEntry = isStreamedMessage(event) && previousBoundary?.event.type === event.type
+      ? [...candidates].find(([, candidate]) => candidate.seq === previousBoundary.event.seq)
+      : [...candidates].find(([key]) => key === candidateKey);
+    const previousKey = previousEntry?.[0];
+    const previous = previousEntry?.[1];
     const streamKind = isStreamedMessage(event) && !this.renderings.has(event.seq) ? object(event.data).sessionUpdate : undefined;
     let joined: ServerEvent | undefined;
     let historical: HistoricalLivePreviewBoundary | undefined;
@@ -378,6 +532,10 @@ export class Store extends EventEmitter {
       if (shouldReconcileHistory && (historical || !needsHistory || resolvedHistoryBoundary)) this.livePreviewNeedsHistory.delete(event.agentId);
     }
     const candidate = compactPreview(joined ?? event);
+    this.previewSources.set(event.seq, compactPreview(event));
+    const sourceIdentity = messageIdentity(event);
+    if (sourceIdentity) this.previewMessageIdentities.set(event.seq, sourceIdentity);
+    else this.previewMessageIdentities.delete(event.seq);
     const provisionalStreamStart = historical?.boundarySeq !== undefined && historical.boundarySeq === historical.startSeq && !historical.boundaryInclusive;
     const acceptedCutoff = latestHistoryCutoff(
       historyCutoff === undefined ? undefined : { seq: historyCutoff, inclusive: historyCutoffInclusive },
@@ -386,20 +544,63 @@ export class Store extends EventEmitter {
         ? { seq: historical.boundarySeq, inclusive: historical.boundaryInclusive === true }
         : undefined,
     );
-    if (previous) this.previewRenderings.delete(previous.seq);
-    candidates.set(event.type, candidate);
+    if (previous && previousKey === candidateKey && previous.seq !== candidate.seq) this.forgetPreviewRendering(previous.seq);
+    const displaced = candidates.get(candidateKey);
+    if (displaced && displaced.seq !== candidate.seq) this.forgetPreviewRendering(displaced.seq);
+    candidates.set(candidateKey, candidate);
     if (candidates.size > TREE_PREVIEW_TYPES_PER_AGENT) {
       const oldest = [...candidates.entries()].sort((a, b) => a[1].seq - b[1].seq)[0];
       if (oldest) {
-        candidates.delete(oldest[0]); this.previewRenderings.delete(oldest[1].seq);
+        candidates.delete(oldest[0]); this.forgetPreviewRendering(oldest[1].seq);
         const streams = this.livePreviewStreams.get(event.agentId);
-        streams?.delete(oldest[0]);
+        if (streams?.get(oldest[1].type)?.event.seq === oldest[1].seq) streams.delete(oldest[1].type);
         if (!streams?.size) this.livePreviewStreams.delete(event.agentId);
       }
     }
     this.livePreviews.set(event.agentId, candidates);
     const rendering = this.renderings.get(event.seq);
-    if (rendering) this.previewRenderings.set(candidate.seq, this.compactRendering(rendering));
+    if (rendering) {
+      this.previewRenderings.set(candidate.seq, this.compactRendering(rendering));
+      if (rendering.subtype) this.previewSubtypeIds.set(candidate.seq, rendering.subtype);
+    }
+    const fallbacks = this.livePreviewFallbacks.get(event.agentId) ?? new Map<string, LivePreviewFallback>();
+    const previousFallback = fallbacks.get(event.type);
+    const sourceEvent = this.previewSources.get(event.seq)!;
+    const lineage = streamKind
+      ? this.compatibleLiveStream(previousBoundary, event) && !this.hasPreviewRendering(previousBoundary!.event.seq) && previousFallback?.lineage
+        ? [...previousFallback.lineage, sourceEvent]
+        : [sourceEvent]
+      : undefined;
+    if (lineage) {
+      let remainingBytes = TREE_PREVIEW_MESSAGE_BYTES;
+      const contributing: ServerEvent[] = [];
+      for (const source of lineage) {
+        if (remainingBytes <= 0) break;
+        const data = object(source.data), content = object(data.content);
+        if (typeof content.text !== 'string') continue;
+        const contribution = boundedGraphemePrefix(content.text, remainingBytes).text;
+        if (!contribution) continue;
+        contributing.push({ ...source, data: { ...data, content: { ...content, text: contribution } } });
+        remainingBytes -= Buffer.byteLength(contribution);
+      }
+      lineage.splice(0, lineage.length, ...contributing);
+    }
+    fallbacks.set(event.type, {
+      event: candidate,
+      ...(rendering?.subtype && { subtype: rendering.subtype }),
+      ...(rendering && { rendering: this.compactRendering(rendering) }),
+      ...(lineage && { lineage }),
+    });
+    if (fallbacks.size > TREE_PREVIEW_TYPES_PER_AGENT) {
+      const oldest = [...fallbacks.entries()].sort((a, b) => a[1].event.seq - b[1].event.seq)[0];
+      if (oldest) {
+        fallbacks.delete(oldest[0]);
+        this.releaseFallback(event.agentId, oldest[1]);
+      }
+    }
+    if (previousFallback && previousFallback.event.seq !== candidate.seq) this.releaseFallback(event.agentId, previousFallback);
+    this.livePreviewFallbacks.set(event.agentId, fallbacks);
+    this.prunePreviewSources(event.agentId);
     const streams = this.livePreviewStreams.get(event.agentId) ?? new Map<string, LivePreviewBoundary>();
     if (streamKind) {
       streams.set(event.type, {
@@ -419,15 +620,27 @@ export class Store extends EventEmitter {
   }
   get treePreviewBytes(): number {
     let bytes = 0;
-    for (const candidates of this.livePreviews.values()) for (const event of candidates.values()) {
-      bytes += Buffer.byteLength(JSON.stringify(event));
-      const rendering = this.previewRenderings.get(event.seq);
-      if (rendering) bytes += Buffer.byteLength(JSON.stringify(rendering));
+    const counted = new Set<number>();
+    const count = (event: ServerEvent, subtype?: string, rendering?: EventRendering) => {
+      if (counted.has(event.seq)) return;
+      counted.add(event.seq);
+      bytes += Buffer.byteLength(JSON.stringify(event)) + Buffer.byteLength(this.previewSources.get(event.seq)?.data ? JSON.stringify(this.previewSources.get(event.seq)) : '');
+      if (subtype) bytes += Buffer.byteLength(subtype);
+      const retainedRendering = rendering ?? this.previewRenderings.get(event.seq);
+      if (retainedRendering) bytes += Buffer.byteLength(JSON.stringify(retainedRendering));
+    };
+    for (const candidates of this.livePreviews.values()) for (const event of candidates.values()) count(event, this.previewSubtypeIds.get(event.seq));
+    for (const fallbacks of this.livePreviewFallbacks.values()) for (const candidate of fallbacks.values()) {
+      count(candidate.event, candidate.subtype, candidate.rendering);
+      for (const source of candidate.lineage ?? []) count(source, this.previewSubtypeIds.get(source.seq));
     }
     return bytes;
   }
   treeRenderings(): Map<number, EventRendering> {
-    return new Map([...this.renderings, ...this.previewRenderings]);
+    const renderings = new Map([...this.renderings, ...this.previewRenderings]);
+    for (const fallbacks of this.livePreviewFallbacks.values()) for (const candidate of fallbacks.values())
+      if (candidate.rendering) renderings.set(candidate.event.seq, candidate.rendering);
+    return renderings;
   }
   private forget(seq: number): void {
     const entry = this.cache.get(seq);
@@ -492,7 +705,7 @@ export class Store extends EventEmitter {
   reset(): void {
     this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
-    this.livePreviews.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear();
+    this.livePreviews.clear(); this.livePreviewFallbacks.clear(); this.previewSources.clear(); this.previewMessageIdentities.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear(); this.previewSubtypeIds.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
     this.watermark = -1; this.historyCursor = 0; this.historyGap = false;
     this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined; this.activeAnchorSeq = undefined; this.browsingOlder = false;
@@ -516,18 +729,54 @@ export class Store extends EventEmitter {
     this.measure(seq);
     const event = this.events.get(seq);
     if (event && rendering.subtype) this.discovered.add(`${event.type}:${rendering.subtype}`);
-    if (event?.agentId) {
-      const candidates = this.livePreviews.get(event.agentId);
-      if (candidates) for (const [type, candidate] of candidates) if (candidate.seq > seq) {
-        this.livePreviewNeedsHistory.add(event.agentId);
-        this.reconcileLivePreviewFromHistory(event.agentId, type);
+    const affected = new Map<string, Set<string>>();
+    const affect = (agentId: string, type: string) => {
+      const types = affected.get(agentId) ?? new Set<string>();
+      types.add(type); affected.set(agentId, types);
+    };
+    if (event?.agentId) affect(event.agentId, event.type);
+    for (const [agentId, fallbacks] of this.livePreviewFallbacks) for (const [type, fallback] of fallbacks) {
+      const isFallback = fallback.event.seq === seq;
+      const isLineage = fallback.lineage?.some(source => source.seq === seq) === true;
+      if (!isFallback && !isLineage) continue;
+      if (isFallback) {
+        fallback.subtype = rendering.subtype;
+        fallback.rendering = this.compactRendering(rendering);
+      }
+      if (isLineage) {
+        this.previewRenderings.set(seq, this.compactRendering(rendering));
+        if (rendering.subtype) this.previewSubtypeIds.set(seq, rendering.subtype);
+        else this.previewSubtypeIds.delete(seq);
+      }
+      affect(agentId, type);
+    }
+    for (const [agentId, candidates] of this.livePreviews) {
+      const retained = [...candidates].find(([, candidate]) => candidate.seq === seq);
+      if (retained) {
+        this.previewRenderings.set(seq, this.compactRendering(rendering));
+        if (rendering.subtype) this.previewSubtypeIds.set(seq, rendering.subtype);
+        else this.previewSubtypeIds.delete(seq);
+        const [previousKey, candidate] = retained;
+        const nextKey = this.previewCandidateKey(candidate, rendering);
+        if (nextKey !== previousKey) {
+          candidates.delete(previousKey);
+          const existing = candidates.get(nextKey);
+          if (!existing || existing.seq <= candidate.seq) {
+            if (existing && existing.seq !== candidate.seq) this.forgetPreviewRendering(existing.seq);
+            candidates.set(nextKey, candidate);
+          } else this.forgetPreviewRendering(seq);
+        }
+        affect(agentId, candidate.type);
+      }
+      if (event?.agentId === agentId) for (const candidate of candidates.values()) if (candidate.seq > seq) {
+        this.livePreviewNeedsHistory.add(agentId);
+        this.reconcileLivePreviewFromHistory(agentId, candidate.type);
+        affect(agentId, candidate.type);
       }
     }
-    for (const candidates of this.livePreviews.values()) {
-      if ([...candidates.values()].some(candidate => candidate.seq === seq)) {
-        this.previewRenderings.set(seq, this.compactRendering(rendering));
-        break;
-      }
+    for (const [agentId, types] of affected) {
+      for (const type of types) this.reconcileRetainedStreamCandidates(agentId, type, seq);
+      this.prunePreviewSources(agentId);
     }
     this.pruneHistory();
     this.latestDirty = true;
@@ -561,9 +810,17 @@ export class Store extends EventEmitter {
     if (subtype) this.discovered.add(`${event.type}:${subtype}`);
     if (this.watermark >= 0 && stateEvent.seq > this.watermark) this.reduce(stateEvent);
     if (source !== 'history' && source !== 'chat-history') this.rememberLivePreview(stateEvent);
-    else if (event.agentId && this.livePreviews.has(event.agentId)) {
+    else if (event.agentId && (this.livePreviews.has(event.agentId) || this.livePreviewFallbacks.has(event.agentId))) {
       this.livePreviewNeedsHistory.add(event.agentId);
-      for (const [type] of this.livePreviews.get(event.agentId)!) this.reconcileLivePreviewFromHistory(event.agentId, type);
+      const types = new Set([
+        ...[...(this.livePreviews.get(event.agentId)?.values() ?? [])].map(candidate => candidate.type),
+        ...[...(this.livePreviewFallbacks.get(event.agentId)?.keys() ?? [])],
+      ]);
+      for (const type of types) {
+        this.reconcileLivePreviewFromHistory(event.agentId, type);
+        this.reconcileRetainedStreamCandidates(event.agentId, type, event.seq);
+      }
+      this.prunePreviewSources(event.agentId);
     }
     this.pruneLivePreviews();
     this.pruneHistory();
@@ -628,7 +885,8 @@ export class Store extends EventEmitter {
     const summary = (!custom && appendMessageChunk(previous, event)) || event;
     this.lastByAgent.set(event.agentId, summary);
     const types = this.latestByType.get(event.agentId) ?? new Map<string, ServerEvent>();
-    types.set(event.type, summary);
+    const subtype = this.renderings.get(event.seq)?.subtype;
+    types.set(subtype ? `${event.type}\0${subtype}` : event.type, summary);
     this.latestByType.set(event.agentId, types);
   }
   latest(settings: Settings): Map<string, ServerEvent> {
@@ -652,7 +910,17 @@ export class Store extends EventEmitter {
       if (!agent || agent.removedAt !== null) continue;
       for (const event of types.values()) {
         const current = latest.get(agentId);
-        if (settings.visible(event.type, this.renderings.get(event.seq)?.subtype) && event.seq > (this.previewFloors.get(agentId) ?? -1) &&
+        const subtype = this.previewSubtype(event.seq);
+        if (settings.visible(event.type, subtype) && event.seq > (this.previewFloors.get(agentId) ?? -1) &&
+            (event.seq > (current?.seq ?? -1) || (event.seq === current?.seq && isStreamedMessage(event)))) latest.set(agentId, event);
+      }
+    }
+    for (const [agentId, types] of this.livePreviewFallbacks) {
+      const agent = this.agents.get(agentId);
+      if (!agent || agent.removedAt !== null) continue;
+      for (const candidate of types.values()) {
+        const event = candidate.event, current = latest.get(agentId);
+        if (settings.visible(event.type, candidate.subtype) && event.seq > (this.previewFloors.get(agentId) ?? -1) &&
             (event.seq > (current?.seq ?? -1) || (event.seq === current?.seq && isStreamedMessage(event)))) latest.set(agentId, event);
       }
     }

@@ -58,33 +58,45 @@ test('hidden event row color is configurable and persisted from the TUI', async 
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
     else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
   });
-  const tui = terminalClient(mock.path, mock.directory);
   const path = join(mock.directory, 'config.json');
+  const settings = new Settings();
+  settings.colors.selectionFg = 'red';
+  await settings.save(path);
+  const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('connected');
     tui.keys('vt'); await tui.visible('TUI colors');
     tui.keys('\x1b[B'.repeat(Object.keys(COLOR_SETTINGS).length - 1));
     await tui.visible('Hidden event rows: gray');
-    tui.keys('\x1b[C'.repeat(3));
-    await tui.visible('Hidden event rows: red');
+    tui.keys('\x1b[C'.repeat(9));
+    await tui.visible('Hidden event rows: cyan');
     let saved = false;
-    await waitFor(() => { void Settings.load(path).then(settings => { saved = settings.color('hiddenRows') === 'red'; }); return saved; });
+    await waitFor(() => { void Settings.load(path).then(loaded => { saved = loaded.color('hiddenRows') === 'cyan'; }); return saved; });
     tui.keys('\x1b'); await tui.visible('AGENT');
     tui.keys('l'); await tui.visible('Event visibility / rendering levels');
-    tui.keys('\x1b[B'); // Leave agent.created unselected so its row color is visible.
     await tui.visible('agent.created');
-    const rowIndex = tui.screen().split('\n').findIndex(line => line.includes('agent.created'));
-    const column = tui.screen().split('\n')[rowIndex]!.indexOf('agent.created');
-    expect(tui.cell(rowIndex, column)?.getFgColor()).toBe(1);
+    let rowIndex = tui.screen().split('\n').findIndex(line => line.includes('agent.created'));
+    let column = tui.screen().split('\n')[rowIndex]!.indexOf('agent.created');
+    expect(tui.cell(rowIndex, column)?.getFgColor()).toBe(1); // Selection stays red over hidden-row color.
+    tui.keys('\x1b[B'); // Leave agent.created unselected so its hidden-row color is visible.
+    await waitFor(() => {
+      rowIndex = tui.screen().split('\n').findIndex(line => line.includes('agent.created'));
+      column = tui.screen().split('\n')[rowIndex]!.indexOf('agent.created');
+      return tui.cell(rowIndex, column)?.getFgColor() === 6;
+    });
+    expect(tui.cell(rowIndex, column)?.getFgColor()).toBe(6); // Configured cyan.
     const visibleRowIndex = tui.screen().split('\n').findIndex(line => line.includes('agent.message'));
     const visibleColumn = tui.screen().split('\n')[visibleRowIndex]!.indexOf('agent.message');
-    expect(tui.cell(visibleRowIndex, visibleColumn)?.getFgColor()).not.toBe(1);
-    expect((await Settings.load(path)).colors.hiddenRows).toBe('red');
+    expect(tui.cell(visibleRowIndex, visibleColumn)?.getFgColor()).not.toBe(6);
+    expect((await Settings.load(path)).colors.hiddenRows).toBe('cyan');
     tui.keys('\x1b'); await tui.visible('AGENT');
-    tui.keys('vt'); await tui.visible('Hidden event rows: red');
-    const colorRowIndex = tui.screen().split('\n').findIndex(line => line.includes('Hidden event rows: red'));
-    const colorColumn = tui.screen().split('\n')[colorRowIndex]!.indexOf('Hidden event rows: red');
-    expect(tui.cell(colorRowIndex, colorColumn)?.getFgColor()).not.toBe(1);
+    tui.keys('vt'); await tui.visible('Hidden event rows: cyan');
+    const selectedRow = tui.screen().split('\n').findIndex(line => line.includes('Selection background:'));
+    const selectedColumn = tui.screen().split('\n')[selectedRow]!.indexOf('Selection background:');
+    expect(tui.cell(selectedRow, selectedColumn)?.getFgColor()).toBe(1); // Selection color restored in settings.
+    const colorRowIndex = tui.screen().split('\n').findIndex(line => line.includes('Hidden event rows: cyan'));
+    const colorColumn = tui.screen().split('\n')[colorRowIndex]!.indexOf('Hidden event rows: cyan');
+    expect(tui.cell(colorRowIndex, colorColumn)?.getFgColor()).not.toBe(6);
   } finally { await tui.close(); await mock.close(); }
 });
 
