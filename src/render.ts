@@ -124,10 +124,10 @@ export function eventText(event: ServerEvent): string {
       const childNames = Array.isArray(data.childNames) ? data.childNames.map((name: unknown) => typeof name === 'string' ? clean(name).replace(/\s+/g, ' ').trim() : '').filter(Boolean).slice(0, 8) : [];
       const totalChildren = Math.max(childCount, childNames.length);
       if (!childNames.length) return operationCount > 1 ? 'Messages received.' : 'Message received.';
-      if (totalChildren > 1 && childNames.every(name => name === childNames[0])) return `Messages received from ${totalChildren} child agents named ${literalMarkdown(childNames[0]!)}.`;
+      if (totalChildren > 1 && childNames.length === totalChildren && childNames.every(name => name === childNames[0])) return `Messages received from ${totalChildren} child agents named ${literalMarkdown(childNames[0]!)}.`;
       const names = childNames.map(literalMarkdown);
-      const listed = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} and ${names.at(-1)}`;
       const more = Math.max(0, totalChildren - childNames.length);
+      const listed = names.length === 1 ? names[0] : more ? names.join(', ') : `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} and ${names.at(-1)}`;
       const suffix = more ? ` and ${more} more` : '';
       return `${totalChildren === 1 ? 'Message' : 'Messages'} received from ${listed}${suffix}.`;
     }
@@ -169,7 +169,7 @@ function markdown(text: string, width: number, summary = false, colors: RenderCo
     parser = new Marked(markedTerminal({
       width, reflowText: !summary, emoji: false,
       heading: (value: string) => style(`1;${ansiColor(palette.eventHeading!)}`)(value.replace(/^#{1,6}\s+/, '')), firstHeading: (value: string) => style(`1;${ansiColor(palette.eventHeading!)}`)(value.replace(/^#{1,6}\s+/, '')), strong: style('1'),
-      em: style('3'), codespan: (value: string) => style(ansiColor(palette.eventCode!))(value.replace(/^`([\s\S]*)`$/, '$1')), blockquote: style('90'),
+      em: style('3'), codespan: (value: string) => style(ansiColor(palette.eventCode!))(value), blockquote: style('90'),
       link: style(ansiColor(palette.eventLink!)), href: style(`4;${ansiColor(palette.eventLink!)}`),
     }) as unknown as MarkedExtension);
     // Semantic diff colors are local and deterministic, even without FORCE_COLOR/TTY.
@@ -311,7 +311,7 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   const prefixWidth = stringWidth(stripAnsi(prefix));
   const header = level === 3 ? paint(clip(`${event.time} · prompt.queued`, width), 'gray', colors) : '';
   let rows: string[];
-  if (prefix && prefixWidth < width) {
+  if (prefix && prefixWidth < width && (level !== 3 || width - prefixWidth >= 2)) {
     const bodyWidth = Math.max(1, width - prefixWidth);
     const rendered = markdown(body, bodyWidth, false, colors);
     rows = logicalLines(rendered).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'))
@@ -335,11 +335,13 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
   if (event.type === 'prompt.queued') {
     const data = object(event.data), cue = promptCue(event);
-    const text = typeof rendering?.summary === 'string' ? rendering.summary : typeof data.text === 'string' ? data.text : pretty(event.data);
+    const hasSidecar = typeof rendering?.summary === 'string';
+    const text = hasSidecar ? rendering!.summary : typeof data.text === 'string' ? data.text : pretty(event.data);
     const hasCue = !!cue && text.startsWith(`${cue.mention} `);
     const prefix = hasCue ? `${paint(clean(cue!.mention), 'agentTarget', colors)} ` : '';
     const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
-    return clipStyled(prefix + clean(body).replace(/\s+/g, ' ').trim(), width);
+    const summary = hasSidecar ? markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors) : clean(body).replace(/\s+/g, ' ').trim();
+    return clipStyled(prefix + summary, width);
  }
   if (width <= 0) return '';
   const data = object(event.data);

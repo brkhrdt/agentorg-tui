@@ -202,6 +202,8 @@ test('completion lifecycle events render named receipt and review progress', () 
   expect(eventText(multiple)).toBe('Messages received from Coder and Tester.');
   const duplicateNames = event(8, 'completion.ready', { childNames: ['Reviewer', 'Reviewer'], childCount: 2, operationCount: 2 });
   expect(eventText(duplicateNames)).toBe('Messages received from 2 child agents named Reviewer.');
+  const partialNames = event(9, 'completion.ready', { childNames: [...Array(8).fill('Reviewer'), 'Other'], childCount: 9, operationCount: 9 });
+  expect(eventText(partialNames)).toBe('Messages received from Reviewer, Reviewer, Reviewer, Reviewer, Reviewer, Reviewer, Reviewer, Reviewer and 1 more.');
   const started = event(3, 'completion.dispatch_started', { batchId: 'batch' });
   expect(eventText(started)).toBe('Reviewing messages...');
   const renderedStarted = renderEvent(started, 3, 100);

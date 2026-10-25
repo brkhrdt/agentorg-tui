@@ -658,7 +658,9 @@ describe('four rendering levels', () => {
     expect(summary).toContain('\x1b[35m@Root Coordinator\x1b[0m');
     expect(stripAnsi(renderEvent(queued, 2, 80, sidecar))).toContain('Custom extended detail');
     expect(stripAnsi(renderEvent(queued, 3, 80, sidecar))).toContain('Custom full body');
-    expect(stripAnsi(renderTreeEvent(queued, 80, sidecar))).toBe('@Root Coordinator **Custom summary**');
+    const treeSidecar = renderTreeEvent(queued, 80, sidecar);
+    expect(stripAnsi(treeSidecar)).toBe('@Root Coordinator Custom summary');
+    expect(treeSidecar).toContain('\x1b[1mCustom summary\x1b[0m');
     const noCue = { ...sidecar, summary: 'Custom summary without a cue' };
     expect(renderEvent(queued, 1, 80, noCue)).not.toContain('\x1b[35m');
     expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('Custom summary without a cue');
@@ -674,6 +676,13 @@ describe('four rendering levels', () => {
       expect(visible).toContain(body);
       for (const line of full.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(8);
     }
+    const text = '@Parent 界界Z';
+    const queued = event(7, 'prompt.queued', { text, promptCue: { version: 1, bodyStart: '@Parent '.length } });
+    const full = renderEvent(queued, 3, 9, undefined, { agentTarget: 'magenta' });
+    const visible = stripAnsi(full);
+    expect(visible).toContain('@Parent');
+    expect(visible.replace(/\s/g, '')).toContain('界界Z');
+    for (const line of full.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(9);
   });
   test('child prompt chat and tree show only the validated issuer cue', () => {
     const text = '@Root Coordinator # Review the plan';
@@ -706,6 +715,9 @@ describe('four rendering levels', () => {
     expect(rendered).not.toContain(String.fromCharCode(27) + '[33m`tick`' + String.fromCharCode(27) + '[0m');
     expect(stripAnsi(rendered)).toContain('const template = `raw ${value}`;');
     expect(stripAnsi(rendered)).toContain('Escaped `tick` remains literal.');
+    const literalBacktick = renderEvent(event(8, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Double ticks `` `x` `` preserve the literal delimiters.' } }), 3, 80);
+    expect(stripAnsi(literalBacktick)).toContain('`x`');
+    expect(literalBacktick).toContain(String.fromCharCode(27) + '[33m`x`' + String.fromCharCode(27) + '[0m');
   });
   test('inline emphasis and code render inside tight Markdown lists', () => {
     const list = event(5, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '- **Markdown Researcher** found `docs/tui.md`.' } });
