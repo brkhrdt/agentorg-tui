@@ -546,12 +546,16 @@ describe('state and transcripts', () => {
       expect(eventText(store.latest(settings).get('root')!)).toBe('New');
     }
   });
-  test('late acceptance responses cannot regress terminal operations', () => {
+  test('late acceptance responses cannot regress completed or interrupted operations', () => {
     const store = new Store();
     store.install({ seq: 0, agents: [], operations: [] });
     store.ingest(event(1, 'operation.changed', operation('completed')));
     store.putOperation(operation('queued'));
     expect(store.operations.get('op')!.status).toBe('completed');
+    const interrupted = { ...operation('interrupted'), id: 'interrupted-op' };
+    store.ingest(event(2, 'operation.changed', interrupted));
+    store.putOperation({ ...interrupted, status: 'queued' });
+    expect(store.operations.get('interrupted-op')!.status).toBe('interrupted');
   });
   test('truncated and partial lifecycle events request reconciliation', () => {
     const store = new Store(); let refreshes = 0;
@@ -645,16 +649,43 @@ describe('four rendering levels', () => {
     const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
     expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
   });
-  test('child prompt chat labels the issuer and cues the recipient', () => {
+  test('prompt sidecars keep summary/extended/full selection and only accent a validated cue', () => {
+    const text = '@Root Coordinator ignored source';
+    const queued = event(5, 'prompt.queued', { text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } });
+    const sidecar = { rendererId: 'custom.prompt', summary: '@Root Coordinator **Custom summary**', extended: '@Root Coordinator Custom extended detail', full: '@Root Coordinator Custom full body\nsecond line' };
+    const summary = renderEvent(queued, 1, 80, sidecar, { agentTarget: 'magenta' });
+    expect(stripAnsi(summary)).toBe('@Root Coordinator Custom summary');
+    expect(summary).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(stripAnsi(renderEvent(queued, 2, 80, sidecar))).toContain('Custom extended detail');
+    expect(stripAnsi(renderEvent(queued, 3, 80, sidecar))).toContain('Custom full body');
+    expect(stripAnsi(renderTreeEvent(queued, 80, sidecar))).toBe('@Root Coordinator **Custom summary**');
+    const noCue = { ...sidecar, summary: 'Custom summary without a cue' };
+    expect(renderEvent(queued, 1, 80, noCue)).not.toContain('\x1b[35m');
+    expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('Custom summary without a cue');
+  });
+  test('narrow full prompt cues wrap without losing issuer or body, including wide graphemes', () => {
+    for (const mention of ['@Long Parent Name', '@界界界界']) {
+      const body = 'Body remains fully visible after a long cue.';
+      const text = `${mention} ${body}`;
+      const queued = event(6, 'prompt.queued', { text, promptCue: { version: 1, bodyStart: mention.length + 1 } });
+      const full = renderEvent(queued, 3, 8, undefined, { agentTarget: 'magenta' });
+      const visible = stripAnsi(full).replace(/\s+/g, ' ');
+      expect(visible.replace(/\s/g, '')).toContain(mention.replace(/\s/g, ''));
+      expect(visible).toContain(body);
+      for (const line of full.split('\n')) expect(stringWidth(line)).toBeLessThanOrEqual(8);
+    }
+  });
+  test('child prompt chat and tree show only the validated issuer cue', () => {
     const text = '@Root Coordinator # Review the plan';
     const queued = event(4, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } }, { agentId: 'child-id' });
-    const full = renderEvent(queued, 3, 100, undefined, { agentTarget: 'magenta' }, 'Child Reviewer');
-    expect(stripAnsi(full)).toContain('Root Coordinator: @Child Reviewer Review the plan');
-    expect(full).toContain('\x1b[35mRoot Coordinator\x1b[0m');
-    expect(full).toContain('\x1b[35m@Child Reviewer\x1b[0m');
-    const tree = renderTreeEvent(queued, 100, undefined, { agentTarget: 'magenta' }, 'Child Reviewer');
-    expect(stripAnsi(tree)).toBe('Root Coordinator: @Child Reviewer # Review the plan');
-    expect(tree).toContain('\x1b[35mRoot Coordinator\x1b[0m');
+    const full = renderEvent(queued, 3, 100, undefined, { agentTarget: 'magenta' });
+    expect(stripAnsi(full)).toContain('@Root Coordinator Review the plan');
+    expect(stripAnsi(full)).not.toContain('Child Reviewer');
+    expect(full).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    const tree = renderTreeEvent(queued, 100, undefined, { agentTarget: 'magenta' });
+    expect(stripAnsi(tree)).toBe('@Root Coordinator # Review the plan');
+    expect(stripAnsi(tree)).not.toContain('Child Reviewer');
+    expect(tree).toContain('\x1b[35m@Root Coordinator\x1b[0m');
   });
   test('full renders Markdown without dropping text, raw retains the complete wire event', () => {
     const full = renderEvent(message, 3, 80);
@@ -666,6 +697,15 @@ describe('four rendering levels', () => {
     expect(stripAnsi(full)).not.toContain('**bold**');
     expect(stripAnsi(full)).toContain('const x = 1;');
     expect(JSON.parse(renderEvent(message, 4, 1000))).toEqual(message);
+  });
+  test('inline code styling is token-aware, not applied to fenced or escaped backticks', () => {
+    const text = 'Inline `code` remains styled.\n\n```js\nconst template = `raw ${value}`;\n```\n\nEscaped \\`tick\\` remains literal.';
+    const rendered = renderEvent(event(7, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }), 3, 120);
+    expect(rendered).toContain(String.fromCharCode(27) + '[33mcode' + String.fromCharCode(27) + '[0m');
+    expect(rendered).not.toContain(String.fromCharCode(27) + '[33m`raw ${value}`' + String.fromCharCode(27) + '[0m');
+    expect(rendered).not.toContain(String.fromCharCode(27) + '[33m`tick`' + String.fromCharCode(27) + '[0m');
+    expect(stripAnsi(rendered)).toContain('const template = `raw ${value}`;');
+    expect(stripAnsi(rendered)).toContain('Escaped `tick` remains literal.');
   });
   test('inline emphasis and code render inside tight Markdown lists', () => {
     const list = event(5, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '- **Markdown Researcher** found `docs/tui.md`.' } });
@@ -691,6 +731,13 @@ describe('four rendering levels', () => {
     expect(groups).toHaveLength(1);
     expect(eventText(groups[0]!)).toBe('Hello world');
     expect(eventText(a)).toBe('Hello '); // Original records remain intact for raw.
+    const history = new Store();
+    history.ingest(event(20, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'History **bo' } }), 'history');
+    history.ingest(event(21, 'agent.message', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ld** with `code`.' } }), 'history');
+    const historyGroup = chatGroups(history.orderedEvents(), settings)[0]!;
+    const historyRendered = renderEvent(historyGroup, 3, 80);
+    expect(historyRendered).toContain(String.fromCharCode(27) + '[1mbold' + String.fromCharCode(27) + '[0m');
+    expect(historyRendered).toContain(String.fromCharCode(27) + '[33mcode' + String.fromCharCode(27) + '[0m');
     expect(chatGroups([a, { ...b, generation: 'g2' }], settings)).toHaveLength(2);
     settings.excluded.add('prompt.started');
     expect(chatGroups([a, event(3, 'prompt.started'), b], settings)).toHaveLength(2);

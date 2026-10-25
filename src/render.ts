@@ -124,6 +124,7 @@ export function eventText(event: ServerEvent): string {
       const childNames = Array.isArray(data.childNames) ? data.childNames.map((name: unknown) => typeof name === 'string' ? clean(name).replace(/\s+/g, ' ').trim() : '').filter(Boolean).slice(0, 8) : [];
       const totalChildren = Math.max(childCount, childNames.length);
       if (!childNames.length) return operationCount > 1 ? 'Messages received.' : 'Message received.';
+      if (totalChildren > 1 && childNames.every(name => name === childNames[0])) return `Messages received from ${totalChildren} child agents named ${literalMarkdown(childNames[0]!)}.`;
       const names = childNames.map(literalMarkdown);
       const listed = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} and ${names.at(-1)}`;
       const more = Math.max(0, totalChildren - childNames.length);
@@ -194,10 +195,7 @@ function markdown(text: string, width: number, summary = false, colors: RenderCo
   }
   try {
     const parsed = parser.parse(clean(text), { async: false }) as string;
-    // marked-terminal 7 can pass inline-code delimiters through its ANSI callback;
-    // keep source clean in the visible chat while preserving fenced code blocks.
-    const rendered = parsed.replace(/`([^`\n]+)`/g, (_match, code: string) => `\x1b[${ansiColor(palette.eventCode!)}m${code}\x1b[0m`);
-    return summary ? rendered.replace(/\s+/g, ' ').trim() : wrapAnsi(rendered, width, { hard: true, trim: false }).trimEnd();
+    return summary ? parsed.replace(/\s+/g, ' ').trim() : wrapAnsi(parsed, width, { hard: true, trim: false }).trimEnd();
   } catch {
     // Defensive plain-text fallback for genuinely unsupported parser input; the
     // normal Markdown fixture exercises the successful terminal renderer path.
@@ -300,24 +298,32 @@ function promptCue(event: ServerEvent): { mention: string; body: string } | unde
   if (!mention.startsWith('@') || /[\x00-\x1f\x7f-\x9f]/u.test(mention)) return;
   return { mention, body: text.slice(bodyStart) };
 }
-function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: number, colors: RenderColors, targetName?: string): string {
-  const data = object(event.data), text = typeof data.text === 'string' ? data.text : pretty(event.data);
-  const cue = promptCue(event);
-  const mention = cue ? paint(clean(targetName ? `@${targetName}` : cue.mention), 'agentTarget', colors) : '';
-  const parent = cue && targetName ? paint(clean(cue.mention.slice(1)), 'agentTarget', colors) : '';
-  const prefix = cue ? targetName ? `${parent}: ${mention} ` : `${mention} ` : '';
-  const body = cue?.body ?? text;
+function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: number, colors: RenderColors, rendering?: EventRendering): string {
+  const data = object(event.data), cue = promptCue(event);
+  const sidecar = level === 1 ? rendering?.summary : level === 2 ? rendering?.extended : rendering?.full;
+  const text = typeof sidecar === 'string' ? sidecar : typeof data.text === 'string' ? data.text : pretty(event.data);
+  const hasCue = !!cue && text.startsWith(`${cue.mention} `);
+  const mention = hasCue ? paint(clean(cue!.mention), 'agentTarget', colors) : '';
+  const prefix = hasCue ? `${mention} ` : '';
+  const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
   if (level === 1) return clipStyled(prefix + markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors), width);
+
   const prefixWidth = stringWidth(stripAnsi(prefix));
-  const bodyWidth = Math.max(1, width - prefixWidth);
-  const rendered = markdown(body, bodyWidth, false, colors);
-  const lines = logicalLines(rendered);
-  if (level === 3) {
-    const header = paint(clip(`${event.time} · prompt.queued`, width), 'gray', colors);
-    return `${header}\n${lines.map((line, index) => clipStyled((index === 0 ? prefix : prefix ? ' '.repeat(Math.min(prefixWidth, width - 1)) : '') + line, width)).join('\n')}`;
+  const header = level === 3 ? paint(clip(`${event.time} · prompt.queued`, width), 'gray', colors) : '';
+  let rows: string[];
+  if (prefix && prefixWidth < width) {
+    const bodyWidth = Math.max(1, width - prefixWidth);
+    const rendered = markdown(body, bodyWidth, false, colors);
+    rows = logicalLines(rendered).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'))
+      .map((line, index) => `${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`);
+  } else {
+    const cueRows = prefix ? wrapAnsi(prefix, width, { hard: true, trim: false }).split('\n') : [];
+    const rendered = markdown(body, width, false, colors);
+    const bodyRows = logicalLines(rendered).flatMap(line => wrapAnsi(line, width, { hard: true, trim: false }).split('\n'));
+    rows = [...cueRows, ...bodyRows];
   }
-  const rows = lines.flatMap((line, index) => wrapAnsi((index === 0 ? prefix : prefix ? ' '.repeat(Math.min(prefixWidth, width - 1)) : '') + line, width, { hard: true, trim: false }).split('\n'));
-  if (rows.length > 2) rows[1] = clip(rows[1]! + ' …', width);
+  if (level === 3) return `${header}${rows.length ? `\n${rows.map(line => clipStyled(line, width)).join('\n')}` : ''}`;
+  if (rows.length > 2) rows[1] = clipStyled(`${rows[1]} …`, width);
   return rows.slice(0, 2).map(line => clipStyled(line, width)).join('\n');
 }
 function renderCompletionNotice(event: ServerEvent, width: number, colors: RenderColors): string {
@@ -325,14 +331,15 @@ function renderCompletionNotice(event: ServerEvent, width: number, colors: Rende
   const symbol = paint('∴', 'agentTarget', colors, true);
   return clipStyled(`${symbol} ${summary}`, width);
 }
-function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean, targetName?: string): string {
+function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean): string {
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
   if (event.type === 'prompt.queued') {
-    const data = object(event.data), text = typeof data.text === 'string' ? data.text : pretty(event.data), cue = promptCue(event);
-    const mention = cue ? paint(clean(targetName ? `@${targetName}` : cue.mention), 'agentTarget', colors) : '';
-    const parent = cue && targetName ? paint(clean(cue.mention.slice(1)), 'agentTarget', colors) : '';
-    const prefix = cue ? targetName ? `${parent}: ${mention} ` : `${mention} ` : '';
-    return clipStyled(prefix + clean(cue?.body ?? text).replace(/\s+/g, ' ').trim(), width);
+    const data = object(event.data), cue = promptCue(event);
+    const text = typeof rendering?.summary === 'string' ? rendering.summary : typeof data.text === 'string' ? data.text : pretty(event.data);
+    const hasCue = !!cue && text.startsWith(`${cue.mention} `);
+    const prefix = hasCue ? `${paint(clean(cue!.mention), 'agentTarget', colors)} ` : '';
+    const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
+    return clipStyled(prefix + clean(body).replace(/\s+/g, ' ').trim(), width);
  }
   if (width <= 0) return '';
   const data = object(event.data);
@@ -352,13 +359,13 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
   return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
 }
 /** Tree previews keep streamed message beginnings static and right-clip the rest. */
-export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}, targetName?: string): string {
-  return renderTreeEventPreview(event, width, rendering, colors, true, targetName);
+export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
+  return renderTreeEventPreview(event, width, rendering, colors, true);
 }
-export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}, targetName?: string): string {
+export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   width = Math.max(1, width);
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
-  if (event.type === 'prompt.queued') return renderPromptCue(event, level, width, colors, targetName);
+  if (event.type === 'prompt.queued') return renderPromptCue(event, level, width, colors, rendering);
   if (event.type.startsWith('completion.')) {
     const notice = renderCompletionNotice(event, width, colors);
     return level === 3 ? `${paint(clip(event.time, width), 'gray', colors)}\n${notice}` : notice;

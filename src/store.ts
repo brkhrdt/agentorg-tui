@@ -19,7 +19,7 @@ export function appendMessageChunk(previous: ServerEvent | undefined, event: Ser
       typeof data.content?.text !== 'string' || typeof lastData.content?.text !== 'string') return;
   return { ...event, data: { ...data, content: { ...data.content, text: lastData.content.text + data.content.text } } };
 }
-const terminal = (status: string) => ['completed', 'failed', 'stopped'].includes(status);
+const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
 const STREAMED_MESSAGE_KINDS = new Set(['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk']);
 function isStreamedMessage(event: ServerEvent): boolean {
   const data = object(event.data);

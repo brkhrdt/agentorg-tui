@@ -196,7 +196,7 @@ export class UI {
   private chatAnchorLost = false;
   private chatScrollGeneration = 0;
   private adjustingChatViewport = false;
-  private renderedEvents = new Map<number, { event: ServerEvent; rendering?: EventRendering; level: number; width: number; colors: string; budget: number; targetName?: string; text: string }>();
+  private renderedEvents = new Map<number, { event: ServerEvent; rendering?: EventRendering; level: number; width: number; colors: string; budget: number; text: string }>();
   private historyField?: keyof HistorySettings;
 
   constructor(private session: Session, private settings: Settings, private configPath: string) {
@@ -1940,10 +1940,9 @@ export class UI {
         const event = groups[index]!;
         const rendering = store.renderings.get(event.seq);
         const level = this.settings.level(event.type, rendering?.subtype);
-        const targetName = event.type === 'prompt.queued' ? store.agents.get(event.agentId ?? '')?.name : undefined;
         const cached = this.renderedEvents.get(event.seq);
-        let text = cached?.event === event && cached.rendering === rendering && cached.level === level && cached.width === width && cached.colors === colors && cached.budget === available && cached.targetName === targetName ? cached.text :
-          renderEvent(event, level, Math.max(1, width - 1), rendering, this.settings.colors, targetName);
+        let text = cached?.event === event && cached.rendering === rendering && cached.level === level && cached.width === width && cached.colors === colors && cached.budget === available ? cached.text :
+          renderEvent(event, level, Math.max(1, width - 1), rendering, this.settings.colors);
         const textLimit = available - 2;
         if (Buffer.byteLength(text) > textLimit) {
           const suffix = '\n[Display budget reached.]';
@@ -1953,7 +1952,7 @@ export class UI {
         }
         selected.set(index, { event, text }); retained.add(event.seq);
         used += Buffer.byteLength(text) + 2;
-        this.renderedEvents.set(event.seq, { event, rendering, level, width, colors, budget: available, targetName, text });
+        this.renderedEvents.set(event.seq, { event, rendering, level, width, colors, budget: available, text });
         return Buffer.byteLength(text) + 2;
       };
       if (this.follow) {

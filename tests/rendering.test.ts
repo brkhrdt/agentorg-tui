@@ -200,6 +200,8 @@ test('completion lifecycle events render named receipt and review progress', () 
   expect(stripAnsi(renderEvent(ready, 3, 100))).toContain('Message received from Reviewer.');
   const multiple = event(2, 'completion.ready', { childNames: ['Coder', 'Tester'], childCount: 2, operationCount: 2 });
   expect(eventText(multiple)).toBe('Messages received from Coder and Tester.');
+  const duplicateNames = event(8, 'completion.ready', { childNames: ['Reviewer', 'Reviewer'], childCount: 2, operationCount: 2 });
+  expect(eventText(duplicateNames)).toBe('Messages received from 2 child agents named Reviewer.');
   const started = event(3, 'completion.dispatch_started', { batchId: 'batch' });
   expect(eventText(started)).toBe('Reviewing messages...');
   const renderedStarted = renderEvent(started, 3, 100);
