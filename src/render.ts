@@ -41,7 +41,8 @@ const paint = (text: string, color: ColorSetting | 'gray' | '38;5;250', colors: 
 };
 function toolColor(event: ServerEvent, tool?: string, invocationError?: boolean): ColorSetting | 'gray' {
   if (event.type === 'tool.call') return 'toolCall';
-  if (event.type === 'tool.update') return 'toolUpdate';
+  if (event.type === 'tool.update' || event.type === 'completion.dispatch_started') return 'toolUpdate';
+  if (event.type === 'completion.ready') return 'toolSuccess';
   const data = object(event.data), result = object(data.rawOutput);
   const exit = result.structuredContent?.exit_code ?? result.details?.exitCode ?? result.exitCode ??
     ((tool ?? data.toolName ?? data.title) === 'bash' ? textContent(data.rawOutput ?? data.content ?? '').match(/\bexit(?:ed)?(?: with)? (?:code|status):?\s*(-?\d+)/i)?.[1] : undefined);
