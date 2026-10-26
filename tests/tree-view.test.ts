@@ -24,6 +24,19 @@ test('expanding clears nested collapse choices without affecting unrelated branc
   expect(ids(visibleTreeRows(rows, collapsed))).toEqual(['root', 'a', 'a1', 'a1x', 'b', 'b1']);
 });
 
+test('a leaf before a sibling branch is not mistaken for a parent', () => {
+  const siblingTree = [
+    { agent: agent('root'), depth: 0 },
+    { agent: agent('leaf', 'root'), depth: 1 },
+    { agent: agent('branch', 'root'), depth: 1 },
+    { agent: agent('child', 'branch'), depth: 2 },
+  ];
+  const collapsed = new Set<string>();
+  expect(toggleCollapsedBranch(siblingTree, collapsed, 'leaf')).toBe(false);
+  expect([...collapsed]).toEqual([]);
+  expect(ids(visibleTreeRows(siblingTree, collapsed))).toEqual(['root', 'leaf', 'branch', 'child']);
+});
+
 test('leaves, empty and missing IDs are no-ops; live row changes project naturally', () => {
   const collapsed = new Set<string>();
   expect(toggleCollapsedBranch(rows, collapsed, 'a1x')).toBe(false);

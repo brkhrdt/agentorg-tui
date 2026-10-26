@@ -18,7 +18,7 @@ export function toggleCollapsedBranch(rows: readonly TreeRow[], collapsedIds: Se
   const index = rows.findIndex(row => row.agent.id === agentId);
   if (index < 0) return false;
   const row = rows[index]!;
-  const hasChildren = rows.slice(index + 1).some(child => child.depth > row.depth);
+  const hasChildren = rows[index + 1] !== undefined && rows[index + 1]!.depth > row.depth;
   if (!hasChildren) return false;
   if (collapsedIds.has(agentId)) {
     collapsedIds.delete(agentId);
