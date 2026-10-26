@@ -31,7 +31,7 @@ test('prompt composer reserves tree rows, keeps the selected agent visible and r
     expect(expandedSelection).toBeGreaterThanOrEqual(2);
     expect(expandedSelection).toBeLessThan(22);
     expect(tui.cell(expandedSelection, 0)?.getBgColor()).toBe(4);
-    tui.keys('\x1b'); await tui.visible('↑↓ select');
+    tui.keys('\x1b'); await tui.visible('Enter prompt');
     expect(tui.screen()).not.toContain('draft at column zero');
     expect(tui.screen()).not.toContain('─ > ─');
     tui.keys('e'); await tui.visible('Modify agent');

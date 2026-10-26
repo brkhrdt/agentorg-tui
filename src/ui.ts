@@ -2,6 +2,8 @@ import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
+import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
+import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
@@ -97,6 +99,22 @@ export class UI {
   private mentionResults: MentionChoice[] = [];
   private mentionIndex = 0;
   private mentionOpen = false;
+  private composePathSource: PathCompletionSource;
+  private composeSpan?: ComposeSpan;
+  private composeCandidates: PathCandidate[] = [];
+  private composeResultDraft?: string;
+  private composeResultContext?: { recipient: string; cwd: string; sourceId: string };
+  private composeSelection = 0;
+  private composeRequest = 0;
+  private composeLookupKey?: string;
+  private composeTimer?: ReturnType<typeof setTimeout>;
+  private composeInFlight = false;
+  private composeQueued?: { request: number; draft: string; recipient: string; cwd: string; sourceId: string; span: ComposeSpan };
+  private composeDismissed?: string;
+  private composeAcceptedFile?: { recipient: string; start: number; insertion: string };
+  private composeStatus?: string;
+  private composeRecipient?: string;
+  private composeContextStamp = '';
   private composeShift = false;
   private dismissedMention?: string;
   private editorInput = blessed.textbox({
@@ -205,8 +223,9 @@ export class UI {
   private renderedEvents = new Map<number, { event: ServerEvent; rendering?: EventRendering; level: number; width: number; colors: string; budget: number; text: string }>();
   private historyField?: keyof HistorySettings;
 
-  constructor(private session: Session, private settings: Settings, private configPath: string) {
+  constructor(private session: Session, private settings: Settings, private configPath: string, pathSource?: PathCompletionSource) {
     this.session.configureHistory(settings.history);
+    this.composePathSource = pathSource ?? new HostPathCompletionSource(session);
     const itemForeground = this.menu.style.item.fg;
     this.menu.style.item.fg = (item: blessed.Widgets.BlessedElement) => {
       const index = this.menu.getItemIndex(item);
@@ -313,17 +332,33 @@ export class UI {
     }
     const composerListener = this.composer._listener;
     this.composer._listener = function(ch, key) {
-      if (thisUI.mentionOpen && thisUI.mentionResults.length && (key.name === 'up' || key.name === 'down')) {
-        thisUI.mentionIndex = (thisUI.mentionIndex + (key.name === 'down' ? 1 : -1) + thisUI.mentionResults.length) % thisUI.mentionResults.length;
+      const compose = thisUI.view === 'chat' || thisUI.view === 'prompt';
+      if (compose && key.name === 'escape' && (thisUI.mentionOpen || thisUI.composeSpan || thisUI.composeStatus)) {
+        thisUI.dismissComposeCompletion(); return;
+      }
+      const pathActive = compose && thisUI.composeSpan?.kind === 'path';
+      const mentionActive = compose && thisUI.mentionOpen;
+      if ((pathActive && thisUI.composeCandidates.length || mentionActive && thisUI.mentionResults.length) && (key.name === 'up' || key.name === 'down')) {
+        const count = pathActive ? thisUI.composeCandidates.length : thisUI.mentionResults.length;
+        if (pathActive) thisUI.composeSelection = (thisUI.composeSelection + (key.name === 'down' ? 1 : -1) + count) % count;
+        else thisUI.mentionIndex = (thisUI.mentionIndex + (key.name === 'down' ? 1 : -1) + count) % count;
         thisUI.draw(); return;
       }
-      if (thisUI.mentionOpen && thisUI.mentionResults.length && key.name === 'tab') { thisUI.acceptMention(); return; }
-      if (thisUI.mentionOpen && thisUI.mentionResults.length && ch === ' ') thisUI.acceptMention();
+      if (key.name === 'tab' && compose && !key.ctrl && !key.meta) {
+        if (pathActive) { thisUI.acceptComposePath(); return; }
+        if (mentionActive && thisUI.mentionResults.length) { thisUI.acceptMention(); return; }
+        if (thisUI.composeSpan?.kind === 'path') { thisUI.refreshComposeCompletion(); return; }
+      }
+      if ((ch === ' ' || key.name === 'space') && compose && mentionActive) {
+        thisUI.clearMentionCompletion();
+        composerListener.call(this, ' ', key);
+        return;
+      }
       composerListener.call(this, ch, key);
     };
     const thisUI = this;
     this.composer.on('keypress', () => {
-      if (this.view === 'chat' || this.view === 'prompt') setTimeout(() => this.updateMentionCompletion(), 0);
+      if (this.view === 'chat' || this.view === 'prompt') setTimeout(() => { this.updateMentionCompletion(); this.refreshComposeCompletion(); }, 0);
     });
     this.composer.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
       if (this.view !== 'chat') return;
@@ -360,9 +395,10 @@ export class UI {
     });
     this.session.store.on('change', () => {
       if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) this.refreshMentionCompletion();
+      this.checkComposeContext();
       this.scheduleDraw();
     });
-    this.session.on('status', () => this.scheduleDraw());
+    this.session.on('status', () => { this.checkComposeContext(); this.scheduleDraw(); });
     this.session.on('notice', (message: string) => this.showNotice(message));
     this.tree.focus();
     this.draw();
@@ -1464,6 +1500,8 @@ export class UI {
   private currentMentionRecipient(): string | undefined { return this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined; }
   private clearMentionCompletion(): void {
     this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
+    this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+    this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeDismissed = undefined; this.composeAcceptedFile = undefined; this.composeLookupKey = undefined;
     this.mentionPanel.hide();
   }
   private currentMentionResults(query: string): MentionChoice[] {
@@ -1508,6 +1546,122 @@ export class UI {
     this.composer.setValue(replaced);
     this.dismissedMention = choice.token;
     this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide(); this.draw();
+  }
+  private checkComposeContext(): void {
+    if (this.view !== 'chat' && this.view !== 'prompt') return;
+    const recipient = this.currentMentionRecipient(), cwd = recipient ? this.session.store.agents.get(recipient)?.settings.cwd : undefined;
+    const stamp = JSON.stringify([recipient, typeof cwd === 'string' ? cwd : null, this.session.pathCompletion, this.session.status.startsWith('connected')]);
+    if (stamp === this.composeContextStamp) return;
+    this.composeContextStamp = stamp;
+    this.composeAcceptedFile = undefined; this.composeDismissed = undefined; this.composeLookupKey = undefined;
+    if (this.composeSpan || this.composeStatus || this.composeCandidates.length) {
+      this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+      this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined;
+      if (this.session.pathCompletion && this.session.status.startsWith('connected')) this.refreshComposeCompletion();
+    }
+  }
+  private dismissComposeCompletion(): void {
+    if (this.mentionOpen) this.dismissedMention = mentionQuery(this.composer.getValue());
+    if (this.composeSpan || this.composeStatus) this.composeDismissed = this.composeKey(this.composeSpan ?? composeSpan(this.composer.getValue()));
+    this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+    this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
+    this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide();
+    this.draw();
+  }
+  private composeKey(span?: ComposeSpan): string | undefined {
+    const recipient = this.currentMentionRecipient();
+    return recipient && span ? `${recipient}:${span.kind}:${span.start}:${span.query}` : undefined;
+  }
+  private refreshComposeCompletion(): void {
+    if (this.view !== 'chat' && this.view !== 'prompt') return;
+    const value = this.composer.getValue();
+    const recipient = this.currentMentionRecipient();
+    let next: ComposeSpan | undefined;
+    const accepted = this.composeAcceptedFile;
+    if (accepted && accepted.recipient === recipient && value.slice(accepted.start, accepted.start + accepted.insertion.length) === accepted.insertion) {
+      const tailStart = accepted.start + accepted.insertion.length;
+      const tailSpan = composeSpan(value.slice(tailStart));
+      if (tailSpan?.kind === 'path') next = { ...tailSpan, start: tailSpan.start + tailStart };
+      else { this.composeSpan = undefined; this.composeCandidates = []; this.composeStatus = undefined; this.mentionPanel.hide(); return; }
+    } else this.composeAcceptedFile = undefined;
+    next ??= composeSpan(value, this.composeSpan);
+    const mention = mentionQuery(value);
+    if (mention || next?.kind !== 'path' || !recipient) {
+      const wasPath = !!this.composeSpan || !!this.composeStatus;
+      this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+      this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined;
+      this.composeRecipient = recipient; this.composeLookupKey = undefined;
+      if (wasPath) this.mentionPanel.hide();
+      return;
+    }
+    if (!this.session.pathCompletion) {
+      this.composeRequest++; this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
+      return;
+    }
+    const agent = this.session.store.agents.get(recipient);
+    const cwd = agent?.settings.cwd;
+    if (typeof cwd !== 'string' || !cwd.length) {
+      this.composeSpan = next; this.composeCandidates = []; this.composeStatus = 'Recipient cwd unavailable';
+      this.composeRequest++; this.draw(); return;
+    }
+    const key = this.composeKey(next);
+    if (this.composeDismissed && this.composeDismissed !== key) this.composeDismissed = undefined;
+    this.composeSpan = next; this.composeRecipient = recipient;
+    if (this.composeDismissed === key) { this.composeSpan = undefined; this.composeCandidates = []; this.composeStatus = undefined; this.mentionPanel.hide(); return; }
+    const sourceId = this.composePathSource.id;
+    const lookupKey = JSON.stringify([recipient, cwd, sourceId, value, next.query]);
+    if (lookupKey === this.composeLookupKey) return;
+    this.composeLookupKey = lookupKey;
+    const request = ++this.composeRequest, draft = value;
+    this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeSelection = 0; this.composeStatus = 'Loading paths…';
+    if (this.composeTimer) clearTimeout(this.composeTimer);
+    this.composeTimer = setTimeout(() => {
+      this.composeTimer = undefined;
+      this.composeQueued = { request, draft, recipient, cwd, sourceId, span: next };
+      this.drainComposeLookup();
+    }, 75);
+  }
+  private drainComposeLookup(): void {
+    if (this.composeInFlight || !this.composeQueued) return;
+    const lookup = this.composeQueued; this.composeQueued = undefined;
+    const current = () => !this.closing && lookup.request === this.composeRequest && this.composer.getValue() === lookup.draft &&
+      this.currentMentionRecipient() === lookup.recipient && this.session.pathCompletion && this.composePathSource.id === lookup.sourceId &&
+      this.session.store.agents.get(lookup.recipient)?.settings.cwd === lookup.cwd && this.session.status.startsWith('connected');
+    if (!current()) return;
+    this.composeInFlight = true;
+    void this.composePathSource.complete({ recipientId: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }, lookup.span.query).then(entries => {
+      if (!current()) return;
+      // organization.paths already filters/ranks before its bounded limit;
+      // preserve that server order rather than reranking a truncated subset.
+      this.composeCandidates = entries; this.composeResultDraft = lookup.draft; this.composeResultContext = { recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeStatus = this.composeCandidates.length ? undefined : 'No matching paths';
+      this.composeShift = true; this.draw();
+    }).catch(error => {
+      if (!current()) return;
+      this.composeCandidates = []; this.composeStatus = (error as Error).message; this.composeShift = true; this.draw();
+    }).finally(() => {
+      this.composeInFlight = false;
+      this.drainComposeLookup();
+    });
+  }
+  private acceptComposePath(): void {
+    const span = this.composeSpan, item = this.composeCandidates[this.composeSelection];
+    if (!span || !item || !this.session.pathCompletion || this.currentMentionRecipient() !== this.composeRecipient) return;
+    const value = this.composer.getValue(), recipient = this.composeRecipient, context = this.composeResultContext;
+    if (!recipient || !context || value !== this.composeResultDraft || context.recipient !== recipient || context.sourceId !== this.composePathSource.id || this.session.store.agents.get(recipient)?.settings.cwd !== context.cwd) {
+      this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = 'Loading paths…';
+      this.refreshComposeCompletion(); return;
+    }
+    const basename = item.name;
+    const slash = span.query.lastIndexOf('/');
+    const typedPrefix = slash >= 0 ? span.query.slice(0, slash + 1) : '';
+    const insertion = typedPrefix + basename + (item.kind === 'directory' ? '/' : ' ');
+    const nextValue = replaceComposeSpan(value, span, insertion);
+    if (nextValue === undefined) { this.refreshComposeCompletion(); return; }
+    this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+    this.composer.setValue(nextValue); this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined;
+    if (item.kind === 'directory') { this.composeSpan = { kind: 'path', start: span.start, query: nextValue.slice(span.start) }; this.composeDismissed = undefined; this.refreshComposeCompletion(); }
+    else { this.composeSpan = undefined; this.composeAcceptedFile = { recipient: this.composeRecipient!, start: span.start, insertion }; this.composeDismissed = this.composeKey(span); this.mentionPanel.hide(); }
+    this.resizeComposer(); this.draw();
   }
   private resizeComposer(): void {
     if (this.view !== 'prompt' && this.view !== 'chat') return;
@@ -1714,6 +1868,7 @@ export class UI {
     const view = this.view;
     const agentId = view === 'chat' ? this.chatAgent : this.promptAgent;
     if (!agentId || !value.trim()) { this.input.focus(); this.input.readInput(); return; }
+    this.clearMentionCompletion();
     this.sending = true;
     this.draw();
     this.showNotice('Sending interrupting prompt…');
@@ -1727,7 +1882,7 @@ export class UI {
     } catch (error) { this.showNotice((error as Error).message); }
     finally {
       this.sending = false;
-      if (this.view === 'chat' || this.view === 'prompt') { this.input.focus(); this.input.readInput(); }
+      if (this.view === 'chat' || this.view === 'prompt') { this.input.focus(); this.input.readInput(); this.refreshComposeCompletion(); }
       this.draw();
     }
   }
@@ -1736,12 +1891,19 @@ export class UI {
     if (this.closing) return;
     this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
-    if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) {
-      const window = mentionWindow(this.mentionResults, this.mentionIndex, 4);
-      const lines = window.items.map((_choice, index) => clip(`${window.start + index === this.mentionIndex ? '›' : ' '} ${window.items[index]!.token}`, width));
-      this.mentionPanel.setItems(lines);
-      this.mentionPanel.select(this.mentionIndex - window.start);
-      this.mentionPanel.show();
+    if (this.view === 'chat' || this.view === 'prompt') {
+      if (this.mentionOpen) {
+        const window = mentionWindow(this.mentionResults, this.mentionIndex, 4);
+        const lines = window.items.map((_choice, index) => clip(`${window.start + index === this.mentionIndex ? '›' : ' '} ${window.items[index]!.token}`, width));
+        this.mentionPanel.setItems(lines); this.mentionPanel.select(this.mentionIndex - window.start); this.mentionPanel.show();
+      } else if (this.composeSpan?.kind === 'path' && (this.composeCandidates.length || this.composeStatus)) {
+        const window = composeWindow(this.composeCandidates, this.composeSelection, 4);
+        const lines = window.items.map((item, index) => clip(`${window.start + index === this.composeSelection ? '›' : ' '} ${item.name}${item.kind === 'directory' ? '/' : '  [file]'}`, width));
+        this.mentionPanel.setItems(lines.length ? lines : [clip(`  ${this.composeStatus ?? 'No matching paths'}`, width)]);
+        if (lines.length) this.mentionPanel.select(this.composeSelection - window.start);
+        else this.mentionPanel.select(0);
+        this.mentionPanel.show();
+      } else this.mentionPanel.hide();
     } else this.mentionPanel.hide();
     const promptLabel = ' > ';
     this.promptTop.setContent(clip(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`, width));
@@ -1869,7 +2031,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ' Text: Enter interrupt/send  Ctrl+U clear  Esc tree' : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
+      this.footer.setContent(this.view === 'prompt' ? ` Text: Enter send  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+U clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
@@ -2090,7 +2252,7 @@ export class UI {
         } finally { this.adjustingChatViewport = false; }
       }
       this.chatLayout = nextLayout;
-      this.footer.setContent(' Text: Enter interrupt/send  PgUp older  PgDn scroll to latest  Ctrl+Home top  Ctrl+End latest/follow  Ctrl+U clear  Esc tree');
+      this.footer.setContent(` Text: Enter send  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  PgUp older  PgDn latest  C-Home top  C-End follow  Ctrl+U clear`);
     } else if (this.view === 'settings-choice-setup') {
       this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
     } else if (this.view === 'server-field') {
@@ -2100,7 +2262,7 @@ export class UI {
         ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :
         ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
     } else {
-      this.footer.setContent(' Text: Enter interrupt/send (cancels active/queued work)  Ctrl+U clear  Esc cancel');
+      this.footer.setContent(` Text: Enter send (interrupts)  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+U clear`);
     }
     if (this.sending) this.footer.setContent(this.input.visible ? ' Working · Ctrl+C quits · do not retry unknown outcomes' : ' Working · Esc tree  q quit  Ctrl+C quit · do not retry unknown outcomes');
     else if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);
@@ -2111,7 +2273,8 @@ export class UI {
     this.closing = true;
     if (this.drawTimer) clearTimeout(this.drawTimer);
     if (this.pathTimer) clearTimeout(this.pathTimer);
-    ++this.pathRequest;
+    if (this.composeTimer) clearTimeout(this.composeTimer);
+    ++this.pathRequest; ++this.composeRequest;
     this.session.close(); this.screen.destroy();
     void this.saveChain.finally(() => process.exit(0));
   }

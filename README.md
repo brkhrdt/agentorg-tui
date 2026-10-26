@@ -335,7 +335,7 @@ path creates the requested directories recursively. Older servers retain manual 
 If the server's optional `cwd` plugin is enabled, the parent's prefilled cwd is
 only a browsing starting point: choose an existing **strict subdirectory** before
 saving a child. The server still enforces containment (including symlinks).
-Composer/chat path completion is not enabled.
+Chat and prompt composers also use the advertised `pathCompletion` capability and `organization.paths` contract; see [Chat and prompts](#chat-and-prompts).
 
 Modification sends only changed fields and the revision captured when opened.
 On `CONFLICT`, discard and reopen to refresh; it never overwrites automatically.
@@ -509,16 +509,44 @@ Typing `@` in either composer offers the fixed recipient's direct parent and
 nonremoved descendants. Suggestions use names and relative paths (for example,
 `@../parent`, `@child`, or `@child/grandchild`); they do not route the prompt to
 another agent. Type to fuzzy-filter, use ↑/↓ to select, and press Tab to insert
-the selected token or Space to insert it followed by a space. The suggestion
-list appears above the composer, shifting the chat/tree viewport upward. That
-space stays reserved after suggestions close until you leave the compose view.
-Escape retains its existing behavior of returning to the tree without sending.
+the selected token. Space cancels the `@` menu and inserts a literal space; it
+never accepts the selected mention. The suggestion list appears above the
+composer, shifting the chat/tree viewport upward. That space stays reserved
+after suggestions close until you leave the compose view.
+
+A path completion starts at a whitespace boundary only with `./`. Once active,
+ordinary path segments and separators work; `./../` resolves one directory above
+the recipient cwd. Use `.//` for a root-based lookup while keeping a visible
+`./` prefix; it is looked up as `/…`. Use `./~` (or `./~/…`) for the server
+host's home directory, looked up as `~/…`. In both cases the typed prefix is
+preserved on Tab. A bare `/` or `../` does not start completion. Completion
+uses the fixed recipient's configured cwd as the server-side base, and only
+runs when the current server snapshot advertises `pathCompletion: true`; there
+is no local filesystem fallback. It searches the server host filesystem, even
+for agents configured with Podman. Up/down selects and Tab inserts: directories
+receive one `/` and continue completion, while files receive a trailing space
+and close the menu. Enter always sends. Path spaces are literal and are kept in
+the query/insertion; Escape dismisses completion without leaving the draft.
+Because `organization.paths` currently exposes at most five candidates and this
+checkout has no verified hidden-entry request option, hidden entries can only
+be found according to the server's documented behavior (dot-directories when
+the final component starts with `.`). The client does not send speculative
+fields or claim broader hidden-file coverage. Server-side matching, hidden-file
+coverage, and filesystem permissions depend on the server implementation and
+are not verified by this TUI checkout. Future source overrides are an
+extension seam only; no container/Podman path discovery is implemented.
+
+Escape first dismisses an active mention or path completion while preserving
+the draft and focus. With no active completion, Escape returns to the tree.
 
 At the bottom, horizontal rules surround the message input, with **`>`** in the
 upper rule. In both chat and tree prompts, input starts at the terminal's left
 edge, wraps, and grows to keep the draft visible. Once the available terminal
 height is filled, it scrolls vertically to follow the draft's end; sending still
-includes the entire prompt. Resizing the terminal rewraps the draft.
+includes the entire prompt. The current Blessed composer is end-editing only
+(left/right/up/down do not move a logical text cursor), so completion replaces
+the active suffix at the end rather than interpreting terminal-cell positions.
+Resizing the terminal rewraps the draft.
 
 - **Enter** sends the message. Every send explicitly uses `queue: false`: it
   cancels queued prompts and interrupts active work before the new prompt runs.
@@ -526,7 +554,7 @@ includes the entire prompt. Resizing the terminal rewraps the draft.
 - **Page Down / mouse-wheel down** reveal already-appended events. Reaching the actual bottom resumes auto-follow; a no-op Page Down at the bottom (including when the transcript is shorter than the viewport) keeps following. **Ctrl+Home** jumps to the loaded top; **Ctrl+End** explicitly reloads the latest bounded chat window and resumes auto-follow.
 - Sending while scrolled does not force latest or reload chat. Loading older pages and live events use one bounded window rather than accumulating an unlimited backlog; if the visible anchor is evicted, the chat marks the incomplete window and clamps to retained content.
 - **Ctrl+U** clears the draft and collapses the input back to one row.
-- **Escape** returns to the tree without sending the input.
+- **Escape** dismisses an active completion first; otherwise it returns to the tree without sending the input.
 
 Direct API failures and asynchronous prompt failures are shown in the status
 line. Acceptance is not reported as successful execution. Stopped/failed agents
