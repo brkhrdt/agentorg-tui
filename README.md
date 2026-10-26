@@ -505,6 +505,15 @@ The chat header shows the agent's ancestry, separated by `/`. Opening an
 interrupting prompt from the tree keeps the tree visible above the composer;
 its target stays fixed even if live updates change the tree selection.
 
+Typing `@` in either composer offers the fixed recipient's direct parent and
+nonremoved descendants. Suggestions use names and relative paths (for example,
+`@../parent`, `@child`, or `@child/grandchild`); they do not route the prompt to
+another agent. Type to fuzzy-filter, use ↑/↓ to select, and press Tab to insert
+the selected token or Space to insert it followed by a space. The suggestion
+list appears above the composer, shifting the chat/tree viewport upward. That
+space stays reserved after suggestions close until you leave the compose view.
+Escape retains its existing behavior of returning to the tree without sending.
+
 At the bottom, horizontal rules surround the message input, with **`>`** in the
 upper rule. In both chat and tree prompts, input starts at the terminal's left
 edge, wraps, and grows to keep the draft visible. Once the available terminal
