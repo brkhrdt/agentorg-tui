@@ -7,6 +7,7 @@ import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, TABLE_FIELDS, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable } from './table.js';
+import { toggleCollapsedBranch, visibleTreeRows } from './tree-view.js';
 import { genericPreview, rendererPreview, rendererCandidates, rendererSubtypes } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, PODMAN_FIELDS, type AgentField, type ImageScope } from './agent-editor.js';
@@ -145,6 +146,7 @@ export class UI {
   private keyContext?: { view: View; index: number };
   private keyActions: KeyAction[] = [];
   private selectedAgent?: string;
+  private collapsedAgentIds = new Set<string>();
   private editor?: AgentEditor;
   private editorRequest = 0;
   private serverEditor?: ServerSettingsEditor;
@@ -233,10 +235,11 @@ export class UI {
       }
     });
     for (const widget of [this.tree, this.menu, this.details, this.rawView]) {
-      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'S-l', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'up', 'down', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
+      widget.key(['h', '?', 'r', 'x', 'S-r', 'p', 'd', 'c', 's', 'f', 'l', 't', 'v', 'q', 'n', 'e', 'y', 'a', 'i', 'u', '+', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'S-s', 'S-l', 'm', '/', 'S-j', 'b', 'z', 'j', 'space', 'up', 'down', 'left', 'right', 'enter', 'escape', 'tab', 'pageup', 'pagedown', 'home', 'end', 'C-home', 'C-end'], (ch, key) => {
         const binding = key.full === 'C-home' || key.full === 'C-end' ? key.full :
-          ['space', 'up', 'down', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end'].includes(key.name) ? key.name : ch;
+          ['space', 'up', 'down', 'left', 'right', 'enter', 'escape', 'pageup', 'pagedown', 'home', 'end', 'tab'].includes(key.name) ? key.name : ch;
         if (binding === '?') this.openKeys();
+        else if (this.view === 'tree' && binding === 'tab') this.toggleSelectedBranch();
         else if (this.view === 'keys') {
           if (binding === 'escape') this.restoreKeyContext();
           else this.invokeKey(binding === 'enter' ? this.keyActions[this.menuIndex]?.key ?? '' : binding);
@@ -452,6 +455,11 @@ export class UI {
     this.saveSettings(); this.draw();
   }
   private selected(): Agent | undefined { return this.selectedAgent ? this.session.store.agents.get(this.selectedAgent) : undefined; }
+  private toggleSelectedBranch(): void {
+    if (this.view !== 'tree' || !this.selectedAgent) return;
+    const rows = this.session.store.tree();
+    if (toggleCollapsedBranch(rows, this.collapsedAgentIds, this.selectedAgent)) this.draw();
+  }
   private createParent(target = this.selected()): Agent | undefined {
     if (target) return target;
     // Never submit a second root just because selection was temporarily lost
@@ -623,6 +631,7 @@ export class UI {
       action(item.key, item.label, () => { this.menuIndex = index; this.chooseAction(); })
     ).concat([action('enter', 'Choose selected action', choose), back]);
     if (this.view === 'tree') return [
+      action('tab', 'Collapse / expand selected branch', () => this.toggleSelectedBranch()),
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
         action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
@@ -1854,12 +1863,14 @@ export class UI {
       }
       this.footer.setContent(' ↑↓ scroll  PgUp/PgDn page  Home/End top/bottom  j readable/JSON  ? keys  Esc back');
     } else if (this.view === 'tree' || this.view === 'prompt') {
-      this.rows = store.tree();
-      const selectedIndex = Math.max(0, this.rows.findIndex(row => row.agent.id === this.selectedAgent));
+      const allRows = store.tree();
+      this.rows = this.view === 'tree' ? visibleTreeRows(allRows, this.collapsedAgentIds) : allRows;
+      let selectedIndex = this.rows.findIndex(row => row.agent.id === this.selectedAgent);
+      if (selectedIndex < 0) selectedIndex = this.rows.length ? 0 : -1;
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
       const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
       // Blessed lists reserve a scrollbar cell even when it is hidden.
-      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex);
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex, this.view === 'tree' ? this.collapsedAgentIds : undefined);
       this.columns.setContent(header);
       this.updating = true;
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {

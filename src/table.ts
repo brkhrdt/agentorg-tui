@@ -1,6 +1,6 @@
 import stringWidth from 'string-width';
 import type { ServerEvent, EventRendering } from './protocol.js';
-import { cell, clean, renderTreeEvent, styledCell } from './render.js';
+import { cell, clean, clip, renderTreeEvent, styledCell } from './render.js';
 import { ansiColor, resolveColor, type ColorSetting, type TableField } from './settings.js';
 import type { TreeRow } from './store.js';
 
@@ -31,7 +31,7 @@ function value({ agent }: TreeRow, field: TableField): string {
 }
 
 /** Width includes only usable list cells (the caller reserves the scrollbar). */
-export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, fields: readonly TableField[], width: number, renderings: Map<number, EventRendering> = new Map(), colors: Partial<Record<ColorSetting, string>> = {}, selectedIndex = -1) {
+export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, fields: readonly TableField[], width: number, renderings: Map<number, EventRendering> = new Map(), colors: Partial<Record<ColorSetting, string>> = {}, selectedIndex = -1, collapsedIds?: ReadonlySet<string>) {
   width = Math.max(0, Math.floor(width));
   if (!fields.length) return { header: '', items: rows.map(() => ''), widths: [] as number[] };
   const gap = fields.length < 2 ? 0 : Math.max(0, Math.min(2, Math.floor((width - fields.length) / (fields.length - 1))));
@@ -39,7 +39,7 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
   // of recoloring the event preview or making selection invisible.
   const markerWidth = fields.length === 1 && fields[0] === 'event' ? Math.min(2, width) : 0;
   const budget = width - markerWidth - gap * (fields.length - 1);
-  const values = rows.map(row => fields.map(field => value(row, field)));
+  const values = rows.map(row => fields.map(field => field === 'name' && collapsedIds?.has(row.agent.id) ? `${value(row, field)} ▸` : value(row, field)));
   const eventIndex = fields.indexOf('event');
   const widths = fields.map((field, index) => {
     if (field === 'event') return Math.max(LIMITS.event.min, Math.floor(budget * 0.45));
@@ -82,6 +82,12 @@ export function renderTable(rows: TreeRow[], latest: Map<string, ServerEvent>, f
       const cells = fields.map((field, index) => {
         const size = widths[index]!;
         const prefix = index === 0 ? indent(row.depth) : '';
+        if (field === 'name' && collapsedIds?.has(row.agent.id)) {
+          const suffix = size >= 2 ? ' ▸' : '▸';
+          const visiblePrefix = clip(prefix, Math.max(0, size - stringWidth(suffix)));
+          const name = clip(row.agent.name, Math.max(0, size - stringWidth(visiblePrefix) - stringWidth(suffix)));
+          return cell(visiblePrefix + name + suffix, size);
+        }
         if (field !== 'event') return cell(prefix + values[r]![index]!, size);
         const event = latest.get(row.agent.id);
         const preview = event ? renderTreeEvent(event, Math.max(0, size - stringWidth(prefix)), renderings.get(event.seq), colors) : '—';
