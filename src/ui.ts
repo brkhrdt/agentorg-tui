@@ -345,12 +345,17 @@ export class UI {
         thisUI.draw(); return;
       }
       if (key.name === 'tab' && compose && !key.ctrl && !key.meta) {
-        if (pathActive) { thisUI.acceptComposePath(); return; }
-        if (mentionActive && thisUI.mentionResults.length) { thisUI.acceptMention(); return; }
-        if (thisUI.composeSpan?.kind === 'path') { thisUI.refreshComposeCompletion(); return; }
+        const effectiveSpan = thisUI.effectiveComposeSpan(thisUI.composer.getValue());
+        if (effectiveSpan?.kind === 'path') {
+          if (pathActive) thisUI.acceptComposePath();
+          else if (thisUI.composeDismissed !== thisUI.composeKey(effectiveSpan)) thisUI.refreshComposeCompletion();
+          return;
+        }
+        const query = effectiveSpan?.kind === 'mention' ? effectiveSpan.query : undefined;
+        if (query && thisUI.dismissedMention !== query && ((mentionActive && thisUI.mentionResults.length) || thisUI.currentMentionResults(query).length)) { thisUI.acceptMention(); return; }
       }
       if ((ch === ' ' || key.name === 'space') && compose && mentionActive) {
-        thisUI.clearMentionCompletion();
+        thisUI.cancelMentionCompletion();
         composerListener.call(this, ' ', key);
         return;
       }
@@ -1504,6 +1509,27 @@ export class UI {
     this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeDismissed = undefined; this.composeAcceptedFile = undefined; this.composeLookupKey = undefined;
     this.mentionPanel.hide();
   }
+  private cancelMentionCompletion(): void {
+    this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
+    this.mentionPanel.hide();
+  }
+  private effectiveComposeSpan(value: string): ComposeSpan | undefined {
+    const accepted = this.composeAcceptedFile;
+    let span: ComposeSpan | undefined;
+    if (accepted && accepted.recipient === this.currentMentionRecipient() && value.slice(accepted.start, accepted.start + accepted.insertion.length) === accepted.insertion) {
+      const tailStart = accepted.start + accepted.insertion.length;
+      const tail = composeSpan(value.slice(tailStart));
+      span = tail ? { ...tail, start: tail.start + tailStart } : undefined;
+    } else {
+      if (accepted) this.composeAcceptedFile = undefined;
+      span = composeSpan(value, this.composeSpan);
+    }
+    if (!this.session.pathCompletion && span?.kind === 'path') {
+      const query = mentionQuery(value);
+      return query ? { kind: 'mention', start: value.length - query.length, query } : undefined;
+    }
+    return span;
+  }
   private currentMentionResults(query: string): MentionChoice[] {
     const recipient = this.currentMentionRecipient();
     if (!recipient) return [];
@@ -1512,6 +1538,12 @@ export class UI {
     return matchMentionChoices(choices, fuzzyQuery);
   }
   private refreshMentionCompletion(): boolean {
+    if (this.composeSpan?.kind === 'path') {
+      const wasOpen = this.mentionOpen;
+      this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0;
+      this.mentionPanel.hide();
+      return wasOpen;
+    }
     const wasOpen = this.mentionOpen;
     const recipient = this.currentMentionRecipient();
     const query = mentionQuery(this.composer.getValue());
@@ -1576,17 +1608,11 @@ export class UI {
     if (this.view !== 'chat' && this.view !== 'prompt') return;
     const value = this.composer.getValue();
     const recipient = this.currentMentionRecipient();
-    let next: ComposeSpan | undefined;
-    const accepted = this.composeAcceptedFile;
-    if (accepted && accepted.recipient === recipient && value.slice(accepted.start, accepted.start + accepted.insertion.length) === accepted.insertion) {
-      const tailStart = accepted.start + accepted.insertion.length;
-      const tailSpan = composeSpan(value.slice(tailStart));
-      if (tailSpan?.kind === 'path') next = { ...tailSpan, start: tailSpan.start + tailStart };
-      else { this.composeSpan = undefined; this.composeCandidates = []; this.composeStatus = undefined; this.mentionPanel.hide(); return; }
-    } else this.composeAcceptedFile = undefined;
-    next ??= composeSpan(value, this.composeSpan);
-    const mention = mentionQuery(value);
-    if (mention || next?.kind !== 'path' || !recipient) {
+    const next = this.effectiveComposeSpan(value);
+    if (next?.kind === 'path' && this.mentionOpen) {
+      this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide();
+    }
+    if (next?.kind !== 'path' || !recipient) {
       const wasPath = !!this.composeSpan || !!this.composeStatus;
       this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
       this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined;
@@ -1598,16 +1624,19 @@ export class UI {
       this.composeRequest++; this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
       return;
     }
+    const key = this.composeKey(next);
+    if (this.composeDismissed && this.composeDismissed !== key) this.composeDismissed = undefined;
+    this.composeSpan = next; this.composeRecipient = recipient;
+    if (this.composeDismissed === key) {
+      this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+      this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined; this.mentionPanel.hide(); return;
+    }
     const agent = this.session.store.agents.get(recipient);
     const cwd = agent?.settings.cwd;
     if (typeof cwd !== 'string' || !cwd.length) {
       this.composeSpan = next; this.composeCandidates = []; this.composeStatus = 'Recipient cwd unavailable';
       this.composeRequest++; this.draw(); return;
     }
-    const key = this.composeKey(next);
-    if (this.composeDismissed && this.composeDismissed !== key) this.composeDismissed = undefined;
-    this.composeSpan = next; this.composeRecipient = recipient;
-    if (this.composeDismissed === key) { this.composeSpan = undefined; this.composeCandidates = []; this.composeStatus = undefined; this.mentionPanel.hide(); return; }
     const sourceId = this.composePathSource.id;
     const lookupKey = JSON.stringify([recipient, cwd, sourceId, value, next.query]);
     if (lookupKey === this.composeLookupKey) return;
@@ -1653,7 +1682,7 @@ export class UI {
     }
     const basename = item.name;
     const slash = span.query.lastIndexOf('/');
-    const typedPrefix = slash >= 0 ? span.query.slice(0, slash + 1) : '';
+    const typedPrefix = span.query === './~' ? './~/' : slash >= 0 ? span.query.slice(0, slash + 1) : '';
     const insertion = typedPrefix + basename + (item.kind === 'directory' ? '/' : ' ');
     const nextValue = replaceComposeSpan(value, span, insertion);
     if (nextValue === undefined) { this.refreshComposeCompletion(); return; }

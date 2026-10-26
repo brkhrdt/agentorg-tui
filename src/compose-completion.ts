@@ -12,16 +12,16 @@ export function composeSpan(value: string, active?: ComposeSpan): ComposeSpan | 
     const marker = active.query.startsWith('../') ? '../' : active.query.startsWith('./') ? './' : '/';
     if (suffix.startsWith(marker) && !/[\r\n\u0000-\u001f]/u.test(suffix)) return { kind: 'path', start: active.start, query: suffix };
   }
+  // An explicit path trigger owns the remainder of its span, including spaces
+  // and `@`; it must take precedence over an @-word at the end of that path.
+  const match = [...value.matchAll(/(?:^|\s)(\.\/)/gu)].at(-1);
+  if (match && match.index !== undefined) {
+    const start = match.index + match[0].length - match[1].length;
+    const query = value.slice(start);
+    if (query && !/[\r\n\u0000-\u001f]/u.test(query)) return { kind: 'path', start, query };
+  }
   const mention = value.match(/(?:^|\s)(@[\p{L}\p{N}_./-]*)$/u);
   if (mention) return { kind: 'mention', start: value.length - mention[1].length, query: mention[1] };
-  // New paths begin only at a whitespace boundary. A bare slash in a URL or
-  // prose is not a trigger; absolute paths are accepted as complete suffixes.
-  const match = [...value.matchAll(/(?:^|\s)(\.\/)/gu)].at(-1);
-  if (!match || match.index === undefined) return;
-  const start = match.index + match[0].length - match[1].length;
-  const query = value.slice(start);
-  if (!query || /[\r\n\u0000-\u001f]/u.test(query) || query.startsWith('@')) return;
-  return { kind: 'path', start, query };
 }
 
 export function pathLookupInput(query: string): string {
