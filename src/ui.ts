@@ -1,7 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
-import { matchMentionChoices, mentionChoices, mentionQuery, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
+import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
@@ -1473,26 +1473,28 @@ export class UI {
     const fuzzyQuery = query.slice(1).split('/').at(-1) ?? '';
     return matchMentionChoices(choices, fuzzyQuery);
   }
-  private refreshMentionCompletion(): void {
+  private refreshMentionCompletion(): boolean {
+    const wasOpen = this.mentionOpen;
     const recipient = this.currentMentionRecipient();
     const query = mentionQuery(this.composer.getValue());
     if (!recipient || !query) {
       this.dismissedMention = undefined;
-      if (!this.mentionOpen) return;
+      if (!this.mentionOpen) return false;
       this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0;
       this.mentionPanel.hide();
-      return;
+      return true;
     }
-    if (this.dismissedMention === query) return;
+    if (this.dismissedMention === query) return false;
     if (this.dismissedMention) this.dismissedMention = undefined;
     this.mentionResults = this.currentMentionResults(query);
     this.mentionOpen = this.mentionResults.length > 0;
     if (this.mentionOpen) this.composeShift = true;
     this.mentionIndex = Math.min(this.mentionIndex, Math.max(0, this.mentionResults.length - 1));
     if (this.mentionOpen) this.mentionPanel.show(); else this.mentionPanel.hide();
+    return mentionRedrawRequired(wasOpen, this.mentionOpen);
   }
   private updateMentionCompletion(): void {
-    this.refreshMentionCompletion();
+    if (!this.refreshMentionCompletion()) return;
     this.resizeComposer(); this.draw();
   }
   private acceptMention(): void {

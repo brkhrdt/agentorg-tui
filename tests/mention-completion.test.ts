@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { fuzzyNameScore, matchMentionChoices, mentionChoices, mentionQuery, mentionWindow, replaceMentionQuery } from '../src/mention-completion.js';
+import { fuzzyNameScore, matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery } from '../src/mention-completion.js';
 import type { Agent } from '../src/protocol.js';
 
 const agent = (id: string, name: string, parentId: string | null, removedAt: string | null = null): Agent => ({ id, name, parentId, removedAt, state: 'idle', settings: { harness: 'test' }, revision: 1, generation: null });
@@ -15,6 +15,17 @@ describe('compose mentions', () => {
     expect(matchMentionChoices([{ token: '@child/grand', name: 'grand', depth: 1 }, { token: '@child', name: 'child', depth: 0 }], 'ch').map(choice => choice.token)).toEqual(['@child']);
     expect(mentionQuery('send @chi')).toBe('@chi');
     expect(mentionQuery('send @chi now')).toBeUndefined();
+  });
+  test('100 ordinary typing updates cause zero suggestion-panel redraws', () => {
+    let value = '', open = false, redraws = 0;
+    for (const char of 'a'.repeat(100)) {
+      value += char;
+      const wasOpen = open;
+      const query = mentionQuery(value);
+      open = Boolean(query); // Ordinary text has no active @ suffix.
+      if (mentionRedrawRequired(wasOpen, open)) redraws++;
+    }
+    expect(redraws).toBe(0);
   });
   test('active suffix replacement rejects stale queries and the four-row viewport follows selection', () => {
     expect(replaceMentionQuery('hello @chi', '@chi', '@child')).toBe('hello @child');

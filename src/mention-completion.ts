@@ -2,6 +2,9 @@ import type { Agent } from './protocol.js';
 
 export interface MentionChoice { token: string; name: string; depth: number }
 
+/** Full redraws are only needed while a suggestion panel is or was visible. */
+export function mentionRedrawRequired(wasOpen: boolean, isOpen: boolean): boolean { return wasOpen || isOpen; }
+
 /** Parent and descendant mention paths, relative to the recipient. */
 export function mentionChoices(agents: Iterable<Agent>, recipientId: string): MentionChoice[] {
   const byId = new Map([...agents].filter(agent => !agent.removedAt).map(agent => [agent.id, agent]));
