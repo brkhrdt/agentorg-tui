@@ -8,8 +8,22 @@ export interface Agent {
   state: string;
   settings: { model?: string; harness: string; extensions?: Record<string, unknown>; [key: string]: unknown };
   revision: number;
+  /** Absolute usage counters; server snapshots may include self, subtree and reporting views. */
+  usage?: AgentUsage;
   generation: string | null;
   removedAt: string | null;
+  [key: string]: unknown;
+}
+export interface UsageMetrics { [metric: string]: number | UsageMetrics }
+export interface AgentUsage {
+  self?: UsageMetrics;
+  subtree?: UsageMetrics;
+  /** Raw agent.usage event payload fields, retained for protocol evolution. */
+  version?: number;
+  agentId?: string;
+  scope?: string;
+  metrics?: UsageMetrics;
+  reporting?: Record<string, unknown>;
   [key: string]: unknown;
 }
 export interface Operation {

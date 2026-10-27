@@ -5,6 +5,18 @@ import { DEFAULT_HISTORY, historySettings, type HistorySettings, type Settings }
 
 export const object = (value: unknown): Record<string, any> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
+function aggregateUsageMetrics(agents: Iterable<Agent>): Record<string, number> {
+  const totals: Record<string, number> = {};
+  const collect = (metrics: unknown, prefix = '') => {
+    for (const [key, value] of Object.entries(object(metrics))) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (typeof value === 'number' && Number.isFinite(value)) totals[path] = (totals[path] ?? 0) + value;
+      else if (value && typeof value === 'object' && !Array.isArray(value)) collect(value, path);
+    }
+  };
+  for (const agent of agents) collect(object(agent.usage).self);
+  return totals;
+}
 export const truncated = (value: unknown): boolean => {
   const data = object(value);
   return data.truncated === true && typeof data.originalBytes === 'number' && typeof data.preview === 'string';
@@ -849,12 +861,30 @@ export class Store extends EventEmitter {
     this.watermark = Math.max(this.watermark, event.seq);
     if (truncated(data)) { this.emit('refresh'); return; }
     if (event.type === 'operation.changed' && typeof data.id === 'string') this.putOperation(data as Operation);
-    if (!event.agentId) return;
-    const previous = this.agents.get(event.agentId);
+    const agentId = event.agentId ?? (event.type === 'agent.usage' && typeof data.agentId === 'string' ? data.agentId : undefined);
+    if (!agentId) return;
+    const previous = this.agents.get(agentId);
     if (['agent.created', 'agent.modified'].includes(event.type) && typeof data.id === 'string' && data.settings) {
       this.agents.set(data.id, data as Agent);
       // Generation/session can change after allocation/modification.
       this.emit('refresh');
+    } else if (event.type === 'agent.usage' && previous) {
+      const rawUsage = data.usage && typeof data.usage === 'object' ? object(data.usage) : data;
+      const current = object(previous.usage);
+      const metrics = rawUsage.metrics && typeof rawUsage.metrics === 'object' ? object(rawUsage.metrics) : undefined;
+      const scope = rawUsage.scope;
+      const nested = !metrics && ['self', 'subtree'].some(key => Object.hasOwn(rawUsage, key));
+      // Usage event counters are absolute (not deltas). Snapshot-derived views
+      // remain intact unless the event explicitly updates that scope.
+      const nextUsage = nested
+        ? { ...current, ...rawUsage, ...(rawUsage.self && typeof rawUsage.self === 'object' ? { self: rawUsage.self } : {}) }
+        : metrics
+          ? { ...current, [scope === 'subtree' ? 'subtree' : 'self']: metrics,
+            ...(rawUsage.reporting && typeof rawUsage.reporting === 'object' ? { reporting: rawUsage.reporting } : {}) }
+          : { ...current, self: rawUsage };
+      this.agents.set(previous.id, { ...previous, usage: nextUsage });
+      if (scope !== 'subtree') this.recomputeUsageSubtrees(previous.id);
+      this.emit('change');
     } else if (event.type === 'agent.state') {
       if (previous) this.agents.set(previous.id, { ...previous, ...data, generation: event.generation ?? null });
       this.emit('refresh');
@@ -862,6 +892,31 @@ export class Store extends EventEmitter {
       this.agents.set(previous.id, { ...previous, removedAt: data.removedAt });
     } else if (event.type === 'agent.session_replaced' || !previous) {
       this.emit('refresh');
+    }
+  }
+  private recomputeUsageSubtrees(changedAgentId: string): void {
+    const ancestors = new Set<string>();
+    let current = this.agents.get(changedAgentId);
+    while (current && !ancestors.has(current.id)) {
+      ancestors.add(current.id);
+      current = current.parentId ? this.agents.get(current.parentId) : undefined;
+    }
+    const contains = (candidate: Agent, ancestorId: string): boolean => {
+      let cursor: Agent | undefined = candidate;
+      const seen = new Set<string>();
+      while (cursor && !seen.has(cursor.id)) {
+        if (cursor.id === ancestorId) return true;
+        seen.add(cursor.id);
+        cursor = cursor.parentId ? this.agents.get(cursor.parentId) : undefined;
+      }
+      return false;
+    };
+    for (const ancestorId of ancestors) {
+      const ancestor = this.agents.get(ancestorId)!;
+      const descendants = [...this.agents.values()].filter(agent => contains(agent, ancestorId));
+      this.agents.set(ancestorId, { ...ancestor, usage: {
+        ...object(ancestor.usage), subtree: aggregateUsageMetrics(descendants),
+      } });
     }
   }
   putOperation(operation: Operation): void {

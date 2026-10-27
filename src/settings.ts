@@ -4,12 +4,12 @@ import { homedir } from 'node:os';
 
 export type Level = 0 | 1 | 2 | 3 | 4;
 export const LEVEL_NAMES = ['hidden', 'summary', 'extended', 'full', 'raw'] as const;
-export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
+export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTokens', 'cost', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
 export type TableField = typeof TABLE_FIELDS[number];
 export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'model', 'event'];
 export const DEFAULT_LEVELS: Record<string, Level> = {
   'agent.created': 0, 'agent.error': 0, 'agent.modified': 0, 'agent.plan': 0, 'agent.removed': 0,
-  'agent.session_replaced': 0, 'agent.state': 0, 'agent.update': 0, 'operation.changed': 0,
+  'agent.session_replaced': 0, 'agent.state': 0, 'agent.update': 0, 'agent.usage': 0, 'operation.changed': 0,
   'permission.requested': 0, 'permission.resolved': 0, 'plugin.error': 0, 'prompt.cancelling': 0,
   'prompt.finished': 0, 'prompt.started': 0, 'server.ready': 0, 'server.stopped': 0,
   'agent.message': 3,
@@ -70,7 +70,7 @@ export function normalizeTableFields(value: unknown): TableField[] {
 }
 export const EVENT_TYPES = [
   'server.ready', 'server.stopped', 'agent.created', 'agent.state', 'agent.modified',
-  'agent.removed', 'agent.session_replaced', 'agent.error', 'prompt.queued',
+  'agent.removed', 'agent.session_replaced', 'agent.error', 'agent.usage', 'prompt.queued',
   'prompt.started', 'prompt.cancelling', 'prompt.finished', 'operation.changed',
   'agent.message', 'tool.call', 'tool.update', 'tool.result', 'agent.plan',
   'agent.update', 'permission.requested', 'permission.resolved', 'plugin.error',

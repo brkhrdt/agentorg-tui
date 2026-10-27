@@ -16,6 +16,37 @@ describe('state and transcripts', () => {
     store.agents.set('cycle2', agent('cycle2', 'cycle1'));
     expect(store.tree()).toHaveLength(6);
   });
+  test('usage snapshots retain self/subtree/reporting and absolute self updates recompute totals', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root', null, { usage: {
+      self: { 'tokens.input': 10, 'tokens.output': 3, 'metrics.future': 7 }, subtree: { 'tokens.input': 25, 'tokens.output': 9, 'tokens.total': 34, 'cost.total': 0.02, 'metrics.future': 16 }, reporting: { providers: 1 },
+    } })], operations: [] });
+    store.ingest(event(1, 'agent.usage', { version: 1, agentId: 'root', scope: 'self', metrics: { 'tokens.input': 14, 'tokens.output': 6, 'metrics.future': 11 }, reporting: { sources: 2 } }, { agentId: undefined }));
+    expect(store.agents.get('root')!.usage).toEqual({
+      self: { 'tokens.input': 14, 'tokens.output': 6, 'metrics.future': 11 },
+      subtree: { 'tokens.input': 14, 'tokens.output': 6, 'metrics.future': 11 },
+      reporting: { sources: 2 },
+    });
+    const table = stripAnsi(renderTable(store.tree(), store.latest(new Settings()), ['inputTokens', 'outputTokens', 'totalTokens', 'cost'], 90).items[0]!);
+    expect(table).toContain('14');
+    expect(table).toContain('6');
+    expect(table).toContain('-');
+    expect(table).not.toContain('25');
+  });
+  test('absolute self usage recomputes ancestor subtrees including removed descendants', () => {
+    const store = new Store();
+    expect(new Settings().visible('agent.usage')).toBe(false);
+    store.install({ seq: 0, agents: [
+      agent('root', null, { usage: { self: { 'tokens.input': 1, 'cost.total': 0.1 }, subtree: { stale: 999 } } }),
+      agent('child', 'root', { usage: { self: { 'tokens.input': 2, 'tokens.output': 4 } } }),
+      agent('archived', 'child', { removedAt: '2026-01-01', usage: { self: { 'tokens.input': 8, 'tokens.output': 3 } } }),
+    ], operations: [] });
+    store.ingest(event(1, 'agent.usage', { version: 1, agentId: 'child', scope: 'self', metrics: { 'tokens.input': 5, 'tokens.output': 6 } }, { agentId: 'child' }));
+
+    expect(store.agents.get('child')!.usage?.subtree).toEqual({ 'tokens.input': 13, 'tokens.output': 9 });
+    expect(store.agents.get('root')!.usage?.subtree).toEqual({ 'tokens.input': 14, 'tokens.output': 9, 'cost.total': 0.1 });
+    expect(store.tree().map(row => row.agent.id)).toEqual(['root', 'child']); // archived is not a visible row
+  });
   test('snapshot watermark does not discard transcript; buffered events replay after snapshot', () => {
     const store = new Store();
     store.ingest(event(3, 'agent.state', { state: 'running', revision: 1 }));

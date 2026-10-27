@@ -28,7 +28,7 @@ test('terminal table field visibility, ordering, help, reset and persisted prefe
     await client.visible('LATEST TRACKED EVENT');
     client.keys('v\x1b[B\r'); // Table fields follow Colors in the settings menu.
     await client.visible('Table fields / order · client preferences');
-    client.keys('\x1b[B'.repeat(5) + ' '); // Enable Harness.
+    client.keys('\x1b[B'.repeat(11) + ' '); // Enable Harness.
     await client.visible('[x]  5  harness');
     client.keys('\x1b[D'); // Earlier than Event.
     await client.visible('[x]  4  harness');

@@ -6,15 +6,59 @@ import type { TreeRow } from './store.js';
 
 const TABLE_LABELS: Record<TableField, string> = {
   name: 'AGENT', status: 'STATUS', model: 'MODEL', event: 'LATEST TRACKED EVENT',
+  inputTokens: 'IN TOKENS', outputTokens: 'OUT TOKENS', cacheReadTokens: 'CACHE READ', cacheWriteTokens: 'CACHE WRITE', totalTokens: 'TOTAL TOKENS', cost: 'COST',
   error: 'ERROR', harness: 'HARNESS', provider: 'PROVIDER', cwd: 'CWD', session: 'SESSION', revision: 'REVISION',
 };
 // Metadata follows its content up to a cap; Event receives all remaining space.
 const LIMITS: Record<TableField, { min: number; max: number }> = {
   name: { min: 8, max: 28 }, status: { min: 6, max: 12 }, model: { min: 8, max: 30 },
-  event: { min: 12, max: Infinity }, error: { min: 8, max: 32 }, harness: { min: 7, max: 16 },
+  event: { min: 12, max: Infinity }, inputTokens: { min: 6, max: 12 }, outputTokens: { min: 6, max: 12 }, cacheReadTokens: { min: 6, max: 12 }, cacheWriteTokens: { min: 6, max: 12 }, totalTokens: { min: 6, max: 12 }, cost: { min: 6, max: 12 }, error: { min: 8, max: 32 }, harness: { min: 7, max: 16 },
   provider: { min: 8, max: 20 }, cwd: { min: 8, max: 32 }, session: { min: 7, max: 10 }, revision: { min: 8, max: 10 },
 };
 const indent = (depth: number) => '  '.repeat(depth);
+type UsageColumn = 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'totalTokens' | 'cost';
+const normalizeMetricPath = (path: string): string => path.toLowerCase().replace(/[^a-z0-9]/g, '');
+function formatUsageNumber(value: number, currency: boolean): string {
+  const amount = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  const prefix = currency ? '$' : '';
+  if (amount === 0) return `${prefix}0${currency ? '.00' : ''}`;
+  const unit = amount >= 1_000_000 ? 1_000_000 : amount >= 1_000 ? 1_000 : 1;
+  const suffix = unit === 1_000_000 ? 'M' : unit === 1_000 ? 'k' : '';
+  // Significant digits keep tiny costs visible instead of rounding them to 0.00.
+  const formatted = unit > 1
+    ? new Intl.NumberFormat(undefined, { maximumSignificantDigits: 3 }).format(amount / unit)
+    : currency && amount < 0.01
+      ? amount.toLocaleString(undefined, { maximumSignificantDigits: 3, maximumFractionDigits: 12, useGrouping: false })
+      : new Intl.NumberFormat(undefined, { maximumFractionDigits: currency ? 2 : 0 }).format(amount);
+  return `${sign}${prefix}${formatted}${suffix}`;
+}
+const USAGE_ALIASES: Record<UsageColumn, string[]> = {
+  inputTokens: ['tokens.input', 'input', 'inputTokens', 'input_tokens', 'inputTokenCount'],
+  outputTokens: ['tokens.output', 'output', 'outputTokens', 'output_tokens', 'outputTokenCount'],
+  cacheReadTokens: ['tokens.cacheRead', 'tokens.cache_read', 'cacheRead', 'cacheReadTokens', 'cache_read', 'cache_read_tokens', 'cachedInputTokens'],
+  cacheWriteTokens: ['tokens.cacheWrite', 'tokens.cache_write', 'cacheWrite', 'cacheWriteTokens', 'cache_write', 'cache_write_tokens'],
+  totalTokens: ['tokens.total', 'total', 'totalTokens', 'total_tokens', 'tokens'],
+  cost: ['cost.total', 'cost', 'totalCost', 'total_cost', 'usd'],
+};
+function usageValue(usage: unknown, column: UsageColumn): string {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return '-';
+  const subtree = (usage as Record<string, unknown>).subtree;
+  if (!subtree || typeof subtree !== 'object' || Array.isArray(subtree)) return '-';
+  const aliases = new Set(USAGE_ALIASES[column].map(normalizeMetricPath));
+  let value: number | undefined;
+  const visit = (node: unknown, path = ''): void => {
+    if (value !== undefined || !node || typeof node !== 'object' || Array.isArray(node)) return;
+    for (const [name, child] of Object.entries(node as Record<string, unknown>)) {
+      const metricPath = path ? `${path}.${name}` : name;
+      if (typeof child === 'number' && Number.isFinite(child) &&
+          (aliases.has(normalizeMetricPath(metricPath)) || aliases.has(normalizeMetricPath(name)))) { value = child; return; }
+      visit(child, metricPath);
+    }
+  };
+  visit(subtree);
+  return value === undefined ? '-' : formatUsageNumber(value, column === 'cost');
+}
 function value({ agent }: TreeRow, field: TableField): string {
   switch (field) {
     case 'name': return agent.name;
@@ -26,6 +70,8 @@ function value({ agent }: TreeRow, field: TableField): string {
     case 'cwd': return String(agent.settings.cwd ?? '—');
     case 'session': return String(agent.sessionNumber ?? '—');
     case 'revision': return String(agent.revision ?? '—');
+    case 'inputTokens': case 'outputTokens': case 'cacheReadTokens': case 'cacheWriteTokens': case 'totalTokens': case 'cost':
+      return usageValue(agent.usage, field);
     case 'event': return '—'; // Styled previews are rendered only after allocating widths.
   }
 }
