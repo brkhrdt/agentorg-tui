@@ -124,8 +124,14 @@ Rows default to **name, status, model, latest visible event**. Use `v`, then
 `1`–`9` / `0` assigns its position (`0` = 10), and `z` restores defaults. At least
 one field must remain visible. Changes are saved in the client config. The first
 shown field always carries the tree indentation. Available fields include status,
-launch settings, error, session number, and revision. Metadata columns fit their
-contents up to sensible caps; **Event gets the remaining width** and priority
+launch settings, error, session number, revision, and six independent usage fields:
+input, output, cache read, cache write, total tokens, and cost. Usage fields render
+**subtree totals** (self plus all descendants, including removed ones) and can be
+shown/reordered independently; no scope toggle exists. Unsupported or unreported
+metrics render `-`, not zero. Large counts use compact `k`/`M` formatting and cost
+uses `$`; tiny nonzero costs retain significant digits. Core totals are observed
+harness reports, not estimates or a billing guarantee.
+Metadata columns fit their contents up to sensible caps; **Event gets the remaining width** and priority
 when space is tight. Short values such as harness `pi` only need a compact column
 wide enough for the header. Columns recalculate on resize and live updates.
 Hierarchy uses two spaces per level, without connector glyphs. Archived agents
