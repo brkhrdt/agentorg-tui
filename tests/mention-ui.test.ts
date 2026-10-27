@@ -90,7 +90,8 @@ test('buffered query narrowing clamps a prior nonzero selection before accepting
     await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
     tui.keys('@a'); await tui.visible('@Alpha3');
     tui.keys('\x1b[B'.repeat(6));
-    tui.keys('8 '); await new Promise(resolve => setTimeout(resolve, 30));
+    tui.keys('8'); await waitFor(() => tui.screen().includes('@a8'));
+    tui.keys(' '); await new Promise(resolve => setTimeout(resolve, 30));
     expect(tui.screen()).toContain('@Alpha8');
     expect(tui.screen()).not.toContain('@a8');
   } finally { await tui.close(); await mock.close(); }

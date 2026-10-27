@@ -39,6 +39,8 @@ for (const view of ['prompt', 'chat'] as const) {
         await waitFor(() => composerRows(tui).join('') === 'aaaaa' && composerRows(tui).length === 1);
         expect(tui.screen().split('\n')[25]).toStartWith('─ >');
         tui.keys('\x15');
+        await waitFor(() => composerRows(tui).join('') === 'aaaaa');
+        tui.keys('\x03');
         await waitFor(() => composerRows(tui).join('') === '');
         expect(composerRows(tui)).toHaveLength(1);
 

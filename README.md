@@ -525,7 +525,17 @@ includes the entire prompt. Resizing the terminal rewraps the draft.
 - **Page Up / mouse-wheel up** browse older content and pause viewport auto-scroll only; incoming events still join this chat while its position remains anchored. At the loaded top, Page Up (or wheel-up) fetches another older page for this agent.
 - **Page Down / mouse-wheel down** reveal already-appended events. Reaching the actual bottom resumes auto-follow; a no-op Page Down at the bottom (including when the transcript is shorter than the viewport) keeps following. **Ctrl+Home** jumps to the loaded top; **Ctrl+End** explicitly reloads the latest bounded chat window and resumes auto-follow.
 - Sending while scrolled does not force latest or reload chat. Loading older pages and live events use one bounded window rather than accumulating an unlimited backlog; if the visible anchor is evicted, the chat marks the incomplete window and clamps to retained content.
-- **Ctrl+U** clears the draft and collapses the input back to one row.
+- **Ctrl+C** clears only the current compose draft, closes mention suggestions,
+  and collapses the input back to one row; it does not quit from a composer.
+  Ctrl+U is not a composer editing command. Non-compose Ctrl+C still quits.
+- Drafts are memory-only and isolated per stable chat agent ID. Tree prompts
+  share one separate draft; reopening it targets the newly selected agent.
+  Escape and navigation preserve exact text (including whitespace and Unicode),
+  while a fresh client starts empty.
+- An accepted send clears only its own draft. Rejected, disconnected, or
+  unknown-outcome sends retain text for an explicit retry; the client never
+  retries automatically. Later execution failures do not restore accepted
+  text. Empty or whitespace-only input is not sent.
 - **Escape** returns to the tree without sending the input.
 
 Direct API failures and asynchronous prompt failures are shown in the status
