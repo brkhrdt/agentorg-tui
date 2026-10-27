@@ -22,7 +22,12 @@ export function terminalClient(socket: string, directory: string, { cols = 120, 
       catch { throw new Error(`Missing ${text}; exit=${child.exitCode}\n${screen()}`); }
     },
     async close() {
-      keys('\x03');
+      // Ctrl-C clears drafts in composers now; leave composition before quitting.
+      if (screen().includes('─ >')) {
+        keys('\x1b');
+        await new Promise(resolve => setTimeout(resolve, 50));
+        keys('q');
+      } else keys('\x03');
       await waitFor(() => child.exitCode !== null || child.signalCode !== null, 3000).catch(() => child.kill('SIGTERM'));
       terminal.dispose();
     },

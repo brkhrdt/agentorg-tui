@@ -8,7 +8,7 @@
     "start": "bun src/main.ts",
     "bench:probe": "bun scripts/bench-probe.ts",
     "build": "bun scripts/build.ts",
-    "test:binary": "bun run build && ORG_TUI_BINARY=./dist/org-tui bun test tests/ui.test.ts tests/rendering.test.ts tests/layout-ui.test.ts tests/prompt-ui.test.ts",
+    "test:binary": "bun run build && ORG_TUI_BINARY=./dist/org-tui bun test tests/ui.test.ts tests/rendering.test.ts tests/layout-ui.test.ts tests/prompt-ui.test.ts tests/compose-drafts-ui.test.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

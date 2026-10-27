@@ -136,6 +136,8 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
     keys('c'); await visible('Chat · coordinator / worker');
     await visible('"sessionUpdate": "agent_message_chunk"');
     await visible('"text": "Live worker answer"');
+    expect(screen()).toContain('q?e');
+    keys('\x03'); await new Promise(resolve => setTimeout(resolve, 50));
     keys('chat message\r');
     await waitFor(() => prompts.length === 2);
     expect(prompts[1]).toEqual({ agentId: 'worker', text: 'chat message', queue: false });
