@@ -57,7 +57,7 @@ test('collapsed branch marker follows the agent name and survives name clipping'
 
 test('six independent usage columns show subtree totals and dash for missing metrics', () => {
   const row = [{ agent: agent('worker', null, { usage: {
-    self: { 'tokens.input': 2 }, subtree: { 'tokens.input': 1200, 'tokens.output': 4, 'tokens.cacheRead': 3, 'tokens.cacheWrite': 5, 'tokens.total': 1_200_000, 'cost.total': 0.00000123 },
+    self: { 'tokens.input': 2 }, subtree: { 'tokens.input': 1200, 'tokens.output': 4, 'tokens.cacheRead': 3, 'tokens.cacheWrite': 5, 'tokens.total': 1_200_000, 'cost.usd': 0.00000123 },
   } }), depth: 0 }];
   const fields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTokens', 'cost'] as const;
   const table = renderTable(row, new Map(), fields, 140);

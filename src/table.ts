@@ -39,7 +39,7 @@ const USAGE_ALIASES: Record<UsageColumn, string[]> = {
   cacheReadTokens: ['tokens.cacheRead', 'tokens.cache_read', 'cacheRead', 'cacheReadTokens', 'cache_read', 'cache_read_tokens', 'cachedInputTokens'],
   cacheWriteTokens: ['tokens.cacheWrite', 'tokens.cache_write', 'cacheWrite', 'cacheWriteTokens', 'cache_write', 'cache_write_tokens'],
   totalTokens: ['tokens.total', 'total', 'totalTokens', 'total_tokens', 'tokens'],
-  cost: ['cost.total', 'cost', 'totalCost', 'total_cost', 'usd'],
+  cost: ['cost.usd', 'cost.total', 'cost', 'totalCost', 'total_cost', 'usd'],
 };
 function usageValue(usage: unknown, column: UsageColumn): string {
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return '-';
