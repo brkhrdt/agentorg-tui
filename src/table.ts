@@ -28,9 +28,9 @@ function formatUsageNumber(value: number, currency: boolean): string {
   // Significant digits keep tiny costs visible instead of rounding them to 0.00.
   const formatted = unit > 1
     ? new Intl.NumberFormat(undefined, { maximumSignificantDigits: 3 }).format(amount / unit)
-    : currency && amount < 0.01
+    : currency
       ? amount.toLocaleString(undefined, { maximumSignificantDigits: 3, maximumFractionDigits: 12, useGrouping: false })
-      : new Intl.NumberFormat(undefined, { maximumFractionDigits: currency ? 2 : 0 }).format(amount);
+      : new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(amount);
   return `${sign}${prefix}${formatted}${suffix}`;
 }
 const USAGE_ALIASES: Record<UsageColumn, string[]> = {

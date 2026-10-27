@@ -72,11 +72,13 @@ test('six independent usage columns show subtree totals and dash for missing met
   expect(renderTable([{ agent: agent('empty'), depth: 0 }], new Map(), fields, 140).items[0]).toContain('-');
 });
 
-test('usage numbers retain tiny costs, add currency, and compact large counts', () => {
+test('usage numbers retain reported cost precision, add currency, and compact large counts', () => {
   const usage = { subtree: { 'tokens.input': 1_234, 'cost.total': 0.00000001 } };
   const table = renderTable([{ agent: agent('worker', null, { usage }), depth: 0 }], new Map(), ['inputTokens', 'cost'], 50);
   expect(table.items[0]).toContain('1.23k');
   expect(table.items[0]).toContain('$0.00000001');
+  const reportedCost = renderTable([{ agent: agent('worker', null, { usage: { subtree: { 'cost.usd': 0.0246 } } }), depth: 0 }], new Map(), ['cost'], 20);
+  expect(reportedCost.items[0]).toContain('$0.0246');
   expect(renderTable([{ agent: agent('worker', null, { usage: { subtree: { cost: 0 } } }), depth: 0 }], new Map(), ['cost'], 20).items[0]).toContain('$0.00');
 });
 
