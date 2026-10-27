@@ -30,6 +30,37 @@ test('Tab accepts once; deferred completion does not reopen or replace the accep
   } finally { await tui.close(); await mock.close(); }
 });
 
+test('Space cancels @ completion and inserts a literal space without accepting the selection', async () => {
+  const prompts: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root' }), agent('beta', 'root', { name: 'Beta' })], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') { prompts.push(request.params); respond(socket, request.id, operation('completed')); }
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+  try {
+    await tui.visible('Root'); tui.keys('c'); await tui.visible('Chat · Root');
+    tui.keys('@be'); await tui.visible('@Beta');
+    tui.keys(' '); await new Promise(resolve => setTimeout(resolve, 30));
+    expect(tui.screen()).not.toContain('› @Beta');
+    tui.keys('\r'); await waitFor(() => prompts.length === 1);
+    expect(prompts[0].text).toBe('@be ');
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('first Escape dismisses an @ menu without leaving compose; second Escape returns to tree', async () => {
+  const mock = await mentionServer(['Beta']);
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+  try {
+    await tui.visible('Root'); tui.keys('c'); await tui.visible('Chat · Root');
+    tui.keys('@be'); await tui.visible('@Beta');
+    tui.keys('\x1b'); await new Promise(resolve => setTimeout(resolve, 20));
+    expect(tui.screen()).toContain('Chat · Root');
+    expect(tui.screen()).toContain('@be');
+    tui.keys('\x1b'); await tui.visible('AGENT');
+  } finally { await tui.close(); await mock.close(); }
+});
+
 test('acceptance recomputes the active query when typed characters and Tab are buffered together', async () => {
   const mock = await mentionServer(['Beta']);
   const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
@@ -89,8 +120,8 @@ test('buffered query narrowing clamps a prior nonzero selection before accepting
   try {
     await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
     tui.keys('@a'); await tui.visible('@Alpha3');
-    tui.keys('\x1b[B'.repeat(6));
-    tui.keys('8 '); await new Promise(resolve => setTimeout(resolve, 30));
+    tui.keys('\x1b[B'.repeat(6)); await tui.visible('› @Alpha6');
+    tui.keys('8\t'); await new Promise(resolve => setTimeout(resolve, 30));
     expect(tui.screen()).toContain('@Alpha8');
     expect(tui.screen()).not.toContain('@a8');
   } finally { await tui.close(); await mock.close(); }

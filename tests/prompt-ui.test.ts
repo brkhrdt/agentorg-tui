@@ -53,7 +53,9 @@ for (const view of ['prompt', 'chat'] as const) {
         if (view === 'chat') {
           await waitFor(() => composerRows(tui).length === 1 && composerRows(tui)[0] === '');
         } else {
-          await tui.visible('↑↓ select');
+          // The footer hint is already visible while the prompt is still sending,
+          // so wait for the composer itself to disappear after the response.
+          await waitFor(() => !tui.screen().includes('─ >'));
           expect(tui.screen()).not.toContain('─ >');
         }
       } finally { await tui.close(); await mock.close(); }

@@ -158,8 +158,16 @@ export class Session extends EventEmitter {
     return result.volumes;
   }
   async completePath(input: string, base: string, kind: 'directory' | 'any' = 'directory', create = false): Promise<PathCompletion> {
-    if (!this.client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
-    return this.client.request<PathCompletion>('organization.paths', { input, base, kind, limit: 5, ...(create && { create: true }) });
+    const client = this.client;
+    if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+    const result = await client.request<unknown>('organization.paths', { input, base, kind, limit: 5, ...(create && { create: true }) });
+    if (client !== this.client || this.stopped || !this.status.startsWith('connected')) throw new Error('Server connection changed; retry path completion');
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid path completion response');
+    const value = result as PathCompletion;
+    const safe = (text: unknown) => typeof text === 'string' && text.length > 0 && !/[\u0000-\u001f\u007f]/u.test(text);
+    if (typeof value.path !== 'string' || /[\u0000-\u001f\u007f]/u.test(value.path) || typeof value.isDirectory !== 'boolean' || !Array.isArray(value.entries) || value.entries.length > 5 || value.entries.some(entry =>
+      !entry || !safe(entry.name) || !safe(entry.path) || (entry.kind !== 'directory' && entry.kind !== 'file'))) throw new Error('Invalid path completion response');
+    return value;
   }
   async agentChoices(field: 'provider' | 'model', values: Record<string, string>): Promise<{ value: string; label: string }[]> {
     const client = this.client;
