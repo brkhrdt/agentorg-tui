@@ -82,6 +82,15 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
     await visible('q?e');
     expect(exited).toBe(false);
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
+    keys('\x1b[A'); await waitFor(() => selectedBg(2) === 4);
+    keys('\t'); await waitFor(() => !screen().split('\n').some(row => row.startsWith('  worker')));
+    keys('c'); await visible('Chat · coordinator');
+    keys('\x1b'); await waitFor(() => !screen().split('\n').some(row => row.startsWith('  worker')));
+    keys('\r'); await visible('Interrupting prompt · coordinator');
+    expect(screen().split('\n').some(row => row.startsWith('  worker'))).toBe(true);
+    keys('\x1b'); await waitFor(() => !screen().split('\n').some(row => row.startsWith('  worker')));
+    keys('\t'); await waitFor(() => screen().split('\n').some(row => row.startsWith('  worker')));
+    keys('\x1b[B'); await waitFor(() => selectedBg(3) === 4);
     keys('\r');
     await visible('Interrupting prompt · worker');
     expect(screen()).toContain('  worker');

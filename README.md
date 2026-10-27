@@ -93,7 +93,8 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 
 | Key | Action |
 | --- | --- |
-| ↑ / ↓ | Select an agent (metadata highlighted; configurable colors) |
+| ↑ / ↓ | Select a visible agent (metadata highlighted; configurable colors) |
+| Tab | Collapse / expand the selected agent's branch (when it has children) |
 | Enter | Open an interrupting prompt for the selected agent |
 | c | Open the selected agent's chat |
 | z | Open the selected agent's raw events from currently loaded chat history |
@@ -104,6 +105,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | l | Open event visibility / rendering level selector |
 | n | Create a root in an empty organization, otherwise a child of the selected agent |
 | e | Modify the selected agent |
+
 | Skills field | In the ordinary `n` create / `e` modify form when the server advertises the skills plugin |
 | v, then s | Organization / plugin server settings (when supported) |
 | v, then t | Configure TUI colors (client only) |
@@ -111,6 +113,11 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | v, then l | Configure event visibility / rendering levels |
 | v, then h | Configure history cache limits and idle expiry (client only) |
 | q / Ctrl+C | Quit the client, leaving server work running |
+
+Collapsing hides every descendant; expanding restores the branch, including nested
+branches. Collapse choices are local to this TUI instance, survive chat and Escape,
+and reset when the TUI is reopened. In the prompt composer, Tab remains reserved
+for mention completion and does not collapse the tree.
 
 Rows default to **name, status, model, latest visible event**. Use `v`, then
 `b` to choose visible table fields: Space toggles a field, Left/Right moves it,

@@ -12,8 +12,8 @@ Usage: org-tui [--socket PATH] [--config PATH] [--no-history]
   --no-history   Skip startup history; chat can still load history on demand
   -h, --help     Show help
 
-Tree: ↑↓ select, Enter interrupting prompt, c chat, v l visibility / rendering levels, q quit.
-Chat: Enter sends an interrupting message; Escape returns to the tree.
+Tree: ↑↓ select, Tab collapse/expand branch, Enter interrupting prompt, c chat, v l visibility / rendering levels, q quit.
+Chat: Enter sends an interrupting message; Escape returns to the tree. Prompt composer Tab completes mentions; tree Tab collapses/expands branches.
 `;
 async function main(): Promise<void> {
   let socket = process.env.ORG_SOCKET ?? '.org/server.sock';

@@ -36,6 +36,25 @@ test('metadata follows content and Event gets remaining space', () => {
   expect(stripAnsi(table.items[0]!)).toContain('Reading files and reviewing the changes');
 });
 
+test('collapsed branch marker follows the agent name and survives name clipping', () => {
+  const collapsed = new Set(['coordinator']);
+  const normal = renderTable(rows, latest, ['name', 'event'], 30);
+  const marked = renderTable(rows, latest, ['name', 'event'], 30, new Map(), {}, 0, collapsed);
+  const name = stripAnsi(marked.items[0]!).slice(0, marked.widths[0]);
+  expect(name.trimEnd()).toBe('coordinator ▸');
+  expect(marked.items[0]).not.toStartWith('▸');
+  expect(marked.widths[1]).toBe(normal.widths[1]! - 2);
+  const longRows = [{ agent: agent('a very long agent name'), depth: 0 }];
+  const clipped = stripAnsi(renderTable(longRows, new Map(), ['name'], 10, new Map(), {}, -1, new Set([longRows[0]!.agent.id])).items[0]!);
+  expect(clipped).toEndWith(' ▸');
+  const tiny = renderTable([{ agent: agent('narrow'), depth: 5 }], new Map(), ['name'], 1, new Map(), {}, -1, new Set(['narrow']));
+  expect(stripAnsi(tiny.items[0]!)).toBe('▸');
+  for (let width = 0; width <= 30; width++) {
+    const table = renderTable(rows, latest, ['name', 'event'], width, new Map(), {}, 0, collapsed);
+    for (const line of [table.header, ...table.items]) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+  }
+});
+
 test('tree hierarchy uses whitespace indentation', () => {
   const nested = [
     { agent: agent('root'), depth: 0 },
