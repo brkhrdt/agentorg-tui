@@ -257,55 +257,70 @@ function label(event: ServerEvent): string {
 }
 /** Render AgentOrg delegated prompt text with a bounded summary/detail and complete Markdown view. */
 function renderAgentPrompt(event: ServerEvent, level: Exclude<Level, 4>, width: number, rendering: EventRendering, colors: RenderColors): string {
-  const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
   const targetText = rendering.toolTarget ? clean(rendering.toolTarget) : '';
-  const target = targetText ? paint(targetText, 'agentTarget', colors) : '';
-  // Keep a very long recipient from taking the entire prompt column. The target
-  // may be abbreviated, but prompt text always gets the remaining width.
-  const prefixBudget = Math.min(Math.max(0, width - 1), Math.floor(width * 0.4));
-  const targetBudget = Math.max(0, prefixBudget - stringWidth(stripAnsi(symbol)) - 2);
-  const visibleTarget = target && targetBudget > 0 ? clipStyled(target, targetBudget) : '';
   const prompt = rendering.toolPrompt ?? (targetText && rendering.summary.startsWith(targetText) ? rendering.summary.slice(targetText.length).trimStart() : rendering.summary);
-  let prefix = `${symbol}${visibleTarget ? ` ${visibleTarget}` : ''} `;
-  let prefixWidth = stringWidth(stripAnsi(prefix));
-  let bodyWidth = Math.max(1, width - prefixWidth);
-  // At tiny widths the decoration can leave less room than a wide glyph needs;
-  // full mode must never clip away prompt characters to preserve a marker.
-  if (level === 3 && bodyWidth < 2) {
-    prefix = '';
-    prefixWidth = 0;
-    bodyWidth = width;
+  const sender = rendering.toolSender ? clean(rendering.toolSender) : '';
+  if (!sender || !targetText) {
+    const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
+    const budget = Math.max(0, Math.floor(width * 0.4) - stringWidth(stripAnsi(symbol)) - 2);
+    const visibleTarget = targetText ? clipStyled(paint(targetText, 'agentTarget', colors), budget) : '';
+    const prefix = `${symbol}${visibleTarget ? ` ${visibleTarget}` : ''} `;
+    const prefixWidth = stringWidth(stripAnsi(prefix));
+    const bodyWidth = level === 3 && width - prefixWidth < 2 ? width : Math.max(1, width - prefixWidth);
+    const visiblePrefix = bodyWidth === width ? '' : prefix;
+    if (level === 1) return clipStyled(visiblePrefix + markdown(prompt.replace(/\s+/g, ' ').trim(), bodyWidth, true, colors), width);
+    const formatted = markdown(prompt, bodyWidth, false, colors);
+    const bodyRows = logicalLines(formatted).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
+    const rows = bodyRows.map((line, i) => clipStyled((i === 0 ? visiblePrefix : '') + line, width));
+    if (level === 3) return rows.join('\n');
+    if (rows.length <= 2) return rows.join('\n');
+    return [rows[0]!, clipStyled(`${clip(stripAnsi(rows[1]!), width - 2)} …`, width)].join('\n');
   }
-  if (level === 1) return clipStyled(prefix + markdown(prompt.replace(/\s+/g, ' ').trim(), bodyWidth, true, colors), width);
-  const formatted = markdown(prompt, bodyWidth, false, colors);
-  const bodyRows = logicalLines(formatted).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
-  const rows = bodyRows.map((line, index) => clipStyled((index === 0 ? prefix : '') + line, width));
-  if (level === 3) return rows.join('\n');
-  if (rows.length <= 2) return rows.join('\n');
-  const tailWidth = Math.max(1, width - stringWidth(' …'));
-  const tail = wrapAnsi(rows[1]!, tailWidth, { hard: true, trim: false }).split('\n')[0]!;
-  return [rows[0]!, clipStyled(`${tail} …`, width)].join('\n');
+  const prefix = `${paint(`${sender}: `, 'agentTarget', colors)}${paint(targetText, 'agentTarget', colors)} `;
+  return formatAttributed(prefix, prompt, level, width, colors);
+}
+function formatAttributed(prefix: string, body: string, level: Exclude<Level, 4>, width: number, colors: RenderColors): string {
+  const prefixWidth = stringWidth(stripAnsi(prefix));
+  const separate = prefixWidth >= width - 1;
+  const bodyWidth = separate ? width : Math.max(1, width - prefixWidth);
+  const prefixRows = separate ? wrapAnsi(prefix, width, { hard: true, trim: false }).split('\n') : [prefix];
+  const rendered = level === 1 ? markdown(body, bodyWidth, true, colors)
+    : logicalLines(body).map(line => line ? markdown(line, bodyWidth, false, colors) : '').join('\n');
+  if (level === 1) return clipStyled((separate ? prefixRows.join('') : prefix) + rendered, width);
+  const rows = logicalLines(rendered).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
+  const output = separate ? [...prefixRows, ...rows] : rows.map((line, i) => `${i === 0 ? prefix : ''}${line}`);
+  if (level === 3) return output.map(row => clipStyled(row, width)).join('\n');
+  const visible = output.filter(row => stripAnsi(row).trim()).slice(0, 2);
+  if (output.filter(row => stripAnsi(row).trim()).length > 2 && visible.length) visible[visible.length - 1] = clipStyled(`${visible.at(-1)} …`, width);
+  return visible.map(row => clipStyled(row, width)).join('\n');
 }
 
 /** Render a one-line event preview, optionally keeping streamed text literal for the tree. */
-function promptCue(event: ServerEvent): { mention: string; body: string } | undefined {
+function promptCue(event: ServerEvent): { mention: string; body: string; sender?: string; recipient?: string } | undefined {
   if (event.type !== 'prompt.queued') return;
-  const data = object(event.data), cue = object(data.promptCue), text = data.text;
+  const data = object(event.data), cue = object(data.promptCue), attr = object(data.promptAttribution), text = data.text;
+  const attribution = attr.version === 1 && typeof attr.sender === 'string' && attr.sender.length > 0 && attr.sender.length <= 256 && typeof attr.recipient === 'string' && attr.recipient.length > 0 && attr.recipient.length <= 256 && !/[\x00-\x1f\x7f-\x9f]/u.test(attr.sender + attr.recipient)
+    ? { sender: clean(attr.sender).replace(/\s+/g, ' ').trim(), recipient: clean(attr.recipient).replace(/\s+/g, ' ').trim() } : {};
   if (cue.version !== 1 || !Number.isInteger(cue.bodyStart) || typeof text !== 'string') return;
   const bodyStart = cue.bodyStart as number;
   if (bodyStart < 3 || bodyStart > text.length || text[bodyStart - 1] !== ' ') return;
   const mention = text.slice(0, bodyStart - 1);
   if (!mention.startsWith('@') || /[\x00-\x1f\x7f-\x9f]/u.test(mention)) return;
-  return { mention, body: text.slice(bodyStart) };
+  return { mention, body: text.slice(bodyStart), ...attribution };
 }
 function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: number, colors: RenderColors, rendering?: EventRendering): string {
   const data = object(event.data), cue = promptCue(event);
   const sidecar = level === 1 ? rendering?.summary : level === 2 ? rendering?.extended : rendering?.full;
   const text = typeof sidecar === 'string' ? sidecar : typeof data.text === 'string' ? data.text : pretty(event.data);
   const hasCue = !!cue && text.startsWith(`${cue.mention} `);
+  const selectedBody = hasCue ? (text.startsWith(`${cue!.mention} `) ? text.slice(cue!.mention.length + 1) : cue!.body) : text;
+  const body = selectedBody;
+  if (hasCue && cue!.sender && cue!.recipient) {
+    const prefix = `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `;
+    return formatAttributed(prefix, body, level, width, colors);
+  }
   const mention = hasCue ? paint(clean(cue!.mention), 'agentTarget', colors) : '';
   const prefix = hasCue ? `${mention} ` : '';
-  const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
   if (level === 1) return clipStyled(prefix + markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors), width);
 
   const prefixWidth = stringWidth(stripAnsi(prefix));
@@ -338,8 +353,12 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
     const hasSidecar = typeof rendering?.summary === 'string';
     const text = hasSidecar ? rendering!.summary : typeof data.text === 'string' ? data.text : pretty(event.data);
     const hasCue = !!cue && text.startsWith(`${cue.mention} `);
+    const body = hasCue ? (text.startsWith(`${cue!.mention} `) ? text.slice(cue!.mention.length + 1) : cue!.body) : text;
+    if (hasCue && cue!.sender && cue!.recipient) {
+      const prefix = `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `;
+      return formatAttributed(prefix, body, 1, width, colors);
+    }
     const prefix = hasCue ? `${paint(clean(cue!.mention), 'agentTarget', colors)} ` : '';
-    const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
     const summary = hasSidecar ? markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors) : clean(body).replace(/\s+/g, ' ').trim();
     return clipStyled(prefix + summary, width);
  }

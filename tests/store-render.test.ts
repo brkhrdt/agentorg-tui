@@ -649,6 +649,54 @@ describe('four non-hidden rendering levels', () => {
     const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
     expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
   });
+  test('prompt.queued attribution renders sender and recipient in chat and tree, with Markdown body and flush-left wrapping', () => {
+    const body = '# Body heading\n\n- **bold** and `code`\n\nAn automatic wrapping line that continues beyond the available body width.\nExact\nnewline';
+    const mention = '@Old sender ';
+    const queued = event(25, 'prompt.queued', {
+      operationId: 'op', text: `${mention}${body}`, promptCue: { version: 1, bodyStart: mention.length },
+      promptAttribution: { version: 1, sender: 'Sender', recipient: 'Receiver' },
+    });
+    const colors = { agentTarget: 'magenta' };
+    const summary = renderEvent(queued, 1, 80, undefined, colors);
+    expect(stripAnsi(summary)).toStartWith('Sender: @Receiver Body heading');
+    expect(summary).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@Receiver\x1b[0m');
+    expect(summary).not.toContain('\x1b[35mBody heading');
+    const extended = renderEvent(queued, 2, 80, undefined, colors);
+    expect(stripAnsi(extended)).toContain('Sender: @Receiver Body heading');
+    expect(stripAnsi(extended)).toContain('bold');
+    const full = renderEvent(queued, 3, 36, undefined, colors);
+    expect(stripAnsi(full)).toContain('Sender: @Receiver');
+    expect(stripAnsi(full)).toContain('Body heading');
+    expect(full).toContain('\x1b[1mbold\x1b[0m');
+    expect(full).toContain('\x1b[33mcode\x1b[0m');
+    expect(stripAnsi(full)).toContain('\nExact\nnewline');
+    const lines = stripAnsi(full).split('\n');
+    expect(lines.some(line => line.startsWith('continues beyond'))).toBe(true);
+    expect(lines.some(line => line.startsWith('  continues'))).toBe(false);
+    for (const line of full.split('\n')) expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(36);
+    const tree = renderTreeEvent(queued, 80, undefined, colors);
+    expect(stripAnsi(tree)).toStartWith('Sender: @Receiver Body heading');
+    expect(tree).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@Receiver\x1b[0m');
+    expect(tree).not.toContain('\\x1b[35mBody heading');
+  });
+  test('attributed prefixes wrap safely at narrow widths; human prompts remain unprefixed', () => {
+    const mention = '@Previous ';
+    const body = 'Human **bold** starts with @Someone';
+    const human = event(26, 'prompt.queued', { text: body });
+    expect(stripAnsi(renderEvent(human, 3, 80))).toContain('Human bold starts with @Someone');
+    expect(stripAnsi(renderTreeEvent(human, 80))).toBe(body);
+    expect(renderEvent(human, 3, 80)).not.toContain('agentTarget');
+    const attributed = event(27, 'prompt.queued', {
+      text: `${mention}tiny width body`, promptCue: { version: 1, bodyStart: mention.length },
+      promptAttribution: { version: 1, sender: 'A Very Long Sender', recipient: '界界 Receiver' },
+    });
+    const full = renderEvent(attributed, 3, 8, undefined, { agentTarget: 'magenta' });
+    const compactFull = stripAnsi(full).replace(/\s+/g, ' ');
+    expect(compactFull).toContain('A Very Long Sender:');
+    expect(compactFull).toContain('@界界 Receiver');
+    expect(compactFull).toContain('tiny width body');
+    for (const line of full.split('\n')) expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(8);
+  });
   test('prompt sidecars keep summary/extended/full selection and only accent a validated cue', () => {
     const text = '@Root Coordinator ignored source';
     const queued = event(5, 'prompt.queued', { text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } });

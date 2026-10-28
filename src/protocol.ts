@@ -35,7 +35,7 @@ export interface ExtendedDiff { prefix: string; before: string; after: string }
 export interface EventRendering {
   rendererId: string; subtype?: string; canonicalTool?: string;
   updateMode?: 'semantic' | 'streaming'; extendedLayout?: 'header-detail';
-  toolSymbol?: string; toolTarget?: string; toolTargets?: string[]; toolPrompt?: string; invocationError?: boolean;
+  toolSymbol?: string; toolTarget?: string; toolTargets?: string[]; toolPrompt?: string; toolSender?: string; invocationError?: boolean;
   summary: string; extended: string; full: string; extendedDiff?: ExtendedDiff;
 }
 export type RendererExample = Omit<EventRendering, 'rendererId'> & { type: string; raw: string };
@@ -58,6 +58,7 @@ export function validEventRendering(value: unknown): value is EventRendering {
   if (value.toolTarget !== undefined && (typeof value.toolTarget !== 'string' || value.toolTarget.length < 1 || value.toolTarget.length > 256)) return false;
   if (value.toolTargets !== undefined && (!Array.isArray(value.toolTargets) || value.toolTargets.length > 8 || !value.toolTargets.every((target: unknown) => typeof target === 'string' && target.length > 0 && target.length <= 256))) return false;
   if (value.toolPrompt !== undefined && (typeof value.toolPrompt !== 'string' || value.toolPrompt.length > 2 * 1024 * 1024)) return false;
+  if (value.toolSender !== undefined && (typeof value.toolSender !== 'string' || value.toolSender.length < 1 || value.toolSender.length > 256)) return false;
   if (value.invocationError !== undefined && typeof value.invocationError !== 'boolean') return false;
   if (value.extendedDiff !== undefined && (!object(value.extendedDiff) || !['prefix','before','after'].every(key => typeof value.extendedDiff[key] === 'string' && value.extendedDiff[key].length <= 8192))) return false;
   return true;

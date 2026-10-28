@@ -13,7 +13,7 @@ const coreModule = existsSync(corePath) ? await import(corePath) : undefined;
 const MCP_TOOL_NAMES: string[] = coreModule ? (await import(join(import.meta.dir, '../../agentorg/src/mcp-tool-rendering.ts'))).MCP_TOOL_NAMES : [];
 interface CoreRegistry {
   registerHarness(name: string, renderers: unknown[], aliases: (names: string[]) => Record<string, string>): void;
-  render(event: ServerEvent, harness: string, defaultId: string, context?: { targetName: string }): EventRendering | undefined;
+  render(event: ServerEvent, harness: string, defaultId: string, context?: { targetName?: string; parentTargetName?: string; senderName?: string }): EventRendering | undefined;
   catalog(): RendererMetadata[];
 }
 const registry = (): CoreRegistry => { const registry: CoreRegistry = new coreModule!.RendererRegistry(); registry.registerHarness('pi', [], names => Object.fromEntries(names.map(name => [`mcp__agentorg__${name}`, name]))); return registry; };
@@ -33,6 +33,31 @@ test.skipIf(!coreModule)('real core MCP sidecars/catalog preserve all 15 Pi iden
     expect(JSON.parse(renderEvent(e, 4, 10000, rendering))).toEqual(e);
     const preview = rendererPreview(row, 'tool.update', 2, 80, 12, {}, emitted);
     expect(preview).toContain('∴'); expect(preview).not.toContain('lines received');
+  }
+});
+
+test.skipIf(!coreModule)('prompt_subagent and prompt_parent sidecars show trusted sender/receiver attribution with Markdown bodies', () => {
+  const core = registry();
+  for (const { tool, recipient } of [
+    { tool: 'prompt_subagent', recipient: 'Receiver' },
+    { tool: 'prompt_parent', recipient: 'Parent' },
+  ]) {
+    const emitted = `mcp__agentorg__${tool}`;
+    const prompt = '**Body emphasis** and `inline code`';
+    const e = { ...event(emitted, { status: 'queued' }, { agentId: 'receiver-id', text: prompt, ...(tool === 'prompt_subagent' ? { agentId: 'receiver-id' } : {}) }), type: 'tool.call' };
+    const presentation = core.render(e, 'pi', 'core.tools', { senderName: 'Sender', targetName: 'Receiver', parentTargetName: 'Parent' })!;
+    expect(presentation.toolSender).toBe('Sender');
+    expect(presentation.toolTarget).toBe(`@${recipient}`);
+    for (const level of [1, 2, 3] as const) {
+      const rendered = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+      const plain = stripAnsi(rendered);
+      expect(plain).toContain(`Sender: @${recipient}`);
+      expect(plain).toContain('Body emphasis and inline code');
+      expect(rendered).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@' + recipient + '\x1b[0m');
+      expect(rendered).not.toContain('\x1b[35mBody emphasis');
+      expect(rendered).toContain('\x1b[1mBody emphasis\x1b[0m');
+      expect(rendered).toContain('\x1b[33minline code\x1b[0m');
+    }
   }
 });
 

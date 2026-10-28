@@ -72,8 +72,10 @@ function compactPreview(event: ServerEvent): ServerEvent {
   const streamKind = data.sessionUpdate;
   if (event.type === 'prompt.queued' && typeof data.text === 'string' && object(data.promptCue).version === 1) {
     const prefix = boundedGraphemePrefix(data.text, TREE_PREVIEW_MESSAGE_BYTES);
-    const cue = object(data.promptCue);
-    return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: prefix.text, promptCue: cue, ...(prefix.truncated && { previewTruncated: true }) } };
+    const cue = object(data.promptCue), attribution = object(data.promptAttribution);
+    const validAttribution = attribution.version === 1 && typeof attribution.sender === 'string' && attribution.sender.length > 0 && attribution.sender.length <= 256 && typeof attribution.recipient === 'string' && attribution.recipient.length > 0 && attribution.recipient.length <= 256
+      ? { version: 1, sender: boundedUtf8(attribution.sender, 256), recipient: boundedUtf8(attribution.recipient, 256) } : undefined;
+    return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: prefix.text, promptCue: cue, ...(validAttribution && { promptAttribution: validAttribution }), ...(prefix.truncated && { previewTruncated: true }) } };
   }
   if (event.type === 'agent.message' && STREAMED_MESSAGE_KINDS.has(streamKind) && typeof data.content?.text === 'string') {
     // Keep a bounded source prefix rather than JSON-truncating an accumulated
@@ -211,6 +213,7 @@ export class Store extends EventEmitter {
       ...(rendering.canonicalTool && { canonicalTool: boundedUtf8(rendering.canonicalTool, 64) }),
       ...(rendering.toolSymbol && { toolSymbol: boundedUtf8(rendering.toolSymbol, 16) }),
       ...(rendering.toolTarget && { toolTarget: boundedUtf8(rendering.toolTarget, 128) }),
+      ...(rendering.toolSender && { toolSender: boundedUtf8(rendering.toolSender, 128) }),
       ...(rendering.invocationError !== undefined && { invocationError: rendering.invocationError }),
     };
   }
