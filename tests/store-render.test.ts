@@ -515,6 +515,29 @@ describe('state and transcripts', () => {
     expect(store.events.size).toBeLessThanOrEqual(2000);
     expect(stripAnsi(renderTable(store.tree(), store.latest(settings), ['event'], 60).items[0]!).slice(2)).toStartWith('IDENTITY_ANCHOR');
   });
+  test('long CJK authenticated prompt cues and attribution survive compacting and raw-event eviction', () => {
+    const store = new Store(), settings = new Settings();
+    store.install({ seq: 0, agents: [agent('root'), agent('worker')], operations: [] });
+    const sender = '界'.repeat(140), recipient = 'Worker', mention = `@${sender} `;
+    const queued = event(1, 'prompt.queued', {
+      operationId: 'long-name-prompt', text: `${mention}${'body remains visible '.repeat(30)}`,
+      promptCue: { version: 1, bodyStart: mention.length },
+      promptAttribution: { version: 1, sender, recipient },
+    });
+    store.ingest(queued);
+    for (let seq = 2; seq <= 2001; seq++) store.ingest(event(seq, 'agent.message', {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `worker ${seq}` },
+    }, { agentId: 'worker' }));
+    expect(store.events.has(1)).toBe(false);
+    const preview = store.latest(settings).get('root')!;
+    const data = preview.data as any;
+    expect(data.promptCue).toEqual({ version: 1, bodyStart: mention.length });
+    expect(data.text.slice(0, mention.length)).toBe(mention);
+    expect(data.promptAttribution).toEqual({ version: 1, sender, recipient });
+    const rendered = stripAnsi(renderTreeEvent(preview, 500));
+    expect(rendered).toContain(`${sender}: @${recipient}`);
+    expect(rendered).toContain('body remains visible');
+  });
   test('tree table retains the beginning of a long live message after raw events are evicted', () => {
     const store = new Store(), settings = new Settings();
     store.install({ seq: 0, agents: [agent('root')], operations: [] });
@@ -677,7 +700,47 @@ describe('four non-hidden rendering levels', () => {
     const tree = renderTreeEvent(queued, 80, undefined, colors);
     expect(stripAnsi(tree)).toStartWith('Sender: @Receiver Body heading');
     expect(tree).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@Receiver\x1b[0m');
-    expect(tree).not.toContain('\\x1b[35mBody heading');
+    expect(tree).not.toContain('\x1b[35mBody heading');
+  });
+  test('receiver attribution preserves complete multiline Markdown blocks at extended and full levels', () => {
+    const body = [
+      '**Strong text starts here',
+      'and continues across a source newline.** *Italic survives too.* See [reference][docs].',
+      '',
+      '[docs]: https://example.com/reference',
+      '',
+      '```ts',
+      'const fenced = true;',
+      '```',
+      '',
+      '| Name | Value |',
+      '| --- | --- |',
+      '| answer | **42** |',
+      '',
+      '- outer item',
+      '  - nested item with `code`',
+    ].join('\n');
+    const mention = '@Previous sender ';
+    const queued = event(28, 'prompt.queued', {
+      text: `${mention}${body}`, promptCue: { version: 1, bodyStart: mention.length },
+      promptAttribution: { version: 1, sender: 'Sender', recipient: 'Receiver' },
+    });
+    for (const level of [2, 3] as const) {
+      const rendered = renderEvent(queued, level, 100, undefined, { agentTarget: 'magenta' });
+      expect(stripAnsi(rendered)).toContain('Sender: @Receiver');
+      expect(stripAnsi(rendered)).toContain('Strong text starts here');
+      expect(rendered).toContain('\x1b[1mStrong text starts here');
+      expect(rendered).toContain('\x1b[3m');
+      expect(stripAnsi(rendered)).not.toContain('**Strong');
+      if (level === 3) {
+        expect(stripAnsi(rendered)).toContain('and continues across a source newline.');
+        expect(stripAnsi(rendered)).toContain('reference');
+        expect(stripAnsi(rendered)).toContain('const fenced = true;');
+        expect(stripAnsi(rendered)).toContain('Name');
+        expect(stripAnsi(rendered)).toContain('nested item');
+        expect(stripAnsi(rendered)).not.toContain('[reference][docs]');
+      }
+    }
   });
   test('attributed prefixes wrap safely at narrow widths; human prompts remain unprefixed', () => {
     const mention = '@Previous ';

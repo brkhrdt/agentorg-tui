@@ -158,11 +158,11 @@ export function eventText(event: ServerEvent): string {
 }
 
 const markdownCache = new Map<string, Marked>();
-function markdown(text: string, width: number, summary = false, colors: RenderColors = {}): string {
+function markdown(text: string, width: number, summary = false, colors: RenderColors = {}, preserveBreaks = false): string {
   // Cached renderers must not close over mutable client preferences.
   const palette = Object.fromEntries((['eventHeading', 'eventCode', 'eventLink', 'diffAdd', 'diffRemove'] as const)
     .map(key => [key, resolveColor(colors, key)]));
-  const key = JSON.stringify([width, summary, palette]);
+  const key = JSON.stringify([width, summary, palette, preserveBreaks]);
   let parser = markdownCache.get(key);
   if (!parser) {
     const style = (codes: string) => (value: string) => `\x1b[${codes}m${value}\x1b[0m`;
@@ -194,7 +194,7 @@ function markdown(text: string, width: number, summary = false, colors: RenderCo
     markdownCache.set(key, parser);
   }
   try {
-    const parsed = parser.parse(clean(text), { async: false }) as string;
+    const parsed = parser.parse(clean(text), { async: false, breaks: preserveBreaks }) as string;
     return summary ? parsed.replace(/\s+/g, ' ').trim() : wrapAnsi(parsed, width, { hard: true, trim: false }).trimEnd();
   } catch {
     // Defensive plain-text fallback for genuinely unsupported parser input; the
@@ -284,11 +284,17 @@ function formatAttributed(prefix: string, body: string, level: Exclude<Level, 4>
   const separate = prefixWidth >= width - 1;
   const bodyWidth = separate ? width : Math.max(1, width - prefixWidth);
   const prefixRows = separate ? wrapAnsi(prefix, width, { hard: true, trim: false }).split('\n') : [prefix];
-  const rendered = level === 1 ? markdown(body, bodyWidth, true, colors)
-    : logicalLines(body).map(line => line ? markdown(line, bodyWidth, false, colors) : '').join('\n');
+  const rendered = markdown(body, level === 1 ? bodyWidth : width, level === 1, colors, level !== 1);
   if (level === 1) return clipStyled((separate ? prefixRows.join('') : prefix) + rendered, width);
-  const rows = logicalLines(rendered).flatMap(line => wrapAnsi(line, bodyWidth, { hard: true, trim: false }).split('\n'));
-  const output = separate ? [...prefixRows, ...rows] : rows.map((line, i) => `${i === 0 ? prefix : ''}${line}`);
+  const sourceRows = logicalLines(rendered);
+  const firstContent = sourceRows.findIndex(row => stripAnsi(row).trim().length > 0);
+  const output: string[] = separate ? [...prefixRows] : [];
+  if (!separate && firstContent >= 0) {
+    for (const row of sourceRows.slice(0, firstContent)) output.push(row);
+    const first = sourceRows[firstContent]!;
+    output.push(...wrapAnsi(first, bodyWidth, { hard: true, trim: false }).split('\n').map((row, index) => `${index === 0 ? prefix : ''}${row}`));
+    output.push(...sourceRows.slice(firstContent + 1).flatMap(row => wrapAnsi(row, width, { hard: true, trim: false }).split('\n')));
+  } else if (separate) output.push(...sourceRows.flatMap(row => wrapAnsi(row, width, { hard: true, trim: false }).split('\n')));
   if (level === 3) return output.map(row => clipStyled(row, width)).join('\n');
   const visible = output.filter(row => stripAnsi(row).trim()).slice(0, 2);
   if (output.filter(row => stripAnsi(row).trim()).length > 2 && visible.length) visible[visible.length - 1] = clipStyled(`${visible.at(-1)} …`, width);
@@ -348,6 +354,11 @@ function renderCompletionNotice(event: ServerEvent, width: number, colors: Rende
 }
 function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean): string {
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
+  if (isTool(event) && rendering?.toolPrompt !== undefined && rendering.toolSender && rendering.toolTarget) {
+    const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
+    const prefix = `${symbol} ${clean(rendering.toolSender)}: ${clean(rendering.toolTarget)} `;
+    return formatAttributed(prefix, rendering.toolPrompt, 1, width, colors);
+  }
   if (event.type === 'prompt.queued') {
     const data = object(event.data), cue = promptCue(event);
     const hasSidecar = typeof rendering?.summary === 'string';

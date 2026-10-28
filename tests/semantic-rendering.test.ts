@@ -44,7 +44,7 @@ test.skipIf(!coreModule)('prompt_subagent and prompt_parent sidecars show truste
   ]) {
     const emitted = `mcp__agentorg__${tool}`;
     const prompt = '**Body emphasis** and `inline code`';
-    const e = { ...event(emitted, { status: 'queued' }, { agentId: 'receiver-id', text: prompt, ...(tool === 'prompt_subagent' ? { agentId: 'receiver-id' } : {}) }), type: 'tool.call' };
+    const e = { ...event(emitted, { status: 'queued' }, { agentId: 'receiver-id', text: prompt }), type: 'tool.call' };
     const presentation = core.render(e, 'pi', 'core.tools', { senderName: 'Sender', targetName: 'Receiver', parentTargetName: 'Parent' })!;
     expect(presentation.toolSender).toBe('Sender');
     expect(presentation.toolTarget).toBe(`@${recipient}`);
@@ -57,6 +57,48 @@ test.skipIf(!coreModule)('prompt_subagent and prompt_parent sidecars show truste
       expect(rendered).not.toContain('\x1b[35mBody emphasis');
       expect(rendered).toContain('\x1b[1mBody emphasis\x1b[0m');
       expect(rendered).toContain('\x1b[33minline code\x1b[0m');
+    }
+  }
+});
+
+test.skipIf(!coreModule)('attributed sender Markdown parses complete multiline block bodies at extended and full levels', () => {
+  const core = registry();
+  const body = [
+    '**Strong text starts here',
+    'and continues across a source newline.** *Italic survives too.* See [reference][docs].',
+    '',
+    '[docs]: https://example.com/reference',
+    '',
+    '```ts',
+    'const fenced = true;',
+    '```',
+    '',
+    '| Name | Value |',
+    '| --- | --- |',
+    '| answer | **42** |',
+    '',
+    '- outer item',
+    '  - nested item with `code`',
+  ].join('\n');
+  for (const tool of ['prompt_subagent', 'prompt_parent']) {
+    const emitted = `mcp__agentorg__${tool}`;
+    const e = { ...event(emitted, { status: 'queued' }, { agentId: 'recipient', text: body }), type: 'tool.call' };
+    const presentation = core.render(e, 'pi', 'core.tools', { senderName: 'Sender', targetName: 'Receiver', parentTargetName: 'Parent' })!;
+    for (const level of [2, 3] as const) {
+      const rendered = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+      expect(stripAnsi(rendered)).toContain(`Sender: @${tool === 'prompt_parent' ? 'Parent' : 'Receiver'}`);
+      expect(stripAnsi(rendered)).toContain('Strong text starts here');
+      expect(rendered).toContain('\x1b[1mStrong text starts here');
+      expect(rendered).toContain('\x1b[3m');
+      if (level === 3) {
+        expect(stripAnsi(rendered)).toContain('and continues across a source newline.');
+        expect(stripAnsi(rendered)).toContain('reference');
+        expect(stripAnsi(rendered)).toContain('const fenced = true;');
+        expect(stripAnsi(rendered)).toContain('Name');
+        expect(stripAnsi(rendered)).toContain('nested item');
+        expect(stripAnsi(rendered)).not.toContain('**Strong');
+        expect(stripAnsi(rendered)).not.toContain('[reference][docs]');
+      }
     }
   }
 });

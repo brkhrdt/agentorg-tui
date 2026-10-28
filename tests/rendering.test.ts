@@ -215,6 +215,33 @@ test('completion lifecycle events render named receipt and review progress', () 
   expect(eventText(event(5, 'completion.dispatch_finished', { status: 'failed' }))).toBe('Done reviewing messages (failed).');
 });
 
+test('sender-attributed prompt tool tree previews retain the sender, receiver, and bounded body', () => {
+  for (const tool of ['prompt_subagent', 'prompt_parent']) {
+    const target = tool === 'prompt_parent' ? '@Coordinator' : '@Researcher';
+    const prompt = '**Review this** and inspect `the code`.';
+    const e = event(1, 'tool.call', { title: `mcp__agentorg__${tool}`, status: 'pending' });
+    const rendering: EventRendering = {
+      rendererId: `core.mcp-${tool}`, subtype: `mcp__agentorg__${tool}`,
+      summary: `Sender: ${target} ${prompt}`, extended: `Sender: ${target} ${prompt}`, full: `Sender: ${target} ${prompt}`,
+      toolSymbol: '∴', toolTarget: target, toolSender: 'Sender', toolPrompt: prompt,
+    };
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.ingest(e);
+    store.present(e.seq, rendering);
+    const compacted = store.treeRenderings().get(e.seq)!;
+    expect(compacted.toolPrompt).toBe(prompt);
+    const tree = renderTreeEvent(e, 100, compacted, { agentTarget: 'magenta' });
+    expect(stripAnsi(tree)).toBe(`∴ Sender: ${target} Review this and inspect the code.`);
+    expect(tree).toContain('\x1b[33m∴\x1b[0m');
+    expect(tree).toContain('\x1b[1mReview this\x1b[0m');
+    expect(tree).toContain('\x1b[33mthe code\x1b[0m');
+    expect(tree).not.toContain('\x1b[35mSender');
+    expect(tree).not.toContain('\x1b[35m' + target);
+    expect(stringWidth(stripAnsi(tree))).toBeLessThanOrEqual(100);
+  }
+});
+
 test('long prompt targets do not steal or clip the prompt body at narrow widths', () => {
   const target = '@research-worker-with-a-long-name', prompt = 'FIRST second';
   const presentation: EventRendering = { rendererId: 'core.mcp-prompt-subagent', subtype: 'mcp__agentorg__prompt_subagent', summary: `${target} ${prompt}`, extended: `${target} ${prompt}`, full: `${target} ${prompt}`, toolSymbol: '∴', toolTarget: target, toolPrompt: prompt };

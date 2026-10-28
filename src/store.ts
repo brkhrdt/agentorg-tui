@@ -70,12 +70,18 @@ function boundedGraphemePrefix(value: string, maxBytes: number): { text: string;
 function compactPreview(event: ServerEvent): ServerEvent {
   const data = object(event.data);
   const streamKind = data.sessionUpdate;
-  if (event.type === 'prompt.queued' && typeof data.text === 'string' && object(data.promptCue).version === 1) {
-    const prefix = boundedGraphemePrefix(data.text, TREE_PREVIEW_MESSAGE_BYTES);
-    const cue = object(data.promptCue), attribution = object(data.promptAttribution);
-    const validAttribution = attribution.version === 1 && typeof attribution.sender === 'string' && attribution.sender.length > 0 && attribution.sender.length <= 256 && typeof attribution.recipient === 'string' && attribution.recipient.length > 0 && attribution.recipient.length <= 256
-      ? { version: 1, sender: boundedUtf8(attribution.sender, 256), recipient: boundedUtf8(attribution.recipient, 256) } : undefined;
-    return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: prefix.text, promptCue: cue, ...(validAttribution && { promptAttribution: validAttribution }), ...(prefix.truncated && { previewTruncated: true }) } };
+  if (event.type === 'prompt.queued' && typeof data.text === 'string') {
+    const cue = object(data.promptCue), bodyStart = cue.bodyStart;
+    if (cue.version === 1 && Number.isInteger(bodyStart) && bodyStart >= 3 && bodyStart <= data.text.length && data.text[bodyStart - 1] === ' ' && data.text.startsWith('@')) {
+      // Keep the authenticated cue intact and compact only the body. Truncating
+      // the concatenated text can otherwise move bodyStart into a multibyte name.
+      const sourcePrefix = data.text.slice(0, bodyStart);
+      const body = boundedGraphemePrefix(data.text.slice(bodyStart), TREE_PREVIEW_MESSAGE_BYTES);
+      const attribution = object(data.promptAttribution);
+      const validAttribution = attribution.version === 1 && typeof attribution.sender === 'string' && attribution.sender.length > 0 && attribution.sender.length <= 256 && typeof attribution.recipient === 'string' && attribution.recipient.length > 0 && attribution.recipient.length <= 256
+        ? { version: 1, sender: attribution.sender, recipient: attribution.recipient } : undefined;
+      return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: sourcePrefix + body.text, promptCue: { version: 1, bodyStart: sourcePrefix.length }, ...(validAttribution && { promptAttribution: validAttribution }), ...(body.truncated && { previewTruncated: true }) } };
+    }
   }
   if (event.type === 'agent.message' && STREAMED_MESSAGE_KINDS.has(streamKind) && typeof data.content?.text === 'string') {
     // Keep a bounded source prefix rather than JSON-truncating an accumulated
@@ -214,6 +220,7 @@ export class Store extends EventEmitter {
       ...(rendering.toolSymbol && { toolSymbol: boundedUtf8(rendering.toolSymbol, 16) }),
       ...(rendering.toolTarget && { toolTarget: boundedUtf8(rendering.toolTarget, 128) }),
       ...(rendering.toolSender && { toolSender: boundedUtf8(rendering.toolSender, 128) }),
+      ...(rendering.toolPrompt !== undefined && { toolPrompt: boundedGraphemePrefix(rendering.toolPrompt, TREE_PREVIEW_MESSAGE_BYTES).text }),
       ...(rendering.invocationError !== undefined && { invocationError: rendering.invocationError }),
     };
   }
