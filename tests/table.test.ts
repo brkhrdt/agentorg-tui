@@ -57,7 +57,7 @@ test('collapsed branch marker follows the agent name and survives name clipping'
 
 test('six independent usage columns show subtree totals and dash for missing metrics', () => {
   const row = [{ agent: agent('worker', null, { usage: {
-    self: { 'tokens.input': 2 }, subtree: { 'tokens.input': 1200, 'tokens.output': 4, 'tokens.cacheRead': 3, 'tokens.cacheWrite': 5, 'tokens.total': 1_200_000, 'cost.usd': 0.00000123 },
+    self: { 'tokens.input': 2 }, subtree: { 'tokens.input': 1200, 'tokens.output': 4, 'tokens.cache_read': 3, 'tokens.cache_write': 5, 'tokens.total': 1_200_000, 'cost.total': 999, 'cost.usd': 0.00000123 },
   } }), depth: 0 }];
   const fields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTokens', 'cost'] as const;
   const table = renderTable(row, new Map(), fields, 140);
@@ -69,17 +69,22 @@ test('six independent usage columns show subtree totals and dash for missing met
   expect(table.header).toContain('TOTAL TOKENS');
   expect(table.header).toContain('COST');
   for (const value of ['1.2k', '4', '3', '5', '1.2M', '$0.00000123']) expect(table.items[0]).toContain(value);
+  expect(table.items[0]).not.toContain('$999');
   expect(renderTable([{ agent: agent('empty'), depth: 0 }], new Map(), fields, 140).items[0]).toContain('-');
 });
 
 test('usage numbers retain reported cost precision, add currency, and compact large counts', () => {
-  const usage = { subtree: { 'tokens.input': 1_234, 'cost.total': 0.00000001 } };
+  const usage = { subtree: { 'tokens.input': 1_234, 'cost.usd': 0.00000001, 'cost.total': 999 } };
   const table = renderTable([{ agent: agent('worker', null, { usage }), depth: 0 }], new Map(), ['inputTokens', 'cost'], 50);
   expect(table.items[0]).toContain('1.23k');
   expect(table.items[0]).toContain('$0.00000001');
   const reportedCost = renderTable([{ agent: agent('worker', null, { usage: { subtree: { 'cost.usd': 0.0246 } } }), depth: 0 }], new Map(), ['cost'], 20);
   expect(reportedCost.items[0]).toContain('$0.0246');
-  expect(renderTable([{ agent: agent('worker', null, { usage: { subtree: { cost: 0 } } }), depth: 0 }], new Map(), ['cost'], 20).items[0]).toContain('$0.00');
+  expect(renderTable([{ agent: agent('worker', null, { usage: { subtree: { 'cost.total': 0, 'cost.eur': 12.5 } } }), depth: 0 }], new Map(), ['cost'], 20).items[0]).toContain('-');
+  const custom = renderTable([{ agent: agent('worker', null, { usage: { subtree: { 'cost.eur': 12.5 } } }), depth: 0 }], new Map(), ['metric:cost.eur'], 30, new Map(), {}, -1, undefined, [{ id: 'cost.eur', title: 'Euro cost', unit: 'EUR' }]);
+  expect(custom.header).toContain('Euro cost (EUR)');
+  expect(custom.items[0]).toContain('12.5');
+  expect(custom.items[0]).not.toContain('$');
 });
 
 test('tree hierarchy uses whitespace indentation', () => {

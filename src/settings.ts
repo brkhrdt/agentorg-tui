@@ -5,7 +5,22 @@ import { homedir } from 'node:os';
 export type Level = 0 | 1 | 2 | 3 | 4;
 export const LEVEL_NAMES = ['hidden', 'summary', 'extended', 'full', 'raw'] as const;
 export const TABLE_FIELDS = ['name', 'status', 'model', 'event', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTokens', 'cost', 'error', 'harness', 'provider', 'cwd', 'session', 'revision'] as const;
-export type TableField = typeof TABLE_FIELDS[number];
+export type BuiltinTableField = typeof TABLE_FIELDS[number];
+export type TableField = BuiltinTableField | `metric:${string}`;
+export const metricTableField = (id: string): TableField => `metric:${id}`;
+const isMetricTableField = (value: unknown): value is `metric:${string}` => typeof value === 'string' && value.length <= 135 && /^metric:[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/.test(value);
+export function availableTableFields(metrics: readonly { id: string }[], selected: readonly TableField[] = []): TableField[] {
+  const builtinMetricIds = new Set(['tokens.input', 'tokens.output', 'tokens.cache_read', 'tokens.cache_write', 'tokens.total', 'cost.usd']);
+  const fields = TABLE_FIELDS.filter(field => !['inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens','totalTokens','cost'].includes(field));
+  const builtins: Record<string, BuiltinTableField> = {
+    'tokens.input':'inputTokens', 'tokens.output':'outputTokens', 'tokens.cache_read':'cacheReadTokens',
+    'tokens.cache_write':'cacheWriteTokens', 'tokens.total':'totalTokens', 'cost.usd':'cost',
+  };
+  fields.splice(4, 0, ...[...builtinMetricIds].map(id => builtins[id]!));
+  const extras = metrics.filter(metric => typeof metric?.id === 'string' && !builtinMetricIds.has(metric.id)).map(metric => metricTableField(metric.id));
+  const retained = selected.filter(isMetricTableField).filter(field => !builtinMetricIds.has(field.slice('metric:'.length)));
+  return [...new Set([...fields, ...extras, ...retained])];
+}
 export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'model', 'event'];
 export const DEFAULT_LEVELS: Record<string, Level> = {
   'agent.created': 0, 'agent.error': 0, 'agent.modified': 0, 'agent.plan': 0, 'agent.removed': 0,
@@ -64,7 +79,7 @@ export function resolveColor(colors: Partial<Record<ColorSetting, string>>, key:
 }
 export function normalizeTableFields(value: unknown): TableField[] {
   const fields = Array.isArray(value)
-    ? [...new Set(value.filter((field): field is TableField => TABLE_FIELDS.includes(field)))]
+    ? [...new Set(value.filter((field): field is TableField => typeof field === 'string' && (TABLE_FIELDS.includes(field as BuiltinTableField) || isMetricTableField(field))))]
     : [];
   return fields.length ? fields : [...DEFAULT_TABLE_FIELDS];
 }

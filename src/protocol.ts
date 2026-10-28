@@ -15,6 +15,8 @@ export interface Agent {
   [key: string]: unknown;
 }
 export interface UsageMetrics { [metric: string]: number | UsageMetrics }
+export interface UsageMetricDefinition { id: string; title: string; unit: string; description?: string }
+export interface UsageCapability { version: 1; notification: string; query: string; scopes: Array<'self' | 'subtree'>; metrics: UsageMetricDefinition[] }
 export interface AgentUsage {
   self?: UsageMetrics;
   subtree?: UsageMetrics;
@@ -126,7 +128,7 @@ export interface ServerSettingsGroup extends ServerSettingsDescriptor {
 }
 export interface ServerSettingsCatalog { groups: ServerSettingsGroup[]; facts: { cwd: string; dataDir: string; socketPath: string; harnesses: string[]; plugins: string[] } }
 export interface ServerSettingsCapability { version: number; groups: ServerSettingsDescriptor[]; endpoints: { list: string; get: string; update: string } }
-export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { rendering?: RenderingCapability; cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
+export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { rendering?: RenderingCapability; usage?: UsageCapability; cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
 export interface HistoryPage {
   events: ServerEvent[];
   renderings?: Record<string, EventRendering>;

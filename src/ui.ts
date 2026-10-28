@@ -7,8 +7,8 @@ import { HostPathCompletionSource, type PathCompletionSource } from './path-comp
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
-import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, TABLE_FIELDS, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
-import { renderTable } from './table.js';
+import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, availableTableFields, type TableField, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
+import { renderTable, tableFieldLabel } from './table.js';
 import { toggleCollapsedBranch, visibleTreeRows } from './tree-view.js';
 import { genericPreview, rendererPreview, rendererCandidates, rendererSubtypes } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
@@ -505,7 +505,7 @@ export class UI {
     this.saveSettings(); this.draw();
   }
   private setTableFieldPosition(position: number): void {
-    const field = TABLE_FIELDS[this.menuIndex];
+    const field = this.selectableTableFields[this.menuIndex];
     const index = field ? this.settings.tableFields.indexOf(field) : -1;
     if (index < 0) { this.showNotice('Enable this field with Space before setting its order.'); return; }
     const [item] = this.settings.tableFields.splice(index, 1);
@@ -513,7 +513,7 @@ export class UI {
     this.saveSettings(); this.draw();
   }
   private moveTableField(delta: number): void {
-    const field = TABLE_FIELDS[this.menuIndex];
+    const field = this.selectableTableFields[this.menuIndex];
     const index = field ? this.settings.tableFields.indexOf(field) : -1;
     if (index < 0) { this.showNotice('Enable this field with Space before setting its order.'); return; }
     const target = index + delta;
@@ -527,6 +527,7 @@ export class UI {
     this.settings.levels[type] = absolute ?? ((this.settings.level(type) + delta + 5) % 5) as Level;
     this.saveSettings(); this.draw();
   }
+  private get selectableTableFields(): TableField[] { return availableTableFields(this.session?.usageMetrics ?? [], this.settings.tableFields); }
   private selected(): Agent | undefined { return this.selectedAgent ? this.session.store.agents.get(this.selectedAgent) : undefined; }
   private toggleSelectedBranch(): void {
     if (this.view !== 'tree' || !this.selectedAgent) return;
@@ -616,7 +617,7 @@ export class UI {
   }
   private cycleMenu(): void {
     if (this.view === 'table-fields') {
-      const field = TABLE_FIELDS[this.menuIndex];
+      const field = this.selectableTableFields[this.menuIndex];
       if (field) {
         const index = this.settings.tableFields.indexOf(field);
         if (index >= 0 && this.settings.tableFields.length === 1) {
@@ -2169,7 +2170,7 @@ export class UI {
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
       const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
       // Blessed lists reserve a scrollbar cell even when it is hidden.
-      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex, this.view === 'tree' ? this.collapsedAgentIds : undefined);
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex, this.view === 'tree' ? this.collapsedAgentIds : undefined, this.session.usageMetrics);
       this.columns.setContent(header);
       this.updating = true;
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
@@ -2267,9 +2268,9 @@ export class UI {
       this.footer.setContent(' ↑↓ component  Space / Enter / → next color  ← previous  z defaults  Esc tree');
     } else if (this.view === 'table-fields') {
       this.updating = true;
-      this.menu.setItems(TABLE_FIELDS.map(field => {
+      this.menu.setItems(this.selectableTableFields.map(field => {
         const order = this.settings.tableFields.indexOf(field);
-        return `[${order >= 0 ? 'x' : ' '}] ${order >= 0 ? String(order + 1).padStart(2, ' ') : '  '}  ${field}${order === 0 ? ' · tree indent' : ''}`;
+        return `[${order >= 0 ? 'x' : ' '}] ${order >= 0 ? String(order + 1).padStart(2, ' ') : '  '}  ${field.startsWith('metric:') ? clean(tableFieldLabel(field, this.session.usageMetrics)) : field}${order === 0 ? ' · tree indent' : ''}`;
       }));
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(' ↑↓ field  Space toggle  ←→ reorder  1–9/0 position  z defaults  ? keys  Esc tree');

@@ -127,10 +127,13 @@ shown field always carries the tree indentation. Available fields include status
 launch settings, error, session number, revision, and six independent usage fields:
 input, output, cache read, cache write, total tokens, and cost. Usage fields render
 **subtree totals** (self plus all descendants, including removed ones) and can be
-shown/reordered independently; no scope toggle exists. Unsupported or unreported
-metrics render `-`, not zero. Large counts use compact `k`/`M` formatting and cost
-uses `$`; tiny nonzero costs retain significant digits. Core totals are observed
-harness reports, not estimates or a billing guarantee.
+shown/reordered independently; no scope toggle exists. Harnesses may register
+additional usage metrics; these appear as catalog-labeled columns with their units
+in the field picker, and selected `metric:<id>` preferences survive reconnects or
+temporary plugin absence. Unsupported or unreported metrics render `-`, not zero.
+Large counts use compact `k`/`M` formatting and USD cost uses `$`; other currencies
+are not treated as USD. Tiny nonzero costs retain significant digits. Core totals
+are observed harness reports, not estimates or a billing guarantee.
 Metadata columns fit their contents up to sensible caps; **Event gets the remaining width** and priority
 when space is tight. Short values such as harness `pi` only need a compact column
 wide enough for the header. Columns recalculate on resize and live updates.

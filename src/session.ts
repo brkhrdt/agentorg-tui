@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type SkillReconciliation, type SkillRetained, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability, validEventRendering, validRendererMetadata } from './protocol.js';
+import { ApiError, RpcClient, type HistoryPage, type Operation, type ServerEvent, type Snapshot, type AgentProfile, type Skill, type ServerSettingsCapability, type ServerSettingsCatalog, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type SkillReconciliation, type SkillRetained, type ContainerGrantDefaults, type EventRendering, type RendererMetadata, type RenderingCapability, type UsageMetricDefinition, validEventRendering, validRendererMetadata } from './protocol.js';
 import { Store } from './store.js';
 import { DEFAULT_HISTORY, historySettings, type HistorySettings } from './settings.js';
 import type { ImageScope } from './agent-editor.js';
@@ -59,6 +59,7 @@ export class Session extends EventEmitter {
   get skillsReconcileEndpointAvailable(): boolean { return !!this.skillsReconcileEndpoint; }
   harnesses: string[] = [];
   modelDiscovery: string[] = [];
+  usageMetrics: UsageMetricDefinition[] = [];
   private agentProfileEndpoints = new Map<string, string>();
   get agentProfilesEnabled(): boolean { return this.agentProfileEndpoints.size > 0; }
   async listAgentProfiles(harness?: string): Promise<AgentProfile[]> {
@@ -191,6 +192,23 @@ export class Session extends EventEmitter {
   private async loadSkills(client: RpcClient, snapshot: Snapshot): Promise<void> {
     const skillsRequest = ++this.skillsRequest;
     this.settingsFields = pluginFields(snapshot.capabilities?.settingsEditors);
+    const usage = snapshot.capabilities?.usage as unknown;
+    const rawMetrics = usage && typeof usage === 'object' && !Array.isArray(usage) && (usage as any).version === 1 && Array.isArray((usage as any).metrics) ? (usage as any).metrics : [];
+    const usageMetrics: UsageMetricDefinition[] = [];
+    for (const metric of rawMetrics as unknown[]) {
+      if (!metric || typeof metric !== 'object' || Array.isArray(metric)) continue;
+      const entry = metric as Record<string, unknown>;
+      if (typeof entry.id !== 'string' || !/^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/.test(entry.id) ||
+          typeof entry.title !== 'string' || entry.title.length < 1 || entry.title.length > 128 ||
+          typeof entry.unit !== 'string' || entry.unit.length < 1 || entry.unit.length > 64 ||
+          (entry.description !== undefined && typeof entry.description !== 'string')) continue;
+      usageMetrics.push({ id: entry.id, title: entry.title, unit: entry.unit, ...(typeof entry.description === 'string' && { description: entry.description }) });
+    }
+    const uniqueUsageMetrics = [...new Map(usageMetrics.map(metric => [metric.id, metric])).values()];
+    if (JSON.stringify(uniqueUsageMetrics) !== JSON.stringify(this.usageMetrics)) {
+      this.usageMetrics = uniqueUsageMetrics;
+      this.store.emit('change');
+    }
     const rendering = snapshot.capabilities?.rendering;
     this.renderingCapability = rendering?.version === 1 && typeof rendering.catalog === 'string' ? rendering : undefined;
     this.renderers = [];

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Session } from '../src/session.js';
-import { DEFAULT_LEVELS, DEFAULT_TABLE_FIELDS, Settings } from '../src/settings.js';
+import { availableTableFields, DEFAULT_LEVELS, DEFAULT_TABLE_FIELDS, Settings } from '../src/settings.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
 test('settings round-trip defaults, level-zero visibility, plugin levels and invalid config', async () => {
@@ -63,6 +63,13 @@ test('settings round-trip defaults, level-zero visibility, plugin levels and inv
       expect(compatible.tableFields).toEqual(Array.isArray(tableFields) && tableFields.includes('harness')
         ? ['harness', 'event'] : [...DEFAULT_TABLE_FIELDS]);
     }
+    expect(DEFAULT_TABLE_FIELDS).toEqual(['name', 'status', 'model', 'event']);
+    await writeFile(path, JSON.stringify({ levels: {}, tableFields: ['metric:custom.requests', 'cost', 'name', 'metric:bad', 'metric:custom.requests'] }));
+    const custom = await Settings.load(path);
+    expect(custom.tableFields).toEqual(['metric:custom.requests', 'cost', 'name']);
+    const available = availableTableFields([{ id: 'custom.requests' }, { id: 'cost.usd' }], custom.tableFields);
+    expect(available).toContain('metric:custom.requests');
+    expect(available.filter(field => field === 'cost' || field === 'metric:cost.usd')).toEqual(['cost']);
     for (const compactToolCalls of [null, 1, 'true', [], {}]) {
       await writeFile(path, JSON.stringify({ levels: {}, compactToolCalls }));
       await expect(Settings.load(path)).rejects.toThrow('Invalid compactToolCalls setting');

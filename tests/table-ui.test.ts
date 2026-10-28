@@ -63,6 +63,34 @@ test('terminal table field visibility, ordering, help, reset and persisted prefe
   } finally { await client.close(); await mock.close(); }
 }, 15_000);
 
+test('registered extra usage metrics are selectable and rendered with catalog units', async () => {
+  const metric = { id: 'custom.requests', title: 'Requests', unit: 'requests', description: 'Harness-reported request count.' };
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, {
+      seq: 1, agents: [agent('root', null, { usage: { self: { 'custom.requests': 21 }, subtree: { 'custom.requests': 21 } } })], operations: [],
+      capabilities: { usage: { version: 1, notification: '_agentorg/usage', query: 'usage.get', scopes: ['self', 'subtree'], metrics: [metric] } },
+    });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [event(1)], oldestSeq: 1, latestSeq: 1, expired: false });
+  });
+  const client = terminalClient(mock.path, mock.directory);
+  try {
+    await client.visible('AGENT');
+    client.keys('vb');
+    await client.visible('Table fields / order · client preferences');
+    client.keys('\x1b[B'.repeat(16));
+    await client.visible('Requests (requests)');
+    client.keys(' ');
+    await client.visible('[x]  5  Requests (requests)');
+    client.keys('\x1b'); await new Promise(resolve => setTimeout(resolve, 100));
+    client.keys('\x1b');
+    await client.visible('AGENT');
+    await client.visible('21');
+    expect(client.screen().split('\n')[2]).toContain('21');
+    const saved = JSON.parse(await readFile(join(mock.directory, 'config.json'), 'utf8'));
+    expect(saved.tableFields).toContain('metric:custom.requests');
+  } finally { await client.close(); await mock.close(); }
+}, 15_000);
+
 test('selection stays visible with Event first or alone without recoloring event previews', async () => {
   const mock = await mockServer((socket, request) => {
     if (request.method === 'organization.snapshot') respond(socket, request.id, {
