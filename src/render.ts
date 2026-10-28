@@ -289,6 +289,7 @@ function formatAttributed(prefix: string, body: string, level: Exclude<Level, 4>
   const sourceRows = logicalLines(rendered);
   const firstContent = sourceRows.findIndex(row => stripAnsi(row).trim().length > 0);
   const output: string[] = separate ? [...prefixRows] : [];
+  if (!separate && firstContent < 0) output.push(prefix);
   if (!separate && firstContent >= 0) {
     for (const row of sourceRows.slice(0, firstContent)) output.push(row);
     const first = sourceRows[firstContent]!;
@@ -356,7 +357,7 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
   if (isTool(event) && rendering?.toolPrompt !== undefined && rendering.toolSender && rendering.toolTarget) {
     const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
-    const prefix = `${symbol} ${clean(rendering.toolSender)}: ${clean(rendering.toolTarget)} `;
+    const prefix = `${symbol} ${paint(`${clean(rendering.toolSender)}: `, 'agentTarget', colors)}${paint(clean(rendering.toolTarget), 'agentTarget', colors)} `;
     return formatAttributed(prefix, rendering.toolPrompt, 1, width, colors);
   }
   if (event.type === 'prompt.queued') {

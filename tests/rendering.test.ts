@@ -236,9 +236,25 @@ test('sender-attributed prompt tool tree previews retain the sender, receiver, a
     expect(tree).toContain('\x1b[33m∴\x1b[0m');
     expect(tree).toContain('\x1b[1mReview this\x1b[0m');
     expect(tree).toContain('\x1b[33mthe code\x1b[0m');
-    expect(tree).not.toContain('\x1b[35mSender');
-    expect(tree).not.toContain('\x1b[35m' + target);
+    expect(tree).toContain('\x1b[35mSender: \x1b[0m\x1b[35m' + target + '\x1b[0m');
     expect(stringWidth(stripAnsi(tree))).toBeLessThanOrEqual(100);
+  }
+});
+
+test('sender attribution remains visible when Markdown body has no rendered rows', () => {
+  for (const tool of ['prompt_subagent', 'prompt_parent']) for (const prompt of ['   ', '[docs]: https://example.com']) {
+    const target = tool === 'prompt_parent' ? '@Coordinator' : '@Researcher';
+    const e = event(1, 'tool.call', { title: `mcp__agentorg__${tool}`, status: 'pending' });
+    const presentation: EventRendering = {
+      rendererId: `core.mcp-${tool}`, subtype: `mcp__agentorg__${tool}`,
+      summary: `Sender: ${target} ${prompt}`, extended: `Sender: ${target} ${prompt}`, full: `Sender: ${target} ${prompt}`,
+      toolSymbol: '∴', toolTarget: target, toolSender: 'Sender', toolPrompt: prompt,
+    };
+    for (const level of [2, 3] as const) {
+      const rendered = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
+      expect(stripAnsi(rendered)).toContain(`Sender: ${target}`);
+      expect(rendered).toContain(`\x1b[35mSender: \x1b[0m\x1b[35m${target}\x1b[0m`);
+    }
   }
 });
 

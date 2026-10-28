@@ -742,6 +742,20 @@ describe('four non-hidden rendering levels', () => {
       }
     }
   });
+  test('receiver attribution remains visible when Markdown body has no rendered rows', () => {
+    for (const body of ['   ', '[docs]: https://example.com']) {
+      const mention = '@Previous sender ';
+      const queued = event(29, 'prompt.queued', {
+        text: `${mention}${body}`, promptCue: { version: 1, bodyStart: mention.length },
+        promptAttribution: { version: 1, sender: 'Sender', recipient: 'Receiver' },
+      });
+      for (const level of [2, 3] as const) {
+        const rendered = renderEvent(queued, level, 100, undefined, { agentTarget: 'magenta' });
+        expect(stripAnsi(rendered)).toContain('Sender: @Receiver');
+        expect(rendered).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@Receiver\x1b[0m');
+      }
+    }
+  });
   test('attributed prefixes wrap safely at narrow widths; human prompts remain unprefixed', () => {
     const mention = '@Previous ';
     const body = 'Human **bold** starts with @Someone';
