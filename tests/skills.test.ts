@@ -4,7 +4,7 @@ import { agent, mockServer, respond, send, waitFor } from './helpers.js';
 
 function registrationRecord(name: string) {
   return { name, description: 'Local repository', path: `/managed/${name}`, createdAt: '2025-01-01T00:00:00.000Z', origin: 'manual',
-    source: { kind: 'local', path: '/srv/skill' }, history: { mode: 'git-preserved', scope: 'branches-tags-head-v1', selectedCommit: 'a'.repeat(40) } };
+    source: { kind: 'local', path: '/srv/skill' } };
 }
 
 test('skills catalog discovery is capability-gated, refreshable and independent of selection mutations', async () => {
@@ -38,7 +38,7 @@ test('unified repository registration requires the exact capability, sends only 
   let added = false;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { cwd: '/srv', plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { cwd: '/srv', plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 2, sourceKinds: ['https', 'server-path'], semantics: 'committed-head-v2' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: added ? [{ name: 'local-tool', description: 'Local' }] : [] });
     else if (request.method === 'skills.registerRepository') { added = true; respond(socket, request.id, registrationRecord('local-tool')); }
     else send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'METHOD_NOT_FOUND', message: request.method } });
@@ -59,7 +59,7 @@ test('malformed successful registrations are unknown outcomes and never retried'
   const requests: any[] = [];
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 2, sourceKinds: ['https', 'server-path'], semantics: 'committed-head-v2' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, { skills: [] });
     else if (request.method === 'skills.registerRepository') respond(socket, request.id, null);
   });
@@ -78,7 +78,7 @@ test('invalid explicit post-registration catalog refresh rejects as registered-b
   let added = false;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 2, sourceKinds: ['https', 'server-path'], semantics: 'committed-head-v2' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') respond(socket, request.id, added ? { skills: null } : { skills: [] });
     else if (request.method === 'skills.registerRepository') { added = true; respond(socket, request.id, registrationRecord('local-skill')); }
   });
@@ -114,7 +114,7 @@ test('superseded post-registration catalog refresh cannot report success', async
   let staleRead: { socket: any; id: string } | undefined;
   const mock = await mockServer((socket, request) => {
     requests.push(request);
-    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 1, sourceKinds: ['https', 'server-path'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: { version: 2, sourceKinds: ['https', 'server-path'], semantics: 'committed-head-v2' }, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     else if (request.method === 'skills.list') {
       catalogReads++;
       if (catalogReads === 2) staleRead = { socket, id: request.id };
@@ -171,7 +171,7 @@ test('repository registration fails closed when its advertised capability is rev
     requests.push(request);
     if (request.method === 'organization.snapshot') {
       snapshots++;
-      const registration = { version: 1, sourceKinds: ['https', 'server-path'], history: snapshots === 1 ? 'preserve-v1' : 'history-dropped' };
+      const registration = { version: 2, sourceKinds: ['https', 'server-path'], semantics: snapshots === 1 ? 'committed-head-v2' : 'unsupported-v3' };
       respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [], capabilities: { plugins: { skills: { version: 1, settingsNamespace: 'managed', repositoryRegistration: registration, endpoints: { list: 'skills.list', registerRepository: 'skills.registerRepository' } } } } });
     } else if (request.method === 'skills.list') respond(socket, request.id, { skills: [] });
     else if (request.method === 'skills.registerRepository') respond(socket, request.id, { name: 'should-not-register' });
@@ -190,7 +190,7 @@ test('catalog retirement does not dispatch after management capability is revoke
   let snapshots = 0;
   let preflight: { socket: any; id: string } | undefined;
   const capability = { version: 1, settingsNamespace: 'managed', catalogManagement: { version: 1, semantics: 'reversible-retirement-v1', sourceIdentity: 'name+source-v1' },
-    repositoryRegistration: { version: 1, sourceKinds: ['https'], history: 'preserve-v1' }, endpoints: { list: 'skills.list', retireRepository: 'skills.retireRepository', restoreRepository: 'skills.restoreRepository', registerRepository: 'skills.registerRepository' } };
+    repositoryRegistration: { version: 2, sourceKinds: ['https'], semantics: 'committed-head-v2' }, endpoints: { list: 'skills.list', retireRepository: 'skills.retireRepository', restoreRepository: 'skills.restoreRepository', registerRepository: 'skills.registerRepository' } };
   const skill = { name: 'alpha', description: 'Alpha', source: { kind: 'git', gitUrl: 'https://github.com/org/alpha' }, status: 'ready' };
   const mock = await mockServer((socket, request) => {
     requests.push(request);

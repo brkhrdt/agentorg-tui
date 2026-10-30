@@ -28,7 +28,7 @@ function skillRepositoryRegistrationCapability(value: unknown): SkillRepositoryR
   const capability = value as any, registration = capability.repositoryRegistration, endpoints = capability.endpoints;
   if (capability.version !== 1 || typeof capability.settingsNamespace !== 'string' || !/^[a-z][a-z0-9.-]*$/.test(capability.settingsNamespace) ||
       endpoints?.list !== 'skills.list' || endpoints?.registerRepository !== 'skills.registerRepository' ||
-      registration?.version !== 1 || registration.history !== 'preserve-v1' || !Array.isArray(registration.sourceKinds) ||
+      registration?.version !== 2 || registration.semantics !== 'committed-head-v2' || !Array.isArray(registration.sourceKinds) ||
       registration.sourceKinds.length < 1 || registration.sourceKinds.some((kind: unknown) => kind !== 'https' && kind !== 'server-path') ||
       new Set(registration.sourceKinds).size !== registration.sourceKinds.length || !registration.sourceKinds.includes('https')) return undefined;
   return { namespace: capability.settingsNamespace, listEndpoint: endpoints.list, endpoint: endpoints.registerRepository,
@@ -322,12 +322,12 @@ export class Session extends EventEmitter {
       throw new Error(`Registration outcome is unknown (${(error as Error).message}). Do not retry; refresh the catalog to check.`);
     }
     const candidate = result && typeof result === 'object' && !Array.isArray(result) ? result as Skill : undefined;
-    const sourceInfo = candidate?.source, history = candidate?.history;
-    const sourceValid = sourceKind === 'https' ? sourceInfo?.kind === 'git' && typeof sourceInfo.gitUrl === 'string' && history?.mode === 'git-preserved' :
-      sourceInfo?.kind === 'local' && typeof sourceInfo.path === 'string' && ['git-preserved', 'directory-initialized'].includes(history?.mode ?? '');
+    const sourceInfo = candidate?.source;
+    const sourceValid = sourceKind === 'https' ? sourceInfo?.kind === 'git' && typeof sourceInfo.gitUrl === 'string' :
+      sourceInfo?.kind === 'local' && typeof sourceInfo.path === 'string';
     const valid = !!candidate && typeof candidate.name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(candidate.name) &&
       typeof candidate.description === 'string' && typeof candidate.path === 'string' && typeof candidate.createdAt === 'string' && candidate.origin === 'manual' &&
-      !!sourceValid && (history?.mode !== 'git-preserved' || history.scope === 'branches-tags-head-v1' && typeof history.selectedCommit === 'string');
+      !!sourceValid && !Object.hasOwn(candidate!, 'history');
     if (!valid) throw new Error('Registration returned a malformed result; outcome is unknown. Do not retry; refresh the catalog to check.');
     const record = candidate!;
     if (client !== this.client || this.stopped) return { record, refreshed: false, refreshError: 'Server disconnected after registration.' };

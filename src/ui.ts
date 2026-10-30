@@ -576,7 +576,6 @@ export class UI {
       const infoEnd = fieldsEnd + this.skillGroupInfoRows();
       const saveIndex = infoEnd + diagnostics.length;
       if (offset && this.menuIndex === 0) this.openLocalSkillPath();
-      else if (offset === 2 && this.menuIndex === 1) this.openCatalogManager();
       else if (editor && this.menuIndex >= offset && this.menuIndex < fieldsEnd) this.openServerField(this.menuIndex - offset);
       else if (editor && this.menuIndex >= fieldsEnd && this.menuIndex < infoEnd) {
         this.showNotice(this.legacySeedSummary() ?? 'Legacy seeds are managed through the existing settings API.');
@@ -891,7 +890,7 @@ export class UI {
     this.serverEditor = new ServerSettingsEditor(group);
     this.records = undefined; this.recordEditing = false;
     this.setView('server-group');
-    if (group.namespace === 'skills' && this.session.skillReconciliation?.state === 'error') this.showNotice('Repository reconciliation has errors; press R to retry without saving settings.');
+
   }
   private openServerField(fieldIndex = this.menuIndex - this.skillGroupOffset()): void {
     const editor = this.serverEditor, field = editor?.fields[fieldIndex];
@@ -920,35 +919,16 @@ export class UI {
     } else { this.input.setValue(editor.values[field.key]!); this.setView('server-field'); }
   }
   private effectiveRestartRequired(group: ServerSettingsGroup): string[] {
-    return group.restartRequired.filter(key => !(group.namespace === 'skills' && key === 'repositories' && group.fields.find(field => field.key === key)?.effect === 'immediate'));
+    return group.restartRequired;
   }
-  private skillErrorLines(group: ServerSettingsGroup): string[] {
-    if (group.namespace !== 'skills') return [];
-    const reconciliation = this.session.skillReconciliation ?? group.reconciliation;
-    return (reconciliation?.entries ?? []).filter(entry => entry.status === 'error').flatMap(entry => [
-      `Repository ${entry.name} · error`,
-      `Source: ${entry.gitUrl ?? 'unknown source'}`,
-      `Error: ${entry.error ?? 'No diagnostic available'}`,
-    ]);
-  }
-  private serverSkillsCommands(): Array<{ key: 'c' | 'R'; label: string }> {
-    if (this.recordEditing || this.serverEditor?.group.namespace !== 'skills') return [];
-    return [
-      ...(this.session.skillsEnabled ? [{ key: 'c' as const, label: 'Refresh catalog (read-only)' }] : []),
-      ...(this.session.skillsReconcileEndpointAvailable ? [{ key: 'R' as const, label: 'Retry legacy seed preparation' }] : []),
-    ];
-  }
-  private legacySeedSummary(): string | undefined {
-    const values = this.serverEditor?.group.values.repositories;
-    if (!Array.isArray(values)) return 'Legacy configured seeds: unavailable';
-    const names = values.flatMap(item => item && typeof item === 'object' && typeof (item as any).name === 'string' ? [(item as any).name] : []);
-    return `Legacy configured seeds: ${names.length}${names.length ? ` · ${names.join(', ')}` : ''} · managed by legacy settings API`;
-  }
+  private skillErrorLines(_group: ServerSettingsGroup): string[] { return []; }
+  private serverSkillsCommands(): Array<{ key: 'c' | 'R'; label: string }> { return []; }
+  private legacySeedSummary(): string | undefined { return undefined; }
   private skillRegistrationEnabled(): boolean {
     return !this.recordEditing && this.serverEditor?.group.namespace === 'skills' && !!this.session.skillRepositoryRegistrationAvailable;
   }
-  private skillGroupOffset(): number { return this.serverEditor?.group.namespace === 'skills' && !this.recordEditing ? 2 : 0; }
-  private skillGroupInfoRows(): number { return this.serverEditor?.group.namespace === 'skills' && !this.recordEditing ? 1 : 0; }
+  private skillGroupOffset(): number { return this.serverEditor?.group.namespace === 'skills' && !this.recordEditing ? 1 : 0; }
+  private skillGroupInfoRows(): number { return 0; }
   private openSkillDetails(skill: Skill): void {
     this.skillDetailsFocus = skill;
     this.skillDetailsReturnView = 'catalog-manager';
@@ -2235,9 +2215,9 @@ export class UI {
         const skillsGroup = editor.group.namespace === 'skills' && !this.recordEditing;
         const offset = this.skillGroupOffset();
         const rows = [
-          ...(offset ? [this.skillRegistrationEnabled() ? 'Add skill repository…' : 'Add skill repository unavailable · upgrade Skills plugin', 'Manage registered catalog skills…'] : []),
+          ...(offset ? [this.skillRegistrationEnabled() ? 'Add Git skill repository…' : 'Git skill registration unavailable · upgrade client/plugin'] : []),
           ...editor.fields.map(f => clip(`${f.label}: ${editor.inherits(f.key) ? '(inherited)' : previewValue(f.editor === 'text' || f.editor === 'select' ? editor.values[f.key] : JSON.parse(editor.values[f.key]!))} · ${editor.state(f.key)} · ${f.effect}${this.effectiveRestartRequired(editor.group).includes(f.key) ? ` · RESTART REQUIRED (effective ${previewValue(editor.group.effective[f.key])})` : ''}`, width - 1)),
-          ...(skillsGroup ? [clip(this.legacySeedSummary() ?? 'Legacy configured seeds: unavailable', width - 1)] : []),
+
           ...diagnostics.map(line => clip(line, width - 1)),
           this.recordEditing ? 'Stage configuration in list (not yet saved on server)' : 'Review / save server-wide changes',
           ...commands.map(command => `${command.key}  ${command.label}`),
@@ -2246,7 +2226,7 @@ export class UI {
         if (!this.recordEditing && current && current.revision !== editor.group.revision && !this.notice.getContent().includes('draft retained')) this.notice.setContent('Server settings changed in another client · draft is stale; r discards and reloads');
       }
       this.menu.select(this.menuIndex); this.updating = false;
-      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter row / field  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsEnabled ? '  c refresh catalog' : ''}${editor?.group.namespace === 'skills' && this.session.skillRepositoryRegistrationAvailable ? '  a add skill repository' : ''}${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry legacy seeds' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
+      this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter row / field  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillRepositoryRegistrationAvailable ? '  a add skill repository' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
       this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
