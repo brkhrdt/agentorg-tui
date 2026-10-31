@@ -80,6 +80,11 @@ describe('state and transcripts', () => {
     store.putOperation(queued, 3);
     expect(store.queuedPromptCount('root')).toBe(0);
     expect(store.operations.has('missed-terminal')).toBe(false);
+
+    store.install({ seq: 1, agents: [agent('root')], operations: [queued] });
+    expect(store.queuedPromptCount('root')).toBe(0);
+    expect(store.operations.has('missed-terminal')).toBe(false);
+    expect(store.watermark).toBe(3);
   });
   test('tree is parent-first, indented, hides archived agents, handles orphan/cycle records', () => {
     const store = new Store();

@@ -740,12 +740,14 @@ export class Store extends EventEmitter {
       if (terminal(current.status) && (!incoming || !terminal(incoming.status))) this.rememberOperationTombstone(id, current.status, currentSeq);
     }
     for (const [id, seq] of this.operationAbsences) {
-      if (snapshotOperations.has(id)) this.operationAbsences.delete(id);
-      else this.operationAbsences.set(id, Math.max(seq, snapshot.seq));
+      if (snapshotOperations.has(id) && snapshot.seq > seq) this.operationAbsences.delete(id);
+      else if (!snapshotOperations.has(id)) this.operationAbsences.set(id, Math.max(seq, snapshot.seq));
     }
     this.operations = new Map();
     this.operationSequences = new Map();
     for (const [id, operation] of snapshotOperations) {
+      const absenceSeq = this.operationAbsences.get(id);
+      if (absenceSeq !== undefined && snapshot.seq <= absenceSeq && !terminal(operation.status)) continue;
       if (this.operationTombstones.has(id) && !terminal(operation.status)) continue;
       this.operations.set(id, operation);
       this.operationSequences.set(id, snapshot.seq);
@@ -765,7 +767,7 @@ export class Store extends EventEmitter {
       this.operations.set(id, merged);
       this.operationSequences.set(id, currentSeq);
     }
-    this.watermark = snapshot.seq;
+    this.watermark = Math.max(this.watermark, snapshot.seq);
     this.pruneLivePreviews();
     // The snapshot is for state only; older buffered events still belong in chat.
     for (const event of this.orderedEvents()) if (event.seq > snapshot.seq) this.reduce(event);
