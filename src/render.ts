@@ -328,9 +328,10 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
     const label = effect === 'queue' ? 'QUEUE' : effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
     const attribution = hasCue && cue!.sender && cue!.recipient ? `${cue!.sender}: @${cue!.recipient}` : hasCue ? cue!.mention : '';
     const header = paint(`YOU · ${label}${attribution ? ` · ${attribution}` : ''}`, 'agentTarget', colors);
-    const detail = clean(stripAnsi(markdown(body, width, false, colors))).replace(/\s+/g, ' ').trim();
+    const preserveBreaks = !!(hasCue && cue!.sender && cue!.recipient);
+    const detail = clean(stripAnsi(markdown(body, width, false, colors, preserveBreaks))).replace(/\s+/g, ' ').trim();
     if (level === 1) return clipStyled(`${header} — ${markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors)}`, width);
-    if (level === 3) return `${wrapAnsi(header, width, { hard: true, trim: false })}\n${markdown(body, width, false, colors)}`;
+    if (level === 3) return `${wrapAnsi(header, width, { hard: true, trim: false })}\n${markdown(body, width, false, colors, preserveBreaks)}`;
     return `${clipStyled(header, width)}\n${literalEllipsis(detail, width)}`;
   }
   if (hasCue && cue!.sender && cue!.recipient) {

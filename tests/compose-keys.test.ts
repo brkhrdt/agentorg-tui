@@ -48,6 +48,26 @@ test('modified Enter sequences are consumed outside chat and prompt composition'
   expect(modes).toEqual([]);
 });
 
+test('Escape outside composition is immediate before later actions while same-write Meta keys stay intact', async () => {
+  const source = new PassThrough();
+  const input = new ComposeKeyInput(() => false, 60);
+  const chunks: string[] = [];
+  input.on('data', chunk => { chunks.push(Buffer.from(chunk).toString('utf8')); });
+  input.attach(source as any);
+  const ended = once(input, 'end');
+  source.write(Buffer.from('\x1b'));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(chunks).toEqual(['\x1b']);
+  source.write(Buffer.from('a'));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(chunks).toEqual(['\x1b', 'a']);
+  source.write(Buffer.from('\x1bb'));
+  source.end();
+  await ended;
+  expect(chunks).toEqual(['\x1b', 'a', '\x1bb']);
+  input.dispose();
+});
+
 test('standalone Escape is disambiguated for a bounded interval then remains ordinary Escape plus Enter', async () => {
   const source = new PassThrough();
   const input = new ComposeKeyInput(() => true, 20);

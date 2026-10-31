@@ -102,6 +102,12 @@ export class ComposeKeyInput extends Transform {
       }
       const isPrefix = MODIFIED_ENTER.some(sequence => this.pending.length < sequence.bytes.length && sequence.bytes.subarray(0, this.pending.length).equals(this.pending));
       if (isPrefix) {
+        if (!this.composeActive()) {
+          this.push(this.pending);
+          this.pending = Buffer.alloc(0);
+          forcePrefix = false;
+          continue;
+        }
         if (!forcePrefix) {
           this.disambiguation = setTimeout(() => {
             this.disambiguation = undefined;

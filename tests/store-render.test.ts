@@ -817,6 +817,17 @@ describe('four non-hidden rendering levels', () => {
     expect(tree).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@Receiver\x1b[0m');
     expect(tree).not.toContain('\x1b[35mBody heading');
   });
+  test('effect-bearing attributed prompt bodies preserve exact embedded newlines in full renders', () => {
+    const mention = '@Previous sender ';
+    const body = 'First line\nSecond line\n\nThird line';
+    for (const effect of ['normal', 'queue', 'interrupt'] as const) {
+      const queued = event(27, 'prompt.queued', {
+        effect, text: `${mention}${body}`, promptCue: { version: 1, bodyStart: mention.length },
+        promptAttribution: { version: 1, sender: 'Sender', recipient: 'Receiver' },
+      });
+      expect(stripAnsi(renderEvent(queued, 3, 100))).toContain(body);
+    }
+  });
   test('receiver attribution preserves complete multiline Markdown blocks at extended and full levels', () => {
     const body = [
       '**Strong text starts here',
