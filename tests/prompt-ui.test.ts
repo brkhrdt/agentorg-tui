@@ -117,6 +117,46 @@ test.each([
   } finally { await tui.close(); await mock.close(); }
 });
 
+test.each(['chat', 'prompt'] as const)('%s preserves bytes typed after modified Enter in the same PTY write', async view => {
+  const prompts: unknown[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') {
+      prompts.push(request.params);
+      respond(socket, request.id, { ...operation('queued'), id: `queued-${prompts.length}`, agentId: 'root' });
+    }
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    tui.keys('before\x1b[13;3uafter');
+    await waitFor(() => prompts.length === 1);
+    await waitFor(() => composerRows(tui).join('') === 'after');
+    expect(prompts).toEqual([{ agentId: 'root', text: 'before', queue: true }]);
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test.each(['chat', 'prompt'] as const)('%s preserves Blessed Alt-q behavior inside the composer', async view => {
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    tui.keys('keep this draft');
+    await waitFor(() => composerRows(tui).join('') === 'keep this draft');
+    tui.keys('\x1bq');
+    await waitFor(() => composerRows(tui).join('') === 'keep this draft');
+    expect(tui.screen()).toContain(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+  } finally { await tui.close(); await mock.close(); }
+});
+
 test.each([
   ['chat', 'queue', '\x1b\r', true],
   ['prompt', 'interrupt', '\x1b[27;5;13~', false],

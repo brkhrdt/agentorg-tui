@@ -9,7 +9,7 @@ async function normalize(chunks: string[], composeActive = true, timeoutMs = 30)
   let bytes = '';
   const modes: ComposeSubmitMode[] = [];
   input.on('data', chunk => { bytes += Buffer.from(chunk).toString('utf8'); });
-  input.on('modifiedEnter', mode => modes.push(mode));
+  input.on('modifiedEnter', mode => { modes.push(mode); setImmediate(() => input.resumeAfterSubmit()); });
   input.attach(source as any);
   const ended = once(input, 'end');
   for (const chunk of chunks) source.write(Buffer.from(chunk));
@@ -26,6 +26,12 @@ test('normalizer recognizes supported Alt/Ctrl Enter encodings across split and 
   ]);
   expect(bytes).toBe('typed-tailmiddlexyend');
   expect(modes).toEqual(['queue', 'queue', 'interrupt', 'queue', 'interrupt']);
+});
+
+test('bytes after modified Enter are released only after explicit composer rearm', async () => {
+  const { bytes, modes } = await normalize(['before\x1b[13;3uafter']);
+  expect(modes).toEqual(['queue']);
+  expect(bytes).toBe('beforeafter');
 });
 
 test('normalizer preserves plain Enter, UTF-8, unknown keys and unsupported modifier combinations', async () => {

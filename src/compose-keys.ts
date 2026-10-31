@@ -19,6 +19,8 @@ export class ComposeKeyInput extends Transform {
   private source?: RawInput;
   private pending = Buffer.alloc(0);
   private rawMode = false;
+  private blocked = false;
+  private flushCallback?: TransformCallback;
   private disambiguation?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly composeActive: () => boolean, private readonly timeoutMs = ESCAPE_DISAMBIGUATION_MS) {
@@ -40,6 +42,8 @@ export class ComposeKeyInput extends Transform {
     if (this.disambiguation) clearTimeout(this.disambiguation);
     this.disambiguation = undefined;
     this.pending = Buffer.alloc(0);
+    this.blocked = false;
+    this.flushCallback = undefined;
     this.source?.unpipe(this);
     this.source = undefined;
     this.destroy();
@@ -56,16 +60,36 @@ export class ComposeKeyInput extends Transform {
   override _flush(callback: TransformCallback): void {
     if (this.disambiguation) clearTimeout(this.disambiguation);
     this.disambiguation = undefined;
+    this.flushCallback = callback;
     this.drain(true);
-    callback();
+  }
+
+  /** Release bytes buffered after modified Enter once Blessed has rearmed input. */
+  resumeAfterSubmit(): void {
+    if (!this.blocked) return;
+    this.blocked = false;
+    this.drain();
+  }
+
+  private finishFlush(): void {
+    if (!this.blocked && !this.pending.length && this.flushCallback) {
+      const callback = this.flushCallback;
+      this.flushCallback = undefined;
+      callback();
+    }
   }
 
   private drain(forcePrefix = false): void {
+    if (this.blocked) return;
     while (this.pending.length) {
       const exact = MODIFIED_ENTER.find(sequence => this.pending.length >= sequence.bytes.length && this.pending.subarray(0, sequence.bytes.length).equals(sequence.bytes));
       if (exact) {
         this.pending = this.pending.subarray(exact.bytes.length);
-        if (this.composeActive()) this.emit('modifiedEnter', exact.mode);
+        if (this.composeActive()) {
+          this.blocked = true;
+          this.emit('modifiedEnter', exact.mode);
+          return;
+        }
         forcePrefix = false;
         continue;
       }
@@ -86,20 +110,12 @@ export class ComposeKeyInput extends Transform {
         continue;
       }
       const startsWithEscape = this.pending[0] === ESC;
-      if (startsWithEscape && this.pending[1] !== 0x5b && this.pending[1] !== 0x4f) {
-        // Outside the explicitly supported ESC+CR Alt-Enter form, keep Escape
-        // distinct from the next ordinary key so navigation is not swallowed
-        // as a legacy Meta binding (notably Escape+Tab / Escape+letter).
-        this.push(this.pending.subarray(0, 1));
-        this.pending = this.pending.subarray(1);
-        forcePrefix = false;
-        continue;
-      }
       const nextEscape = this.pending.indexOf(ESC, startsWithEscape ? 1 : 0);
       const length = nextEscape >= 0 ? nextEscape : this.pending.length;
       this.push(this.pending.subarray(0, length));
       this.pending = this.pending.subarray(length);
       forcePrefix = false;
     }
+    this.finishFlush();
   }
 }

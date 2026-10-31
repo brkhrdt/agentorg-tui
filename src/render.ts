@@ -501,14 +501,15 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
         }
       } else {
         const priorIndex = steeringRequests.get(steeringId);
-        if (priorIndex !== undefined) replace(priorIndex, event);
-        else if (settings.visible(event.type)) add(event, `${steeringId}\0steering`);
+        if (priorIndex !== undefined) {
+          if (settings.visible(event.type, rendering?.subtype)) replace(priorIndex, event);
+        } else if (settings.visible(event.type, rendering?.subtype)) add(event, `${steeringId}\0steering`);
         if (steeringTerminal) steeringRequests.delete(steeringId);
       }
       adjacent = false;
       continue;
     }
-    if (steeringId && settings.compactToolCalls && steeringPhase && raw) steeringRequests.delete(steeringId);
+    if (steeringId && settings.compactToolCalls && raw) steeringRequests.delete(steeringId);
     // Raw tool phases remain separate and end any prior replacement chain.
     if (callId && raw) toolCalls.delete(callId);
     else if (callId) {

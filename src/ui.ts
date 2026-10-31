@@ -352,6 +352,8 @@ export class UI {
     this.composer.on('submit', (value: string) => { void this.submit(value, this.composer.takeSubmitMode()); });
     this.composeKeyInput.on('modifiedEnter', (mode: ComposeSubmitMode) => {
       if (this.view === 'chat' || this.view === 'prompt') this.composer.submit(mode);
+      // Blessed installs the fresh textarea key listener on nextTick after submit.
+      setImmediate(() => this.composeKeyInput.resumeAfterSubmit());
     });
     for (const input of [this.editorInput, this.composer]) {
       input.on('cancel', () => {
@@ -406,7 +408,7 @@ export class UI {
         const active = this.composeIdentity();
         if (!active || active.kind !== identity.kind || (identity.kind === 'chat' && (active.kind !== 'chat' || active.id !== identity.id))) return;
         const value = this.composer.getValue();
-        this.saveComposeDraft(value);
+        if (!this.sending) this.saveComposeDraft(value);
         this.updateMentionCompletion(); this.refreshComposeCompletion();
       }, 0);
     });
@@ -2019,7 +2021,10 @@ export class UI {
     this.draw();
     // Enter ends the current textarea read cycle. Keep composition responsive
     // while acceptance is pending so Escape and local draft edits remain usable.
-    this.composer.show(); this.composer.readInput();
+    // Modified Enter starts a fresh draft before buffered trailing bytes replay.
+    this.composer.show();
+    if (mode !== 'default') this.composer.setValue('');
+    this.composer.readInput();
     this.draw();
     const steering = mode === 'default' && !!this.session.activePrompt(agentId);
     this.showNotice(mode === 'queue' ? 'Queueing prompt…' : mode === 'interrupt' ? 'Interrupting and submitting prompt…' : steering ? 'Sending guidance to active prompt…' : 'Sending interrupting prompt…');
@@ -2038,14 +2043,17 @@ export class UI {
       const active = this.composeIdentity();
       const sameContext = !!identity && !!active && identity.kind === active.kind &&
         (identity.kind !== 'chat' || active.kind === 'chat' && identity.id === active.id);
-      if (submittedDraftStillCurrent && sameContext && this.composer.getValue() === submitted) {
-        this.composer.setValue('');
+      if (submittedDraftStillCurrent && sameContext && (this.composer.getValue() === submitted || mode !== 'default' && !this.composer.getValue())) {
+        if (this.composer.getValue() === submitted) this.composer.setValue('');
         this.clearMentionCompletion();
         // Only the original tree-prompt context returns to tree. A reopened
         // prompt for the same recipient is synchronized in place, never retargeted.
         if (view === 'prompt' && this.navigationGeneration === submittedNavigation) this.setView('tree');
       }
-    } catch (error) { this.showNotice((error as Error).message); }
+    } catch (error) {
+      if (mode !== 'default' && identity && this.composeDraftRevision(identity) === submittedRevision && !this.composer.getValue()) this.composer.setValue(submitted);
+      this.showNotice((error as Error).message);
+    }
     finally {
       this.sending = false;
       if (this.view === 'chat' || this.view === 'prompt') this.refreshComposeCompletion();

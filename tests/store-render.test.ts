@@ -22,6 +22,30 @@ describe('state and transcripts', () => {
     store.ingest(event(2, 'operation.changed', { ...second, status: 'completed' }));
     expect(store.queuedPromptCount('root')).toBe(0);
   });
+  test('authoritative snapshots omit stale operations even after their event payloads are evicted', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.configureHistory({ ...new Settings().history, recentEvents: 1, chatPageSize: 1 });
+    const active = { ...operation('running'), id: 'active', agentId: 'root' };
+    const queued = { ...operation('queued'), id: 'queued', agentId: 'root' };
+    store.ingest(event(1, 'operation.changed', active));
+    store.ingest(event(2, 'operation.changed', queued));
+    store.ingest(event(3, 'plugin.custom', { marker: true }, { agentId: 'root' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.events.has(2)).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(1);
+
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('active')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+
+    const newer = { ...queued, id: 'newer-queued' };
+    store.ingest(event(4, 'operation.changed', newer));
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    expect(store.operations.get('newer-queued')?.status).toBe('queued');
+    store.install({ seq: 4, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('newer-queued')).toBe(false);
+  });
   test('tree is parent-first, indented, hides archived agents, handles orphan/cycle records', () => {
     const store = new Store();
     store.install({ seq: 5, agents: [agent('grandchild', 'child'), agent('child', 'root'), agent('root'), agent('removed', 'root', { removedAt: 'yesterday' }), agent('orphan', 'unknown')], operations: [] });

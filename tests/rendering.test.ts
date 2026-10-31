@@ -39,6 +39,16 @@ test('steering phases use tool lifecycle colors and compact to latest state when
   ]);
 });
 
+test('hidden compact steering terminal phases close correlation without hiding the latest visible phase', () => {
+  const settings = new Settings(); settings.compactToolCalls = true;
+  settings.levels['prompt.steer_delivered'] = 0;
+  const submitted = event(1, 'prompt.steer_submitted', { steeringId: 'steer', text: 'help' });
+  const pending = event(2, 'prompt.steer_pending', { steeringId: 'steer', text: 'help' });
+  const hiddenTerminal = event(3, 'prompt.steer_delivered', { steeringId: 'steer', text: 'help' });
+  const latePending = event(4, 'prompt.steer_pending', { steeringId: 'steer', text: 'help' });
+  expect(chatGroups([submitted, pending, hiddenTerminal, latePending], settings).map(item => item.seq)).toEqual([2, 4]);
+});
+
 test('server Markdown controls content, client controls styles/cell limits and raw ignores presentations', () => {
   const summary = renderTreeEvent(raw, 32, rendering);
   expect(stripAnsi(summary)).toBe('< src/main.ts');

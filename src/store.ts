@@ -129,6 +129,7 @@ type LivePreviewFallback = { event: ServerEvent; subtype?: string; rendering?: E
 export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
   operations = new Map<string, Operation>();
+  private operationSequences = new Map<string, number>();
   events = new Map<number, ServerEvent>();
   renderings = new Map<number, EventRendering>();
   discovered = new Set<string>();
@@ -718,7 +719,7 @@ export class Store extends EventEmitter {
   }
 
   reset(): void {
-    this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
+    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.livePreviews.clear(); this.livePreviewFallbacks.clear(); this.previewSources.clear(); this.previewMessageIdentities.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear(); this.previewSubtypeIds.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
@@ -728,11 +729,15 @@ export class Store extends EventEmitter {
   install(snapshot: Snapshot): void {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
     const previousOperations = this.operations;
+    const previousOperationSequences = this.operationSequences;
     this.operations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
+    this.operationSequences = new Map(snapshot.operations.map(operation => [operation.id, snapshot.seq]));
     for (const [id, current] of previousOperations) {
+      const currentSeq = previousOperationSequences.get(id) ?? -1;
+      if (currentSeq <= snapshot.seq) continue;
       const incoming = this.operations.get(id);
-      if (incoming) this.operations.set(id, mergeOperation(current, incoming));
-      else if (!terminal(current.status)) this.operations.set(id, current);
+      this.operations.set(id, incoming ? mergeOperation(current, incoming) : current);
+      this.operationSequences.set(id, currentSeq);
     }
     this.watermark = snapshot.seq;
     this.pruneLivePreviews();
@@ -854,7 +859,7 @@ export class Store extends EventEmitter {
     const data = object(event.data);
     this.watermark = Math.max(this.watermark, event.seq);
     if (truncated(data)) { this.emit('refresh'); return; }
-    if (event.type === 'operation.changed' && typeof data.id === 'string') this.putOperation(data as Operation);
+    if (event.type === 'operation.changed' && typeof data.id === 'string') this.putOperation(data as Operation, event.seq);
     if (!event.agentId) return;
     const previous = this.agents.get(event.agentId);
     if (['agent.created', 'agent.modified'].includes(event.type) && typeof data.id === 'string' && data.settings) {
@@ -870,9 +875,15 @@ export class Store extends EventEmitter {
       this.emit('refresh');
     }
   }
-  putOperation(operation: Operation): void {
+  putOperation(operation: Operation, seq?: number): void {
     const current = this.operations.get(operation.id);
-    this.operations.set(operation.id, current ? mergeOperation(current, operation) : operation);
+    const currentSeq = this.operationSequences.get(operation.id) ?? -1;
+    const staleResponse = current && (terminal(current.status) || operationRank(operation.status) < operationRank(current.status));
+    // RPC acknowledgements lack a wire sequence; place non-stale responses just beyond the observed watermark.
+    const observedSeq = seq ?? (staleResponse ? currentSeq : this.watermark + 1);
+    if (current) this.operations.set(operation.id, mergeOperation(current, operation));
+    else this.operations.set(operation.id, operation);
+    this.operationSequences.set(operation.id, Math.max(currentSeq, observedSeq));
     this.emit('change');
   }
   queuedPromptCount(agentId: string): number {
