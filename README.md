@@ -95,7 +95,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | --- | --- |
 | ↑ / ↓ | Select a visible agent (metadata highlighted; configurable colors) |
 | Tab | Collapse / expand the selected agent's branch (when it has children) |
-| Enter | Open an interrupting prompt for the selected agent |
+| Enter | Open a prompt composer; sends a normal prompt when idle or steers the exact active prompt when running |
 | c | Open the selected agent's chat |
 | z | Open the selected agent's raw events from currently loaded chat history |
 | a | Key-labelled agent info, editing and lifecycle actions |
@@ -500,17 +500,19 @@ settings are saved, not prompts, agent settings, or transcript data.
 
 The chat shows the selected agent's retained event history using the configured
 levels. Compatible contiguous message chunks are combined for readable text;
-raw mode preserves each original record. **v → c** toggles compact tool phases
+raw mode preserves each original record. **v → c** toggles compact tool and prompt phases
 (chat only): a tool update replaces its call, and the result replaces the latest
-visible phase in that call's position. Correlation uses the tool call ID scoped
-to its agent and generation; events without an ID remain separate. The tree view
-is unchanged. Thinking and user chunks are labeled
+visible phase in that call's position. Steering's submitted, pending, and final
+states similarly replace one another by steering ID. With compaction off, each
+lifecycle event remains visible. Correlation is scoped to the agent and
+process generation; events without an ID remain separate. The tree view is
+unchanged. Thinking and user chunks are labeled
 separately. Generation changes and intervening events prevent chunk merging.
 Prompt result text is not appended again as an assistant response.
 
-The chat header shows the agent's ancestry, separated by `/`. Opening an
-interrupting prompt from the tree keeps the tree visible above the composer;
-its target stays fixed even if live updates change the tree selection.
+The chat header shows the agent's ancestry, separated by `/`. Opening a prompt
+composer from the tree keeps the tree visible above it; its target stays fixed
+even if live updates change the tree selection.
 
 Typing `@` in either composer offers the fixed recipient's direct parent and
 nonremoved descendants. Suggestions use names and relative paths (for example,
@@ -555,8 +557,18 @@ includes the entire prompt. The current Blessed composer is end-editing only
 the active suffix at the end rather than interpreting terminal-cell positions.
 Resizing the terminal rewraps the draft.
 
-- **Enter** sends the message. Every send explicitly uses `queue: false`: it
-  cancels queued prompts and interrupts active work before the new prompt runs.
+- **Enter** sends the message. If the target has a running prompt, Enter submits
+  `agent.steer` with that exact operation ID; it does not cancel or replace the
+  operation. AgentOrg records submission and returns promptly; the composer can
+  clear while delivery waits for a safe conversation boundary. The chat shows
+  submitted, pending, and delivered/failed states with the guidance text.
+  Unsupported harnesses or stale operations fail closed and preserve the draft.
+  Without an active prompt, Enter starts a normal prompt. Prompt events render
+  as `PROMPT`; queued events (`queue: true`) render as `QUEUE`. Summary is one
+  line, extended is two
+  flush-left lines with `...` truncation, and full shows the complete prompt.
+  The existing compact-phases setting leaves every transition visible when off;
+  when on, later steering phases replace earlier ones in the chat.
 - **Page Up / mouse-wheel up** browse older content and pause viewport auto-scroll only; incoming events still join this chat while its position remains anchored. At the loaded top, Page Up (or wheel-up) fetches another older page for this agent.
 - **Page Down / mouse-wheel down** reveal already-appended events. Reaching the actual bottom resumes auto-follow; a no-op Page Down at the bottom (including when the transcript is shorter than the viewport) keeps following. **Ctrl+Home** jumps to the loaded top; **Ctrl+End** explicitly reloads the latest bounded chat window and resumes auto-follow.
 - Sending while scrolled does not force latest or reload chat. Loading older pages and live events use one bounded window rather than accumulating an unlimited backlog; if the visible anchor is evicted, the chat marks the incomplete window and clamps to retained content.

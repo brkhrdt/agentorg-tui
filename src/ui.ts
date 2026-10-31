@@ -232,6 +232,13 @@ export class UI {
   constructor(private session: Session, private settings: Settings, private configPath: string, pathSource?: PathCompletionSource) {
     this.session.configureHistory(settings.history);
     this.composePathSource = pathSource ?? new HostPathCompletionSource(session);
+    this.session.on('event', (event: ServerEvent) => {
+      const data = event.data && typeof event.data === 'object' ? event.data as Record<string, any> : {};
+      if (event.type === 'prompt.steer_submitted') this.showNotice(`Guidance submitted · ${data.steeringId ?? ''}`);
+      else if (event.type === 'prompt.steer_pending') this.showNotice(`Guidance pending · ${data.steeringId ?? ''}`);
+      else if (event.type === 'prompt.steer_delivered') this.showNotice(`Guidance delivered · ${data.steeringId ?? ''}`);
+      else if (event.type === 'prompt.steer_failed') this.showNotice(`Guidance failed · ${data.error?.message ?? 'delivery was not confirmed'}`);
+    });
     const itemForeground = this.menu.style.item.fg;
     this.menu.style.item.fg = (item: blessed.Widgets.BlessedElement) => {
       const index = this.menu.getItemIndex(item);
@@ -713,7 +720,7 @@ export class UI {
       action('l', 'Event visibility / rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool and prompt phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
     if (this.view === 'history-settings') return [action('enter', 'Edit selected history limit', choose), action('z', 'Restore history cache defaults', () => { this.settings.history = { ...DEFAULT_HISTORY }; this.session.configureHistory(this.settings.history); this.saveSettings(); this.draw(); }), back];
     if (this.view === 'colors') return [action('space', 'Cycle selected color', cycle), action('left', 'Previous color', () => this.changeColor(-1)), action('right', 'Next color', () => this.changeColor(1)), action('enter', 'Next color', () => this.changeColor(1)), action('z', 'Reset all colors', () => { this.settings.colors = { ...DEFAULT_COLORS }; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
@@ -2004,9 +2011,10 @@ export class UI {
     // while acceptance is pending so Escape and local draft edits remain usable.
     this.composer.show(); this.composer.readInput();
     this.draw();
-    this.showNotice('Sending interrupting prompt…');
+    const steering = !!this.session.activePrompt(agentId);
+    this.showNotice(steering ? 'Sending guidance to active prompt…' : 'Sending interrupting prompt…');
     try {
-      await this.session.prompt(agentId, submitted);
+      await this.session.sendPromptOrSteer(agentId, submitted);
       const submittedDraftStillCurrent = !!identity && this.composeDraftRevision(identity) === submittedRevision &&
         (identity.kind === 'chat' ? this.chatDrafts.get(identity.id) === submitted : this.promptDraft === submitted);
       if (submittedDraftStillCurrent && identity?.kind === 'chat') {
@@ -2179,7 +2187,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ` Text: Enter send  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
+      this.footer.setContent(this.view === 'prompt' ? ` Text: Enter send / steer active  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
@@ -2248,7 +2256,7 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter row / field  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsEnabled ? '  c refresh catalog' : ''}${editor?.group.namespace === 'skills' && this.session.skillRepositoryRegistrationAvailable ? '  a add skill repository' : ''}${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry legacy seeds' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool/prompt phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
       this.footer.setContent(' s server settings   t TUI colors   b table fields   l event visibility / rendering levels   c compact phases   h history cache   ↑↓ select   Enter open   Esc tree');
@@ -2400,7 +2408,7 @@ export class UI {
         } finally { this.adjustingChatViewport = false; }
       }
       this.chatLayout = nextLayout;
-      this.footer.setContent(` Text: Enter send  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  PgUp older  PgDn latest  C-Home top  C-End follow  Ctrl+C clear`);
+      this.footer.setContent(` Text: Enter send / steer active  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  PgUp older  PgDn latest  C-Home top  C-End follow  Ctrl+C clear`);
     } else if (this.view === 'settings-choice-setup') {
       this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
     } else if (this.view === 'server-field') {
@@ -2410,7 +2418,7 @@ export class UI {
         ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :
         ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
     } else {
-      this.footer.setContent(` Text: Enter send (interrupts)  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+U clear`);
+      this.footer.setContent(` Text: Enter send / steer active  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+U clear`);
     }
     if (this.sending) this.footer.setContent(this.view === 'chat' || this.view === 'prompt' ? ' Working · do not retry unknown outcomes' : this.input.visible ? ' Working · do not retry unknown outcomes' : ' Working · Esc tree  q quit · do not retry unknown outcomes');
     else if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);

@@ -1,6 +1,9 @@
 import { expect, test } from 'bun:test';
-import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
+import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
+import stripAnsi from 'strip-ansi';
+import { renderEvent } from '../src/render.js';
+import { Settings } from '../src/settings.js';
 
 function composerRows(tui: ReturnType<typeof terminalClient>): string[] {
   const lines = tui.screen().split('\n');
@@ -64,6 +67,65 @@ for (const view of ['prompt', 'chat'] as const) {
     });
   }
 }
+
+test('Enter submits steering promptly and shows its lifecycle without interrupting the operation', async () => {
+  const requests: any[] = [];
+  const active = { ...operation('running'), id: 'active-child-prompt', agentId: 'root' };
+  let pendingSteer: { socket: any; id: string } | undefined;
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [active] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.steer') {
+      pendingSteer = { socket, id: request.id };
+      send(socket, event(1, 'prompt.steer_submitted', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
+      respond(socket, request.id, { agentId: 'root', operationId: active.id, steeringId: 'steer-1', disposition: 'submitted' });
+    } else if (request.method === 'agent.prompt') respond(socket, request.id, operation('queued'));
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80 });
+  try {
+    await tui.visible('root   idle'); tui.keys('c'); await tui.visible('Chat · root');
+    tui.keys('Continue after the sleep without stopping it');
+    tui.keys('\r');
+    await waitFor(() => !!pendingSteer && tui.screen().includes('STEERING SUBMITTED'));
+    expect(tui.screen()).toContain('STEERING SUBMITTED');
+    expect(requests.some(request => request.method === 'agent.steer')).toBe(true);
+    send(pendingSteer!.socket, event(2, 'prompt.steer_pending', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
+    await waitFor(() => tui.screen().includes('STEERING PENDING'));
+    expect(requests.find(request => request.method === 'agent.steer').params).toEqual({ agentId: 'root', operationId: active.id, text: 'Continue after the sleep without stopping it' });
+    expect(requests.some(request => request.method === 'agent.prompt')).toBe(false);
+    send(pendingSteer!.socket, event(3, 'prompt.steer_delivered', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
+    await waitFor(() => tui.screen().includes('STEERING DELIVERED'));
+    expect(tui.screen()).toContain('STEERING PENDING');
+    expect(tui.screen()).toContain('STEERING SUBMITTED');
+    expect(active.status).toBe('running');
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('steering and queued prompt detail levels label states, stay flush-left, and use literal truncation', () => {
+  const steering = event(1, 'prompt.steer_pending', { steeringId: 's', operationId: 'o', text: 'a very long prompt text '.repeat(20) });
+  const summary = stripAnsi(renderEvent(steering, 1, 120));
+  expect(summary).toStartWith('YOU · STEERING PENDING —');
+  const extended = stripAnsi(renderEvent(steering, 2, 24)).split('\n');
+  expect(extended).toHaveLength(2);
+  expect(extended[0]).toBe('YOU · STEERING PENDING');
+  expect(extended[1]!.startsWith(' ')).toBe(false);
+  expect(extended[1]).toEndWith('...');
+  const full = stripAnsi(renderEvent(steering, 3, 24)).split('\n');
+  expect(full[0]).toContain('STEERING PENDING');
+  expect(full.slice(1).every(line => !line.startsWith(' '))).toBe(true);
+  for (const [effect, label] of [['normal', 'PROMPT'], ['interrupt', 'PROMPT'], ['queue', 'QUEUE']] as const) {
+    const queued = event(2, 'prompt.queued', { effect, text: 'a long prompt '.repeat(20) });
+    expect(stripAnsi(renderEvent(queued, 1, 120))).toStartWith(`YOU · ${label}`);
+    const detail = stripAnsi(renderEvent(queued, 2, 24)).split('\n');
+    expect(detail[0]).toContain(label);
+    expect(detail[1]!.startsWith(' ')).toBe(false);
+    expect(detail[1]).toEndWith('...');
+    const all = stripAnsi(renderEvent(queued, 3, 24)).split('\n');
+    expect(all[0]).toContain(label);
+    expect(all.slice(1).every(line => !line.startsWith(' '))).toBe(true);
+  }
+});
 
 test('composer caps at the terminal height, follows the tail and restores the full draft when cleared', async () => {
   const prompts: unknown[] = [];

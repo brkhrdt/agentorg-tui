@@ -19,6 +19,7 @@ export const DEFAULT_LEVELS: Record<string, Level> = {
   'tool.call:mcp__agentorg__prompt_subagent': 3,
   'tool.call:mcp__agentorg__prompt_parent': 3,
   'tool.call:cancel_operation': 2,
+  'prompt.steer_submitted': 3, 'prompt.steer_pending': 3, 'prompt.steer_delivered': 3, 'prompt.steer_failed': 3, 'prompt.steering': 3, 'prompt.steered': 3,
   'tool.result:bash': 2,
   'tool.result:mcp__agentorg__modify_subagent': 2,
   'tool.result:mcp__agentorg__get_completion': 2,
@@ -71,7 +72,7 @@ export function normalizeTableFields(value: unknown): TableField[] {
 export const EVENT_TYPES = [
   'server.ready', 'server.stopped', 'agent.created', 'agent.state', 'agent.modified',
   'agent.removed', 'agent.session_replaced', 'agent.error', 'prompt.queued',
-  'prompt.started', 'prompt.cancelling', 'prompt.finished', 'operation.changed',
+  'prompt.started', 'prompt.cancelling', 'prompt.finished', 'prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered', 'operation.changed',
   'agent.message', 'tool.call', 'tool.update', 'tool.result', 'agent.plan',
   'agent.update', 'permission.requested', 'permission.resolved', 'plugin.error',
 ];

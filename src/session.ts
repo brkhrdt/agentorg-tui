@@ -698,6 +698,24 @@ export class Session extends EventEmitter {
       if (this.refreshAgain) { this.refreshAgain = false; this.scheduleRefresh(); }
     }
   }
+  activePrompt(agentId: string): Operation | undefined {
+    return [...this.store.operations.values()].find(operation =>
+      operation.agentId === agentId && operation.type === 'agent.prompt' && operation.status === 'running' && operation.cancelRequested !== true,
+    );
+  }
+  async sendPromptOrSteer(agentId: string, text: string): Promise<'prompt' | 'steered'> {
+    if (!text.trim()) return 'prompt';
+    const active = this.activePrompt(agentId);
+    if (active) {
+      const client = this.client;
+      if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+      await client.request('agent.steer', { agentId, operationId: active.id, text });
+      this.emit('notice', `Guidance submitted · ${active.id}`);
+      return 'steered';
+    }
+    await this.prompt(agentId, text);
+    return 'prompt';
+  }
   async prompt(agentId: string, text: string): Promise<void> {
     if (!text.trim()) return;
     const client = this.client;

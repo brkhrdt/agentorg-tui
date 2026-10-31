@@ -17,6 +17,26 @@ const raw = event(1, 'tool.result', { title: 'read', status: 'completed', rawInp
 const rendering: EventRendering = { rendererId: 'pi/read', subtype: 'read', summary: '\\< src/main.ts', extended: '\\< src/main.ts\n2 lines', full: '\\< src/main.ts\n\n**Custom read complete**\n\n```ts\nconst answer = 42;\n```' };
 const metadata: RendererMetadata = { id: 'pi/read', name: 'Pi read', harness: 'pi', eventTypes: ['tool.result'], tool: 'read', examples: [{ type: 'tool.result', ...rendering, raw: JSON.stringify(raw, null, 2) }] };
 
+test('steering status renders yellow-to-green/red and replaces its pending chat row', () => {
+  const pending = event(1, 'prompt.steering', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });
+  const tool = event(2, 'tool.call', { toolName: 'bash', rawInput: { command: 'sleep 30' }, toolCallId: 'sleep-1' });
+  const delivered = event(3, 'prompt.steered', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });
+  const failed = event(4, 'prompt.steer_failed', { steeringId: 'steer-2', operationId: 'op-1', text: 'Try again', error: { code: 'NOT_DELIVERED', message: 'queue cleared' } });
+  const settings = new Settings();
+  expect(renderEvent(pending, 1, 100)).toStartWith('\x1b[33mYOU · STEERING PENDING');
+  expect(renderTreeEvent(pending, 100)).toStartWith('\x1b[33mYOU · STEERING PENDING');
+  expect(stripAnsi(renderEvent(pending, 1, 100))).toContain('Return 5');
+  expect(renderEvent(delivered, 1, 100)).toStartWith('\x1b[32mYOU · STEERING DELIVERED');
+  expect(renderEvent(failed, 1, 100)).toStartWith('\x1b[31mYOU · STEERING FAILED');
+  expect(stripAnsi(renderEvent(failed, 1, 100))).toContain('queue cleared');
+  const groups = chatGroups([pending, tool, delivered], settings);
+  expect(groups.map(item => item.type)).toEqual(['prompt.steering', 'tool.call', 'prompt.steered']);
+  settings.compactToolCalls = true;
+  const compacted = chatGroups([event(5, 'prompt.steer_submitted', { steeringId: 's', text: 'hi' }), event(6, 'prompt.steer_pending', { steeringId: 's', text: 'hi' }), event(7, 'prompt.steer_delivered', { steeringId: 's', text: 'hi' })], settings);
+  expect(compacted.map(item => item.type)).toEqual(['prompt.steer_delivered']);
+  expect(stripAnsi(renderEvent(compacted[0]!, 1, 100))).toContain('YOU · STEERING DELIVERED — hi');
+});
+
 test('server Markdown controls content, client controls styles/cell limits and raw ignores presentations', () => {
   const summary = renderTreeEvent(raw, 32, rendering);
   expect(stripAnsi(summary)).toBe('< src/main.ts');
@@ -560,20 +580,20 @@ test('terminal compact controls toggle via selection or shortcut with either set
     };
     try {
       await tui.visible('connected');
-      tui.keys('v'); await tui.visible('Compact tool phases in chat: off');
+      tui.keys('v'); await tui.visible('Compact tool/prompt phases in chat: off');
       tui.keys('\x1b[B'.repeat(serverSettings ? 4 : 3) + '\r');
-      await tui.visible('Compact tool phases in chat: on');
+      await tui.visible('Compact tool/prompt phases in chat: on');
       await waitFor(saved(true));
-      tui.keys('?'); await tui.visible('Toggle compact tool phases');
+      tui.keys('?'); await tui.visible('Toggle compact tool and prompt phases');
       tui.keys('\x1b'); await tui.visible('View settings');
-      tui.keys('c'); await tui.visible('Compact tool phases in chat: off');
+      tui.keys('c'); await tui.visible('Compact tool/prompt phases in chat: off');
       await waitFor(saved(false));
-      tui.keys('c'); await tui.visible('Compact tool phases in chat: on');
+      tui.keys('c'); await tui.visible('Compact tool/prompt phases in chat: on');
       await waitFor(saved(true));
       await tui.close();
       tui = terminalClient(mock.path, mock.directory);
       await tui.visible('connected');
-      tui.keys('v'); await tui.visible('Compact tool phases in chat: on');
+      tui.keys('v'); await tui.visible('Compact tool/prompt phases in chat: on');
     } finally { await tui.close(); await mock.close(); }
   }
 }, 15000);

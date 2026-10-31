@@ -639,13 +639,16 @@ describe('four non-hidden rendering levels', () => {
     const text = `@Research lead ${body}`;
     const queued = event(3, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Research lead '.length } });
     const full = renderEvent(queued, 3, 80, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(full)).toContain('@Research lead Heading');
-    expect(full).toContain('\x1b[35m@Research lead\x1b[0m');
+    expect(stripAnsi(full)).toContain('YOU · PROMPT · @Research lead');
+    expect(stripAnsi(full)).toContain('Heading');
+    expect(full).toContain('\x1b[35mYOU · PROMPT · @Research lead\x1b[0m');
     expect(stripAnsi(full)).toContain('item with code');
     expect(stripAnsi(full)).not.toContain('# Heading');
     const tree = renderTreeEvent(queued, 80, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(tree)).toBe(text.replace(/\s+/g, ' '));
-    expect(tree).toContain('\x1b[35m@Research lead\x1b[0m');
+    expect(stripAnsi(tree)).toContain('PROMPT');
+    expect(stripAnsi(tree)).toContain('@Research lead');
+    expect(stripAnsi(tree)).toContain('Heading');
+    expect(tree).toContain('\x1b[35mYOU · PROMPT · @Research lead\x1b[0m');
     const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
     expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
   });
@@ -654,16 +657,16 @@ describe('four non-hidden rendering levels', () => {
     const queued = event(5, 'prompt.queued', { text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } });
     const sidecar = { rendererId: 'custom.prompt', summary: '@Root Coordinator **Custom summary**', extended: '@Root Coordinator Custom extended detail', full: '@Root Coordinator Custom full body\nsecond line' };
     const summary = renderEvent(queued, 1, 80, sidecar, { agentTarget: 'magenta' });
-    expect(stripAnsi(summary)).toBe('@Root Coordinator Custom summary');
-    expect(summary).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(stripAnsi(summary)).toBe('YOU · PROMPT · @Root Coordinator — Custom summary');
+    expect(summary).toContain('\x1b[35mYOU · PROMPT · @Root Coordinator\x1b[0m');
     expect(stripAnsi(renderEvent(queued, 2, 80, sidecar))).toContain('Custom extended detail');
     expect(stripAnsi(renderEvent(queued, 3, 80, sidecar))).toContain('Custom full body');
     const treeSidecar = renderTreeEvent(queued, 80, sidecar);
-    expect(stripAnsi(treeSidecar)).toBe('@Root Coordinator Custom summary');
+    expect(stripAnsi(treeSidecar)).toBe('YOU · PROMPT · @Root Coordinator — Custom summary');
     expect(treeSidecar).toContain('\x1b[1mCustom summary\x1b[0m');
     const noCue = { ...sidecar, summary: 'Custom summary without a cue' };
     expect(renderEvent(queued, 1, 80, noCue)).not.toContain('\x1b[35m');
-    expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('Custom summary without a cue');
+    expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('YOU · PROMPT — Custom summary without a cue');
   });
   test('narrow full prompt cues wrap without losing issuer or body, including wide graphemes', () => {
     for (const mention of ['@Long Parent Name', '@界界界界']) {
@@ -688,13 +691,14 @@ describe('four non-hidden rendering levels', () => {
     const text = '@Root Coordinator # Review the plan';
     const queued = event(4, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } }, { agentId: 'child-id' });
     const full = renderEvent(queued, 3, 100, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(full)).toContain('@Root Coordinator Review the plan');
+    expect(stripAnsi(full)).toContain('YOU · PROMPT · @Root Coordinator');
+    expect(stripAnsi(full)).toContain('Review the plan');
     expect(stripAnsi(full)).not.toContain('Child Reviewer');
-    expect(full).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(full).toContain('\x1b[35mYOU · PROMPT · @Root Coordinator\x1b[0m');
     const tree = renderTreeEvent(queued, 100, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(tree)).toBe('@Root Coordinator # Review the plan');
+    expect(stripAnsi(tree)).toBe('YOU · PROMPT · @Root Coordinator — # Review the plan');
     expect(stripAnsi(tree)).not.toContain('Child Reviewer');
-    expect(tree).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(tree).toContain('\x1b[35mYOU · PROMPT · @Root Coordinator\x1b[0m');
   });
   test('full renders Markdown without dropping text, raw retains the complete wire event', () => {
     const full = renderEvent(message, 3, 80);
