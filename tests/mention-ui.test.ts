@@ -65,7 +65,7 @@ test('acceptance recomputes the active query when typed characters and Tab are b
   const mock = await mentionServer(['Beta']);
   const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
   try {
-    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
+    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Prompt · Root');
     tui.keys('@b'); await tui.visible('@Beta');
     tui.keys('e\t'); await new Promise(resolve => setTimeout(resolve, 30));
     expect(tui.screen()).toContain('@Beta');
@@ -90,7 +90,7 @@ test('live removal refreshes open suggestions and acceptance rechecks current re
   const mock = await mentionServer(['Beta', 'Bravo']);
   const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
   try {
-    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
+    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Prompt · Root');
     tui.keys('@b'); await tui.visible('@Bravo');
     const socket = [...mock.sockets][0]!;
     send(socket, event(1, 'agent.removed', { removedAt: '2026-01-01T00:00:00.000Z' }, { agentId: 'child-1' }));
@@ -106,7 +106,7 @@ test('the scrollable suggestion window lets later matches be selected and accept
   const mock = await mentionServer(names);
   const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
   try {
-    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
+    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Prompt · Root');
     tui.keys('@a'); await tui.visible('@Alpha3');
     tui.keys('\x1b[B'.repeat(6)); await tui.visible('@Alpha7');
     tui.keys('\t'); await new Promise(resolve => setTimeout(resolve, 30));
@@ -118,7 +118,7 @@ test('buffered query narrowing clamps a prior nonzero selection before accepting
   const mock = await mentionServer(Array.from({ length: 9 }, (_, index) => `Alpha${index}`));
   const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
   try {
-    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Interrupting');
+    await tui.visible('Root'); tui.keys('\r'); await tui.visible('Prompt · Root');
     tui.keys('@a'); await tui.visible('@Alpha3');
     tui.keys('\x1b[B'.repeat(6)); await tui.visible('› @Alpha6');
     tui.keys('8\t'); await new Promise(resolve => setTimeout(resolve, 30));
@@ -138,9 +138,9 @@ test('opening a prompt with many children keeps the selected recipient visible w
   const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
   try {
     await tui.visible('Root'); tui.keys('\x1b[B'.repeat(60)); await tui.visible('Worker59');
-    tui.keys('\r'); await tui.visible('Interrupting prompt · Worker59');
+    tui.keys('\r'); await tui.visible('Prompt · Worker59');
     tui.keys('@'); await tui.visible('@Descendant'); await tui.flush();
-    const selectedRow = tui.screen().split('\n').find(line => line.includes('Worker59') && !line.includes('Interrupting prompt'));
+    const selectedRow = tui.screen().split('\n').find(line => line.includes('Worker59') && !line.includes('Prompt ·'));
     expect(selectedRow).toBeDefined();
   } finally { await tui.close(); await mock.close(); }
 });

@@ -25,7 +25,9 @@ export function terminalClient(socket: string, directory: string, { cols = 120, 
       // Ctrl-C clears drafts in composers now; leave composition before quitting.
       if (screen().includes('─ >')) {
         keys('\x1b');
-        await new Promise(resolve => setTimeout(resolve, 50));
+        // Let the bounded Escape disambiguator classify this as navigation,
+        // rather than coalescing it with q as an unsupported Meta-q sequence.
+        await new Promise(resolve => setTimeout(resolve, 80));
         keys('q');
       } else keys('\x03');
       await waitFor(() => child.exitCode !== null || child.signalCode !== null, 3000).catch(() => child.kill('SIGTERM'));

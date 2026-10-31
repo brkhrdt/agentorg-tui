@@ -716,13 +716,31 @@ export class Session extends EventEmitter {
       if (this.refreshAgain) { this.refreshAgain = false; this.scheduleRefresh(); }
     }
   }
-  async prompt(agentId: string, text: string): Promise<void> {
+  activePrompt(agentId: string): Operation | undefined {
+    return [...this.store.operations.values()].find(operation =>
+      operation.agentId === agentId && operation.type === 'agent.prompt' && operation.status === 'running' && operation.cancelRequested !== true,
+    );
+  }
+  async sendPromptOrSteer(agentId: string, text: string): Promise<'prompt' | 'steered'> {
+    if (!text.trim()) return 'prompt';
+    const active = this.activePrompt(agentId);
+    if (active) {
+      const client = this.client;
+      if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
+      await client.request('agent.steer', { agentId, operationId: active.id, text });
+      this.emit('notice', `Guidance submitted · ${active.id}`);
+      return 'steered';
+    }
+    await this.prompt(agentId, text);
+    return 'prompt';
+  }
+  async prompt(agentId: string, text: string, queue = false): Promise<void> {
     if (!text.trim()) return;
     const client = this.client;
     if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
-    const operation = await client.request<Operation>('agent.prompt', { agentId, text, queue: false });
+    const operation = await client.request<Operation>('agent.prompt', { agentId, text, queue });
     this.store.putOperation(operation);
-    this.emit('notice', `Prompt accepted · ${operation.id}`);
+    this.emit('notice', `${queue ? 'Prompt queued' : 'Prompt accepted'} · ${operation.id}`);
     void this.watch(client, operation).catch(error => this.emit('notice', error.message));
   }
   async modifyPodman(params: Record<string, unknown>, imageScope: ImageScope): Promise<void> {

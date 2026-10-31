@@ -1,6 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
+import { ComposeKeyInput, type ComposeSubmitMode } from './compose-keys.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
 import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
@@ -26,6 +27,11 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
+type ComposeIdentity = { kind: 'chat'; id: string } | { kind: 'prompt'; agentId: string };
+function sameComposeIdentity(a: ComposeIdentity, b: ComposeIdentity): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind === 'chat' ? a.id === (b as { kind: 'chat'; id: string }).id : a.agentId === (b as { kind: 'prompt'; agentId: string }).agentId;
+}
 type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function urlLikeSkillSource(source: string): boolean { return /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith('//') || /^[^/\s]+@[^:\s]+:/.test(source); }
@@ -71,9 +77,14 @@ export function rawEventJsonLabel(eventType: string | undefined, width: number):
 }
 
 export class UI {
+  private composeKeyInput = (() => {
+    const input = new ComposeKeyInput(() => this.view === 'chat' || this.view === 'prompt');
+    input.attach(process.stdin);
+    return input;
+  })();
   readonly screen = blessed.screen({
     smartCSR: true, fullUnicode: true, title: 'Agent Organization',
-    ignoreLocked: ['C-c'], warnings: false,
+    ignoreLocked: ['C-c'], warnings: false, input: this.composeKeyInput,
   });
   private title = blessed.box({ parent: this.screen, top: 0, height: 1, tags: false, style: { fg: 'cyan', bold: true } });
   private columns = blessed.box({ parent: this.screen, top: 1, height: 1, style: { fg: 'gray' } });
@@ -118,6 +129,7 @@ export class UI {
   private composeRecipient?: string;
   private composeContextStamp = '';
   private composeShift = false;
+  private pendingModifiedSubmission?: { identity: ComposeIdentity; text: string; revision: number };
   private dismissedMention?: string;
   private editorInput = blessed.textbox({
     parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
@@ -233,6 +245,13 @@ export class UI {
   constructor(private session: Session, private settings: Settings, private configPath: string, pathSource?: PathCompletionSource) {
     this.session.configureHistory(settings.history);
     this.composePathSource = pathSource ?? new HostPathCompletionSource(session);
+    this.session.on('event', (event: ServerEvent) => {
+      const data = event.data && typeof event.data === 'object' ? event.data as Record<string, any> : {};
+      if (event.type === 'prompt.steer_submitted') this.showNotice(`Guidance submitted · ${data.steeringId ?? ''}`);
+      else if (event.type === 'prompt.steer_pending') this.showNotice(`Guidance pending · ${data.steeringId ?? ''}`);
+      else if (event.type === 'prompt.steer_delivered') this.showNotice(`Guidance delivered · ${data.steeringId ?? ''}`);
+      else if (event.type === 'prompt.steer_failed') this.showNotice(`Guidance failed · ${data.error?.message ?? 'delivery was not confirmed'}`);
+    });
     const itemForeground = this.menu.style.item.fg;
     this.menu.style.item.fg = (item: blessed.Widgets.BlessedElement) => {
       const index = this.menu.getItemIndex(item);
@@ -336,8 +355,14 @@ export class UI {
       const input = this.input as typeof this.input & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
       if (['structured-filter', 'agent-skills-filter'].includes(this.view) && !input.__listener) input._listener(ch, key);
     });
+    this.editorInput.on('submit', (value: string) => { void this.submit(value); });
+    this.composer.on('submit', (value: string) => { void this.submit(value, this.composer.takeSubmitMode()); });
+    this.composeKeyInput.on('modifiedEnter', (mode: ComposeSubmitMode) => {
+      if (this.view === 'chat' || this.view === 'prompt') this.composer.submit(mode);
+      // Blessed installs the fresh textarea key listener on nextTick after submit.
+      setImmediate(() => this.composeKeyInput.resumeAfterSubmit());
+    });
     for (const input of [this.editorInput, this.composer]) {
-      input.on('submit', (value: string) => { void this.submit(value); });
       input.on('cancel', () => {
         if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
         else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
@@ -390,7 +415,7 @@ export class UI {
         const active = this.composeIdentity();
         if (!active || active.kind !== identity.kind || (identity.kind === 'chat' && (active.kind !== 'chat' || active.id !== identity.id))) return;
         const value = this.composer.getValue();
-        this.saveComposeDraft(value);
+        if (!this.sending) this.saveComposeDraft(value);
         this.updateMentionCompletion(); this.refreshComposeCompletion();
       }, 0);
     });
@@ -708,13 +733,13 @@ export class UI {
       action('tab', 'Collapse / expand selected branch', () => this.toggleSelectedBranch()),
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
-        action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
+        action('enter', 'Prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
         ] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('l', 'Event visibility / rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool and steering phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
     if (this.view === 'history-settings') return [action('enter', 'Edit selected history limit', choose), action('z', 'Restore history cache defaults', () => { this.settings.history = { ...DEFAULT_HISTORY }; this.session.configureHistory(this.settings.history); this.saveSettings(); this.draw(); }), back];
     if (this.view === 'colors') return [action('space', 'Cycle selected color', cycle), action('left', 'Previous color', () => this.changeColor(-1)), action('right', 'Next color', () => this.changeColor(1)), action('enter', 'Next color', () => this.changeColor(1)), action('z', 'Reset all colors', () => { this.settings.colors = { ...DEFAULT_COLORS }; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
@@ -1798,16 +1823,20 @@ export class UI {
       }
     }
   }
-  private composeIdentity(): { kind: 'chat'; id: string } | { kind: 'prompt' } | undefined {
+  private composeIdentity(): ComposeIdentity | undefined {
     if (this.view === 'chat' && this.chatAgent) return { kind: 'chat', id: this.chatAgent };
-    if (this.view === 'prompt') return { kind: 'prompt' };
+    if (this.view === 'prompt' && this.promptAgent) return { kind: 'prompt', agentId: this.promptAgent };
     return undefined;
   }
-  private composeDraftRevision(identity: { kind: 'chat'; id: string } | { kind: 'prompt' }): number {
+  private composeDraftRevision(identity: ComposeIdentity): number {
     return identity.kind === 'chat' ? this.chatDraftRevisions.get(identity.id) ?? 0 : this.promptDraftRevision;
   }
   private saveComposeDraft(value = this.composer.getValue()): void {
     const identity = this.composeIdentity();
+    const pending = this.pendingModifiedSubmission;
+    if (identity && pending && sameComposeIdentity(identity, pending.identity) && !value &&
+        this.composeDraftRevision(identity) === pending.revision &&
+        (identity.kind === 'chat' ? this.chatDrafts.get(identity.id) : this.promptDraft) === pending.text) return;
     if (identity?.kind === 'chat') {
       if (this.chatDrafts.get(identity.id) !== value) {
         this.chatDrafts.set(identity.id, value);
@@ -1886,7 +1915,7 @@ export class UI {
     if (composer) { this.promptTop.show(); this.promptBottom.show(); if (this.mentionOpen) this.mentionPanel.show(); }
     this.draw();
   }
-  private async submit(value: string): Promise<void> {
+  private async submit(value: string, mode: ComposeSubmitMode = 'default'): Promise<void> {
     if (this.sending) {
       // Enter completes the current Blessed readInput cycle even though the
       // single-flight guard rejects this duplicate send. Re-arm composition.
@@ -2023,15 +2052,23 @@ export class UI {
     const submitted = value;
     const submittedRevision = identity ? this.composeDraftRevision(identity) : -1;
     const submittedNavigation = this.navigationGeneration;
+    const pendingSubmission = mode !== 'default' && identity ? { identity, text: submitted, revision: submittedRevision } : undefined;
+    if (pendingSubmission) this.pendingModifiedSubmission = pendingSubmission;
     this.sending = true;
     this.draw();
     // Enter ends the current textarea read cycle. Keep composition responsive
     // while acceptance is pending so Escape and local draft edits remain usable.
-    this.composer.show(); this.composer.readInput();
+    // Modified Enter starts a fresh draft before buffered trailing bytes replay.
+    this.composer.show();
+    if (mode !== 'default') this.composer.setValue('');
+    this.composer.readInput();
     this.draw();
-    this.showNotice('Sending interrupting prompt…');
+    const steering = mode === 'default' && !!this.session.activePrompt(agentId);
+    this.showNotice(mode === 'queue' ? 'Queueing prompt…' : mode === 'interrupt' ? 'Interrupting and submitting prompt…' : steering ? 'Sending guidance to active prompt…' : 'Sending interrupting prompt…');
     try {
-      await this.session.prompt(agentId, submitted);
+      if (mode === 'queue') await this.session.prompt(agentId, submitted, true);
+      else if (mode === 'interrupt') await this.session.prompt(agentId, submitted, false);
+      else await this.session.sendPromptOrSteer(agentId, submitted);
       const submittedDraftStillCurrent = !!identity && this.composeDraftRevision(identity) === submittedRevision &&
         (identity.kind === 'chat' ? this.chatDrafts.get(identity.id) === submitted : this.promptDraft === submitted);
       if (submittedDraftStillCurrent && identity?.kind === 'chat') {
@@ -2043,15 +2080,21 @@ export class UI {
       const active = this.composeIdentity();
       const sameContext = !!identity && !!active && identity.kind === active.kind &&
         (identity.kind !== 'chat' || active.kind === 'chat' && identity.id === active.id);
-      if (submittedDraftStillCurrent && sameContext && this.composer.getValue() === submitted) {
-        this.composer.setValue('');
+      if (submittedDraftStillCurrent && sameContext && (this.composer.getValue() === submitted || mode !== 'default' && !this.composer.getValue())) {
+        if (this.composer.getValue() === submitted) this.composer.setValue('');
         this.clearMentionCompletion();
         // Only the original tree-prompt context returns to tree. A reopened
         // prompt for the same recipient is synchronized in place, never retargeted.
         if (view === 'prompt' && this.navigationGeneration === submittedNavigation) this.setView('tree');
       }
-    } catch (error) { this.showNotice((error as Error).message); }
+    } catch (error) {
+      const activeIdentity = this.composeIdentity();
+      if (mode !== 'default' && identity && activeIdentity && sameComposeIdentity(identity, activeIdentity) &&
+          this.composeDraftRevision(identity) === submittedRevision && !this.composer.getValue()) this.composer.setValue(submitted);
+      this.showNotice((error as Error).message);
+    }
     finally {
+      if (pendingSubmission && this.pendingModifiedSubmission === pendingSubmission) this.pendingModifiedSubmission = undefined;
       this.sending = false;
       if (this.view === 'chat' || this.view === 'prompt') this.refreshComposeCompletion();
       this.draw();
@@ -2077,7 +2120,10 @@ export class UI {
       } else this.mentionPanel.hide();
     } else this.mentionPanel.hide();
     const promptLabel = ' > ';
-    this.promptTop.setContent(clip(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`, width));
+    const composeAgentId = this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined;
+    const queuedCount = composeAgentId ? this.session.store.queuedPromptCount(composeAgentId) : 0;
+    const queueLabel = queuedCount > 0 ? `${queuedCount}x queued prompts ` : '';
+    this.promptTop.setContent(clip(`─${promptLabel}${queueLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - queueLabel.length - 1))}`, width));
     this.promptBottom.setContent('─'.repeat(width));
     this.menu.width = '100%';
     this.preview.hide();
@@ -2098,7 +2144,7 @@ export class UI {
       this.view === 'skill-details' ? `Registered skill repository · ${this.skillDetailsFocus?.name ?? 'unknown'}` :
       this.view === 'catalog-manager' ? 'Manage registered catalog skills · reversible retirement' :
       this.view === 'catalog-delete-confirm' ? `Confirm permanent deletion · ${this.pendingCatalogDelete?.name ?? 'unknown skill'}` :
-      this.view === 'prompt' ? `Interrupting prompt · ${agent?.name ?? this.promptAgent}` :
+      this.view === 'prompt' ? `Prompt · ${agent?.name ?? this.promptAgent}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' && this.editor?.fields[this.selectedMenuIndex()] === 'skills' ? `Skills: ${this.editor.agentId ? `modify draft · revision ${this.editor.revision}` : 'new agent draft'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
@@ -2204,7 +2250,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ` Text: Enter send  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
+      this.footer.setContent(this.view === 'prompt' ? ` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'} · Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
@@ -2273,7 +2319,7 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter row / field  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillRepositoryRegistrationAvailable ? '  a add skill repository' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool/steering phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
       this.footer.setContent(' s server settings   t TUI colors   b table fields   l event visibility / rendering levels   c compact phases   h history cache   ↑↓ select   Enter open   Esc tree');
@@ -2425,7 +2471,7 @@ export class UI {
         } finally { this.adjustingChatViewport = false; }
       }
       this.chatLayout = nextLayout;
-      this.footer.setContent(` Text: Enter send  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  PgUp older  PgDn latest  C-Home top  C-End follow  Ctrl+C clear`);
+      this.footer.setContent(` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc tree · PgUp older · Ctrl+C clear`);
     } else if (this.view === 'settings-choice-setup') {
       this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
     } else if (this.view === 'server-field') {
@@ -2435,7 +2481,7 @@ export class UI {
         ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :
         ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
     } else {
-      this.footer.setContent(` Text: Enter send (interrupts)  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+U clear`);
+      this.footer.setContent(` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc tree · Ctrl+C clear`);
     }
     if (this.sending) this.footer.setContent(this.view === 'chat' || this.view === 'prompt' ? ' Working · do not retry unknown outcomes' : this.input.visible ? ' Working · do not retry unknown outcomes' : ' Working · Esc tree  q quit · do not retry unknown outcomes');
     else if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);
@@ -2448,7 +2494,7 @@ export class UI {
     if (this.pathTimer) clearTimeout(this.pathTimer);
     if (this.composeTimer) clearTimeout(this.composeTimer);
     ++this.pathRequest; ++this.composeRequest;
-    this.session.close(); this.screen.destroy();
+    this.session.close(); this.screen.destroy(); this.composeKeyInput.dispose();
     void this.saveChain.finally(() => process.exit(0));
   }
 }

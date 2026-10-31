@@ -17,6 +17,38 @@ const raw = event(1, 'tool.result', { title: 'read', status: 'completed', rawInp
 const rendering: EventRendering = { rendererId: 'pi/read', subtype: 'read', summary: '\\< src/main.ts', extended: '\\< src/main.ts\n2 lines', full: '\\< src/main.ts\n\n**Custom read complete**\n\n```ts\nconst answer = 42;\n```' };
 const metadata: RendererMetadata = { id: 'pi/read', name: 'Pi read', harness: 'pi', eventTypes: ['tool.result'], tool: 'read', examples: [{ type: 'tool.result', ...rendering, raw: JSON.stringify(raw, null, 2) }] };
 
+test('steering phases use tool lifecycle colors and compact to latest state when enabled', () => {
+  const submitted = event(1, 'prompt.steer_submitted', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });
+  const pending = event(2, 'prompt.steer_pending', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });
+  const delivered = event(3, 'prompt.steer_delivered', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });
+  const failed = event(4, 'prompt.steer_failed', { steeringId: 'steer-2', operationId: 'op-1', text: 'Try again', error: { code: 'NOT_DELIVERED', message: 'queue cleared' } });
+  const settings = new Settings();
+  expect(renderEvent(submitted, 1, 100)).toStartWith('\x1b[33mYOU · STEER');
+  expect(renderEvent(pending, 1, 100)).toStartWith('\x1b[38;5;208mYOU · STEER');
+  expect(renderTreeEvent(pending, 100)).toStartWith('\x1b[38;5;208mYOU · STEER');
+  expect(stripAnsi(renderEvent(pending, 1, 100))).toBe('YOU · STEER — Return 5');
+  expect(renderEvent(delivered, 1, 100)).toStartWith('\x1b[32mYOU · STEER');
+  expect(renderEvent(failed, 1, 100)).toStartWith('\x1b[31mYOU · STEER');
+  expect(stripAnsi(renderEvent(failed, 1, 100))).toContain('queue cleared');
+  expect(chatGroups([submitted, pending, delivered, failed], settings).map(item => item.type)).toEqual([
+    'prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed',
+  ]);
+  settings.compactToolCalls = true;
+  expect(chatGroups([submitted, pending, delivered, failed], settings).map(item => item.type)).toEqual([
+    'prompt.steer_delivered', 'prompt.steer_failed',
+  ]);
+});
+
+test('hidden compact steering terminal phases close correlation without hiding the latest visible phase', () => {
+  const settings = new Settings(); settings.compactToolCalls = true;
+  settings.levels['prompt.steer_delivered'] = 0;
+  const submitted = event(1, 'prompt.steer_submitted', { steeringId: 'steer', text: 'help' });
+  const pending = event(2, 'prompt.steer_pending', { steeringId: 'steer', text: 'help' });
+  const hiddenTerminal = event(3, 'prompt.steer_delivered', { steeringId: 'steer', text: 'help' });
+  const latePending = event(4, 'prompt.steer_pending', { steeringId: 'steer', text: 'help' });
+  expect(chatGroups([submitted, pending, hiddenTerminal, latePending], settings).map(item => item.seq)).toEqual([2, 4]);
+});
+
 test('server Markdown controls content, client controls styles/cell limits and raw ignores presentations', () => {
   const summary = renderTreeEvent(raw, 32, rendering);
   expect(stripAnsi(summary)).toBe('< src/main.ts');
@@ -603,20 +635,20 @@ test('terminal compact controls toggle via selection or shortcut with either set
     };
     try {
       await tui.visible('connected');
-      tui.keys('v'); await tui.visible('Compact tool phases in chat: off');
+      tui.keys('v'); await tui.visible('Compact tool/steering phases in chat: off');
       tui.keys('\x1b[B'.repeat(serverSettings ? 4 : 3) + '\r');
-      await tui.visible('Compact tool phases in chat: on');
+      await tui.visible('Compact tool/steering phases in chat: on');
       await waitFor(saved(true));
-      tui.keys('?'); await tui.visible('Toggle compact tool phases');
+      tui.keys('?'); await tui.visible('Toggle compact tool and steering phases');
       tui.keys('\x1b'); await tui.visible('View settings');
-      tui.keys('c'); await tui.visible('Compact tool phases in chat: off');
+      tui.keys('c'); await tui.visible('Compact tool/steering phases in chat: off');
       await waitFor(saved(false));
-      tui.keys('c'); await tui.visible('Compact tool phases in chat: on');
+      tui.keys('c'); await tui.visible('Compact tool/steering phases in chat: on');
       await waitFor(saved(true));
       await tui.close();
       tui = terminalClient(mock.path, mock.directory);
       await tui.visible('connected');
-      tui.keys('v'); await tui.visible('Compact tool phases in chat: on');
+      tui.keys('v'); await tui.visible('Compact tool/steering phases in chat: on');
     } finally { await tui.close(); await mock.close(); }
   }
 }, 15000);
@@ -729,7 +761,7 @@ test('terminal level names use the available pane width before truncating long M
       events: request.params.after < 2 ? [event(1, type), event(2, tooLong)] : [], oldestSeq: 1, latestSeq: 2, expired: false,
     });
   });
-  const tui = terminalClient(mock.path, mock.directory);
+  const tui = terminalClient(mock.path, mock.directory, { rows: 40 });
   try {
     await tui.visible('connected');
     tui.keys('vl'); await tui.visible('Event visibility / rendering levels');

@@ -113,6 +113,8 @@ export function eventText(event: ServerEvent): string {
   switch (event.type) {
     case 'agent.message': return textContent(data.content ?? event.data);
     case 'prompt.queued': return typeof data.text === 'string' ? data.text : pretty(event.data);
+    case 'prompt.steering': case 'prompt.steered': return typeof data.text === 'string' ? data.text : pretty(event.data);
+    case 'prompt.steer_failed': return `${typeof data.text === 'string' ? data.text : 'Steering guidance'}${data.error?.message ? ` · ${data.error.message}` : ''}`;
     case 'agent.created': case 'agent.modified': return `${data.name ?? data.id} · ${data.state ?? ''} · ${data.settings?.model ?? ''}`;
     case 'agent.state': return `${data.state ?? 'unknown'}${data.error ? ` · ${data.error}` : ''}`;
     case 'agent.removed': return `Removed ${data.removedAt ?? ''}`;
@@ -252,7 +254,7 @@ function label(event: ServerEvent): string {
     if (data.sessionUpdate === 'user_message_chunk') return 'agent.message';
     if (data.sessionUpdate === 'agent_message_chunk') return 'agent.message · assistant';
   }
-  if (event.type === 'prompt.queued') return 'prompt.queued';
+  if (event.type === 'prompt.queued') return `prompt.queued · ${object(event.data).effect ?? 'normal'}`;
   return event.type;
 }
 /** Render AgentOrg delegated prompt text with a bounded summary/detail and complete Markdown view. */
@@ -320,8 +322,17 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   const sidecar = level === 1 ? rendering?.summary : level === 2 ? rendering?.extended : rendering?.full;
   const text = typeof sidecar === 'string' ? sidecar : typeof data.text === 'string' ? data.text : pretty(event.data);
   const hasCue = !!cue && text.startsWith(`${cue.mention} `);
-  const selectedBody = hasCue ? (text.startsWith(`${cue!.mention} `) ? text.slice(cue!.mention.length + 1) : cue!.body) : text;
-  const body = selectedBody;
+  const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
+  const effect = ['normal', 'interrupt', 'queue'].includes(data.effect) ? data.effect : undefined;
+  if (effect || (cue && !(cue.sender && cue.recipient))) {
+    const label = effect === 'queue' ? 'QUEUE' : effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
+    const attribution = hasCue && cue!.sender && cue!.recipient ? `${cue!.sender}: @${cue!.recipient}` : hasCue ? cue!.mention : '';
+    const header = paint(`YOU · ${label}${attribution ? ` · ${attribution}` : ''}`, 'agentTarget', colors);
+    const detail = clean(stripAnsi(markdown(body, width, false, colors))).replace(/\s+/g, ' ').trim();
+    if (level === 1) return clipStyled(`${header} — ${markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors)}`, width);
+    if (level === 3) return `${wrapAnsi(header, width, { hard: true, trim: false })}\n${markdown(body, width, false, colors)}`;
+    return `${clipStyled(header, width)}\n${literalEllipsis(detail, width)}`;
+  }
   if (hasCue && cue!.sender && cue!.recipient) {
     const prefix = `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `;
     return formatAttributed(prefix, body, level, width, colors);
@@ -329,9 +340,7 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   const mention = hasCue ? paint(clean(cue!.mention), 'agentTarget', colors) : '';
   const prefix = hasCue ? `${mention} ` : '';
   if (level === 1) return clipStyled(prefix + markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors), width);
-
   const prefixWidth = stringWidth(stripAnsi(prefix));
-  const header = level === 3 ? paint(clip(`${event.time} · prompt.queued`, width), 'gray', colors) : '';
   let rows: string[];
   if (prefix && prefixWidth < width && (level !== 3 || width - prefixWidth >= 2)) {
     const bodyWidth = Math.max(1, width - prefixWidth);
@@ -344,9 +353,21 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
     const bodyRows = logicalLines(rendered).flatMap(line => wrapAnsi(line, width, { hard: true, trim: false }).split('\n'));
     rows = [...cueRows, ...bodyRows];
   }
-  if (level === 3) return `${header}${rows.length ? `\n${rows.map(line => clipStyled(line, width)).join('\n')}` : ''}`;
+  if (level === 3) return rows.map(line => clipStyled(line, width)).join('\n');
   if (rows.length > 2) rows[1] = clipStyled(`${rows[1]} …`, width);
   return rows.slice(0, 2).map(line => clipStyled(line, width)).join('\n');
+}
+function literalEllipsis(line: string, width: number): string {
+  const text = clean(stripAnsi(line));
+  if (width <= 0) return '';
+  if (stringWidth(text) <= width) return text;
+  const budget = Math.max(0, width - 3);
+  let result = '';
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+    if (stringWidth(result + segment) > budget) break;
+    result += segment;
+  }
+  return result + '.'.repeat(Math.min(3, width));
 }
 function renderCompletionNotice(event: ServerEvent, width: number, colors: RenderColors): string {
   const summary = markdown(eventText(event), width, true, colors);
@@ -360,19 +381,27 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
     const prefix = `${symbol} ${paint(`${clean(rendering.toolSender)}: `, 'agentTarget', colors)}${paint(clean(rendering.toolTarget), 'agentTarget', colors)} `;
     return formatAttributed(prefix, rendering.toolPrompt, 1, width, colors);
   }
+  if (['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered'].includes(event.type)) return renderSteeringEvent(event, 1, width, colors);
   if (event.type === 'prompt.queued') {
     const data = object(event.data), cue = promptCue(event);
     const hasSidecar = typeof rendering?.summary === 'string';
     const text = hasSidecar ? rendering!.summary : typeof data.text === 'string' ? data.text : pretty(event.data);
     const hasCue = !!cue && text.startsWith(`${cue.mention} `);
-    const body = hasCue ? (text.startsWith(`${cue!.mention} `) ? text.slice(cue!.mention.length + 1) : cue!.body) : text;
-    if (hasCue && cue!.sender && cue!.recipient) {
-      const prefix = `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `;
-      return formatAttributed(prefix, body, 1, width, colors);
+    const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
+    const effect = ['normal', 'interrupt', 'queue'].includes(data.effect) ? data.effect : undefined;
+    const showMode = !!effect || (!!cue && !(cue.sender && cue.recipient));
+    const attribution = hasCue && cue!.sender && cue!.recipient ? `${cue!.sender}: @${cue!.recipient}` : hasCue ? cue!.mention : '';
+    const attributedSummary = hasCue && cue!.sender && cue!.recipient;
+    const summary = hasSidecar || attributedSummary ? markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors) : clean(body).replace(/\s+/g, ' ').trim();
+    if (!showMode && (!hasCue || (cue!.sender && cue!.recipient))) {
+      const prefix = hasCue && cue!.sender && cue!.recipient
+        ? `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `
+        : hasCue ? `${paint(clean(cue!.mention), 'agentTarget', colors)} ` : '';
+      return clipStyled(prefix + summary, width);
     }
-    const prefix = hasCue ? `${paint(clean(cue!.mention), 'agentTarget', colors)} ` : '';
-    const summary = hasSidecar ? markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors) : clean(body).replace(/\s+/g, ' ').trim();
-    return clipStyled(prefix + summary, width);
+    const label = effect === 'queue' ? 'QUEUE' : effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
+    const header = `YOU · ${label}${attribution ? ` · ${attribution}` : ''}`;
+    return clipStyled(`${paint(header, 'agentTarget', colors)} — ${summary}`, width);
  }
   if (width <= 0) return '';
   const data = object(event.data);
@@ -395,11 +424,27 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
 export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   return renderTreeEventPreview(event, width, rendering, colors, true);
 }
+function renderSteeringEvent(event: ServerEvent, level: Exclude<Level, 4>, width: number, colors: RenderColors): string {
+  const submitted = event.type === 'prompt.steer_submitted';
+  const pending = event.type === 'prompt.steer_pending' || event.type === 'prompt.steering';
+  const failed = event.type === 'prompt.steer_failed';
+  const color: ColorSetting = submitted ? 'toolCall' : pending ? 'toolUpdate' : failed ? 'toolFailure' : 'toolSuccess';
+  const title = 'YOU · STEER';
+  const data = object(event.data);
+  const prompt = clean(typeof data.text === 'string' ? data.text : 'Steering guidance');
+  const compactPrompt = prompt.replace(/\s+/g, ' ').trim();
+  const error = failed && typeof data.error?.message === 'string' ? clean(data.error.message).replace(/\s+/g, ' ').trim() : '';
+  if (level === 1) return clipStyled(`${paint(title, color, colors)} — ${compactPrompt}${error ? ` · ${error}` : ''}`, width);
+  if (level === 2) return `${clipStyled(paint(title, color, colors), width)}\n${literalEllipsis(`${compactPrompt}${error ? ` · ${error}` : ''}`, width)}`;
+  const header = paint(title, color, colors);
+  return `${header}\n${markdown(prompt, width, false, colors)}${error ? `\nFailure: ${markdown(error, width, false, colors)}` : ''}`;
+}
 export function renderEvent(event: ServerEvent, level: Level, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   width = Math.max(1, width);
   if (level === 0) return '';
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
   if (event.type === 'prompt.queued') return renderPromptCue(event, level, width, colors, rendering);
+  if (['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered'].includes(event.type)) return renderSteeringEvent(event, level, width, colors);
   if (event.type.startsWith('completion.')) {
     const notice = renderCompletionNotice(event, width, colors);
     return level === 3 ? `${paint(clip(event.time, width), 'gray', colors)}\n${notice}` : notice;
@@ -493,14 +538,37 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
     groups[index] = event; identities.set(index, identity); chatGroupIdentities.set(event, identity);
   };
   const toolCalls = new Map<string, number>();
+  const steeringRequests = new Map<string, number>();
   let adjacent = false;
   for (const event of events) {
     const data = object(event.data);
     const rendering = renderings.get(event.seq);
     const callId = settings.compactToolCalls && isTool(event) && typeof data.toolCallId === 'string' && event.agentId
       ? `${event.agentId}\0${event.generation ?? ''}\0${data.toolCallId}` : undefined;
+    const steeringId = ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered'].includes(event.type) && typeof data.steeringId === 'string' && event.agentId
+      ? `${event.agentId}\0${event.generation ?? ''}\0${data.steeringId}` : undefined;
     const raw = settings.level(event.type, rendering?.subtype) === 4;
-    // Raw phases remain separate and end any prior replacement chain.
+    const steeringTerminal = ['prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steered'].includes(event.type);
+    const steeringPhase = ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steering'].includes(event.type);
+    if (steeringId && settings.compactToolCalls && !raw) {
+      if (steeringPhase) {
+        if (settings.visible(event.type)) {
+          const priorIndex = steeringRequests.get(steeringId);
+          if (priorIndex !== undefined) replace(priorIndex, event);
+          else steeringRequests.set(steeringId, add(event, `${steeringId}\0steering`));
+        }
+      } else {
+        const priorIndex = steeringRequests.get(steeringId);
+        if (priorIndex !== undefined) {
+          if (settings.visible(event.type, rendering?.subtype)) replace(priorIndex, event);
+        } else if (settings.visible(event.type, rendering?.subtype)) add(event, `${steeringId}\0steering`);
+        if (steeringTerminal) steeringRequests.delete(steeringId);
+      }
+      adjacent = false;
+      continue;
+    }
+    if (steeringId && settings.compactToolCalls && raw) steeringRequests.delete(steeringId);
+    // Raw tool phases remain separate and end any prior replacement chain.
     if (callId && raw) toolCalls.delete(callId);
     else if (callId) {
       const priorIndex = toolCalls.get(callId);

@@ -20,7 +20,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./fi'); await tui.visible('file name.txt');
       await new Promise(resolve => setTimeout(resolve, 100));
       expect(requests.find(r => r.method === 'organization.paths')?.params).toEqual({ input: './fi', base: '/srv/agent cwd', kind: 'any', limit: 5 });
@@ -227,7 +227,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./sub'); await tui.visible('sub dir'); tui.keys('\t'); await tui.visible('child');
       await new Promise(resolve => setTimeout(resolve, 120));
       expect(tui.screen()).toContain('./sub dir/');

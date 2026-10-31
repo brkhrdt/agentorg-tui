@@ -32,6 +32,15 @@ export function appendMessageChunk(previous: ServerEvent | undefined, event: Ser
   return { ...event, data: { ...data, content: { ...data.content, text: lastData.content.text + data.content.text } } };
 }
 const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
+const operationRank = (status: string) => terminal(status) ? 2 : status === 'running' || status === 'cancelling' ? 1 : 0;
+function mergeOperation(current: Operation, incoming: Operation): Operation {
+  if (terminal(current.status)) return current;
+  const stale = operationRank(incoming.status) < operationRank(current.status);
+  const merged: Operation = stale ? { ...incoming, ...current, status: current.status } : { ...current, ...incoming };
+  if (current.cancelRequested === true || incoming.cancelRequested === true) merged.cancelRequested = true;
+  if (current.cancelRequestedAt && !incoming.cancelRequestedAt) merged.cancelRequestedAt = current.cancelRequestedAt;
+  return merged;
+}
 const STREAMED_MESSAGE_KINDS = new Set(['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk']);
 function isStreamedMessage(event: ServerEvent): boolean {
   const data = object(event.data);
@@ -92,8 +101,10 @@ function compactPreview(event: ServerEvent): ServerEvent {
       const attribution = object(data.promptAttribution);
       const validAttribution = attribution.version === 1 && typeof attribution.sender === 'string' && attribution.sender.length > 0 && attribution.sender.length <= 256 && typeof attribution.recipient === 'string' && attribution.recipient.length > 0 && attribution.recipient.length <= 256
         ? { version: 1, sender: attribution.sender, recipient: attribution.recipient } : undefined;
-      return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: sourcePrefix + body.text, promptCue: { version: 1, bodyStart: sourcePrefix.length }, ...(validAttribution && { promptAttribution: validAttribution }), ...(body.truncated && { previewTruncated: true }) } };
+      const effect = ['normal', 'interrupt', 'queue'].includes(data.effect) ? data.effect : undefined;
+      return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: sourcePrefix + body.text, promptCue: { version: 1, bodyStart: sourcePrefix.length }, ...(validAttribution && { promptAttribution: validAttribution }), ...(effect && { effect }), ...(body.truncated && { previewTruncated: true }) } };
     }
+
   }
   if (event.type === 'agent.message' && STREAMED_MESSAGE_KINDS.has(streamKind) && typeof data.content?.text === 'string') {
     // Keep a bounded source prefix rather than JSON-truncating an accumulated
@@ -139,6 +150,9 @@ type LivePreviewFallback = { event: ServerEvent; subtype?: string; rendering?: E
 export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
   operations = new Map<string, Operation>();
+  private operationSequences = new Map<string, number>();
+  private operationTombstones = new Map<string, { seq: number; status: string }>();
+  private operationAbsences = new Map<string, number>();
   events = new Map<number, ServerEvent>();
   renderings = new Map<number, EventRendering>();
   discovered = new Set<string>();
@@ -730,7 +744,7 @@ export class Store extends EventEmitter {
   }
 
   reset(): void {
-    this.agents.clear(); this.operations.clear(); this.events.clear(); this.renderings.clear();
+    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.operationTombstones.clear(); this.operationAbsences.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.livePreviews.clear(); this.livePreviewFallbacks.clear(); this.previewSources.clear(); this.previewMessageIdentities.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear(); this.previewSubtypeIds.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
@@ -739,8 +753,44 @@ export class Store extends EventEmitter {
   }
   install(snapshot: Snapshot): void {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
-    this.operations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
-    this.watermark = snapshot.seq;
+    const previousOperations = this.operations;
+    const previousOperationSequences = this.operationSequences;
+    const snapshotOperations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
+    for (const [id, current] of previousOperations) {
+      const currentSeq = previousOperationSequences.get(id) ?? -1;
+      const incoming = snapshotOperations.get(id);
+      if (currentSeq <= snapshot.seq && !incoming) this.operationAbsences.set(id, Math.max(this.operationAbsences.get(id) ?? -1, snapshot.seq));
+      if (terminal(current.status) && (!incoming || !terminal(incoming.status))) this.rememberOperationTombstone(id, current.status, currentSeq);
+    }
+    for (const [id, seq] of this.operationAbsences) {
+      if (snapshotOperations.has(id) && snapshot.seq > seq) this.operationAbsences.delete(id);
+      else if (!snapshotOperations.has(id)) this.operationAbsences.set(id, Math.max(seq, snapshot.seq));
+    }
+    this.operations = new Map();
+    this.operationSequences = new Map();
+    for (const [id, operation] of snapshotOperations) {
+      const absenceSeq = this.operationAbsences.get(id);
+      if (absenceSeq !== undefined && snapshot.seq <= absenceSeq && !terminal(operation.status)) continue;
+      if (this.operationTombstones.has(id) && !terminal(operation.status)) continue;
+      this.operations.set(id, operation);
+      this.operationSequences.set(id, snapshot.seq);
+    }
+    for (const [id, current] of previousOperations) {
+      const currentSeq = previousOperationSequences.get(id) ?? -1;
+      const snapshotOperation = snapshotOperations.get(id);
+      if (currentSeq <= snapshot.seq) {
+        if (terminal(current.status) && snapshotOperation && !terminal(snapshotOperation.status)) {
+          this.operations.set(id, current);
+          this.operationSequences.set(id, currentSeq);
+        }
+        continue;
+      }
+      const incoming = this.operations.get(id);
+      const merged = incoming ? mergeOperation(current, incoming) : current;
+      this.operations.set(id, merged);
+      this.operationSequences.set(id, currentSeq);
+    }
+    this.watermark = Math.max(this.watermark, snapshot.seq);
     this.pruneLivePreviews();
     // The snapshot is for state only; older buffered events still belong in chat.
     for (const event of this.orderedEvents()) if (event.seq > snapshot.seq) this.reduce(event);
@@ -860,7 +910,7 @@ export class Store extends EventEmitter {
     const data = object(event.data);
     this.watermark = Math.max(this.watermark, event.seq);
     if (truncated(data)) { this.emit('refresh'); return; }
-    if (event.type === 'operation.changed' && typeof data.id === 'string') this.putOperation(data as Operation);
+    if (event.type === 'operation.changed' && typeof data.id === 'string') this.putOperation(data as Operation, event.seq);
     const agentId = event.agentId ?? (event.type === 'agent.usage' && typeof data.agentId === 'string' ? data.agentId : undefined);
     if (!agentId) return;
     const previous = this.agents.get(agentId);
@@ -919,12 +969,39 @@ export class Store extends EventEmitter {
       } });
     }
   }
-  putOperation(operation: Operation): void {
+  private rememberOperationTombstone(id: string, status: string, seq: number): void {
+    const current = this.operationTombstones.get(id);
+    if (!current || seq >= current.seq) this.operationTombstones.set(id, { seq, status });
+  }
+  putOperation(operation: Operation, seq?: number): void {
     const current = this.operations.get(operation.id);
-    // Acceptance responses can arrive after the terminal event.
-    if (current && terminal(current.status) && !terminal(operation.status)) return;
-    this.operations.set(operation.id, operation);
+    const absenceSeq = this.operationAbsences.get(operation.id);
+    if (absenceSeq !== undefined) {
+      if (seq === undefined || seq <= absenceSeq) {
+        if (terminal(operation.status)) this.rememberOperationTombstone(operation.id, operation.status, seq ?? absenceSeq);
+        return;
+      }
+      this.operationAbsences.delete(operation.id);
+    }
+    const tombstone = this.operationTombstones.get(operation.id);
+    if (tombstone && !current) {
+      if (terminal(operation.status)) this.rememberOperationTombstone(operation.id, operation.status, seq ?? this.watermark);
+      return;
+    }
+    const currentSeq = this.operationSequences.get(operation.id) ?? -1;
+    const staleResponse = current && (terminal(current.status) || operationRank(operation.status) < operationRank(current.status));
+    // RPC acknowledgements lack a wire sequence; place non-stale responses just beyond the observed watermark.
+    const observedSeq = seq ?? (staleResponse ? currentSeq : this.watermark + 1);
+    if (current) this.operations.set(operation.id, mergeOperation(current, operation));
+    else this.operations.set(operation.id, operation);
+    this.operationSequences.set(operation.id, Math.max(currentSeq, observedSeq));
     this.emit('change');
+  }
+  queuedPromptCount(agentId: string): number {
+    let count = 0;
+    for (const operation of this.operations.values())
+      if (operation.agentId === agentId && operation.type === 'agent.prompt' && operation.status === 'queued') count++;
+    return count;
   }
   tree(): TreeRow[] {
     const active = [...this.agents.values()].filter(agent => agent.removedAt === null);

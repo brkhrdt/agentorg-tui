@@ -85,14 +85,14 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
     keys('\x1b[A'); await waitFor(() => selectedBg(2) === 4);
     keys('\t'); await waitFor(() => !screen().split('\n').some(row => row.startsWith('  worker')));
     keys('c'); await visible('Chat · coordinator');
-    keys('\x1b'); await waitFor(() => !screen().split('\n').some(row => row.startsWith('  worker')));
-    keys('\r'); await visible('Interrupting prompt · coordinator');
+    keys('\x1b'); await waitFor(() => screen().split('\n').some(row => row.startsWith('AGENT')));
+    keys('\r'); await visible('Prompt · coordinator');
     expect(screen().split('\n').some(row => row.startsWith('  worker'))).toBe(true);
-    keys('\x1b'); await waitFor(() => !screen().split('\n').some(row => row.startsWith('  worker')));
+    keys('\x1b'); await waitFor(() => screen().split('\n').some(row => row.startsWith('AGENT')));
     keys('\t'); await waitFor(() => screen().split('\n').some(row => row.startsWith('  worker')));
     keys('\x1b[B'); await waitFor(() => selectedBg(3) === 4);
     keys('\r');
-    await visible('Interrupting prompt · worker');
+    await visible('Prompt · worker');
     expect(screen()).toContain('  worker');
     const longPrompt = 'x'.repeat(125);
     for (const char of longPrompt) keys(char);

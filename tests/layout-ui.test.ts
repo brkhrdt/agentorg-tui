@@ -14,10 +14,10 @@ test('prompt composer reserves tree rows, keeps the selected agent visible and r
     await tui.visible('worker00');
     tui.keys('\x1b[B'.repeat(30));
     await tui.visible('worker29');
-    tui.keys('\r'); await tui.visible('Interrupting prompt · worker29');
+    tui.keys('\r'); await tui.visible('Prompt · worker29');
     tui.keys('draft at column zero'); await tui.visible('draft at column zero');
     const lines = tui.screen().split('\n');
-    const selectedRow = lines.findIndex(line => line.includes('worker29') && !line.includes('Interrupting'));
+    const selectedRow = lines.findIndex(line => line.includes('worker29') && !line.includes('Prompt ·'));
     expect(selectedRow).toBeGreaterThanOrEqual(2);
     expect(selectedRow).toBeLessThan(25);
     expect(tui.cell(selectedRow, 0)?.getBgColor()).toBe(4);
@@ -27,7 +27,7 @@ test('prompt composer reserves tree rows, keeps the selected agent visible and r
     tui.keys('a'.repeat(400));
     await waitFor(() => tui.screen().split('\n')[22]?.startsWith('─ >') === true);
     const expanded = tui.screen().split('\n');
-    const expandedSelection = expanded.findIndex(line => line.includes('worker29') && !line.includes('Interrupting'));
+    const expandedSelection = expanded.findIndex(line => line.includes('worker29') && !line.includes('Prompt ·'));
     expect(expandedSelection).toBeGreaterThanOrEqual(2);
     expect(expandedSelection).toBeLessThan(22);
     expect(tui.cell(expandedSelection, 0)?.getBgColor()).toBe(4);
@@ -53,7 +53,7 @@ test('long prompt expands the composer and keeps its full wrapped draft visible'
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('worker');
-    tui.keys('\x1b[B\r'); await tui.visible('Interrupting prompt · worker');
+    tui.keys('\x1b[B\r'); await tui.visible('Prompt · worker');
     const draft = 'This prompt should wrap and remain visible. '.repeat(5);
     for (const char of draft) tui.keys(char);
     await waitFor(() => tui.screen().split('\n').filter(line => line.includes('This prompt')).length >= 2);
@@ -76,11 +76,11 @@ test('live removal while composing cannot redirect an interrupting prompt to ano
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('  worker');
-    tui.keys('\x1b[B\r'); await tui.visible('Interrupting prompt · worker');
+    tui.keys('\x1b[B\r'); await tui.visible('Prompt · worker');
     tui.keys('for worker only'); await tui.visible('for worker only');
     for (const socket of mock.sockets) send(socket, event(1, 'agent.removed', { removedAt: 'archived' }, { agentId: 'worker' }));
     await waitFor(() => !tui.screen().split('\n').slice(2, 25).some(line => line.includes('worker')));
-    expect(tui.screen()).toContain('Interrupting prompt · worker');
+    expect(tui.screen()).toContain('Prompt · worker');
     tui.keys('\r'); await waitFor(() => prompts.length === 1);
     expect(prompts[0]).toEqual({ agentId: 'worker', text: 'for worker only', queue: false });
   } finally { await tui.close(); await mock.close(); }

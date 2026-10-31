@@ -1,6 +1,9 @@
 import { expect, test } from 'bun:test';
-import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
+import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
+import stripAnsi from 'strip-ansi';
+import { renderEvent } from '../src/render.js';
+import { Settings } from '../src/settings.js';
 
 function composerRows(tui: ReturnType<typeof terminalClient>): string[] {
   const lines = tui.screen().split('\n');
@@ -22,7 +25,7 @@ for (const view of ['prompt', 'chat'] as const) {
       try {
         await tui.visible('root   idle');
         tui.keys(view === 'chat' ? 'c' : '\r');
-        await tui.visible(view === 'chat' ? 'Chat · root' : 'Interrupting');
+        await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
         let draft = '';
         // Include exact row boundaries and multiple growth transitions. The
         // textarea reserves one column so the cursor never wraps the terminal.
@@ -64,6 +67,247 @@ for (const view of ['prompt', 'chat'] as const) {
     });
   }
 }
+
+test.each([
+  ['chat', '\x1b\r', '\x1b[13;5u'],
+  ['prompt', '\x1b[27;3;13~', '\x1b[27;5;13~'],
+] as const)('%s accepts raw Alt-Enter queue and Ctrl-Enter interrupt modes exactly once', async (view, altEnter, ctrlEnter) => {
+  const requests: any[] = [];
+  let accepted = 0;
+  const active = { ...operation('running'), id: 'active-prompt', agentId: 'root' };
+  const backlog = { ...operation('queued'), id: 'old-backlog', agentId: 'root' };
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [active, backlog] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') {
+      accepted++;
+      respond(socket, request.id, { ...operation('queued'), id: `queued-${accepted}`, agentId: 'root' });
+    } else if (request.method === 'agent.steer') respond(socket, request.id, { agentId: 'root', operationId: 'active-prompt', steeringId: 'plain-enter-steer', disposition: 'submitted' });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    const openCompose = async () => {
+      tui.keys(view === 'chat' ? 'c' : '\r');
+      await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    };
+    await openCompose();
+    await tui.visible('1x queued prompts');
+    tui.keys('queue this exact draft'); tui.keys(altEnter);
+    await waitFor(() => requests.filter(request => request.method === 'agent.prompt').length === 1);
+    if (view === 'prompt') await openCompose();
+    await tui.visible('2x queued prompts');
+    expect(requests.filter(request => request.method === 'agent.prompt').map(request => request.params)).toEqual([
+      { agentId: 'root', text: 'queue this exact draft', queue: true },
+    ]);
+    tui.keys('replace active with this'); tui.keys(ctrlEnter);
+    await waitFor(() => requests.filter(request => request.method === 'agent.prompt').length === 2);
+    if (view === 'prompt') { await openCompose(); await tui.visible('3x queued prompts'); }
+    else await tui.visible('3x queued prompts');
+    expect(requests.filter(request => request.method === 'agent.prompt').map(request => request.params)).toEqual([
+      { agentId: 'root', text: 'queue this exact draft', queue: true },
+      { agentId: 'root', text: 'replace active with this', queue: false },
+    ]);
+    tui.keys('plain Enter keeps default'); tui.keys('\r');
+    await waitFor(() => requests.filter(request => request.method === 'agent.steer').length === 1);
+    expect(requests.filter(request => request.method === 'agent.steer').map(request => request.params)).toEqual([
+      { agentId: 'root', operationId: 'active-prompt', text: 'plain Enter keeps default' },
+    ]);
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test.each(['chat', 'prompt'] as const)('%s preserves bytes typed after modified Enter in the same PTY write', async view => {
+  const prompts: unknown[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') {
+      prompts.push(request.params);
+      respond(socket, request.id, { ...operation('queued'), id: `queued-${prompts.length}`, agentId: 'root' });
+    }
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    tui.keys('before\x1b[13;3uafter');
+    await waitFor(() => prompts.length === 1);
+    await waitFor(() => composerRows(tui).join('') === 'after');
+    expect(prompts).toEqual([{ agentId: 'root', text: 'before', queue: true }]);
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test.each(['chat', 'prompt'] as const)('%s preserves Blessed Alt-q behavior inside the composer', async view => {
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    tui.keys('keep this draft');
+    await waitFor(() => composerRows(tui).join('') === 'keep this draft');
+    tui.keys('\x1bq');
+    await waitFor(() => composerRows(tui).join('') === 'keep this draft');
+    expect(tui.screen()).toContain(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test.each([
+  ['chat', 'Alt+Enter', '\x1b[13;3u', true],
+  ['chat', 'Ctrl+Enter', '\x1b[13;5u', false],
+  ['prompt', 'Alt+Enter', '\x1b[13;3u', true],
+  ['prompt', 'Ctrl+Enter', '\x1b[13;5u', false],
+] as const)('%s preserves its %s draft after Escape and delayed rejection', async (view, _keyName, key, queue) => {
+  let pendingAdmission: { socket: any; id: string; params: unknown } | undefined;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') pendingAdmission = { socket, id: request.id, params: request.params };
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  const draft = `retain ${view} modified draft`;
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    tui.keys(draft);
+    await waitFor(() => composerRows(tui).join('') === draft);
+    tui.keys(key);
+    await waitFor(() => !!pendingAdmission);
+    expect(pendingAdmission!.params).toEqual({ agentId: 'root', text: draft, queue });
+
+    tui.keys('\x1b');
+    await waitFor(() => composerRows(tui).length === 0);
+    send(pendingAdmission!.socket, { kind: 'response', id: pendingAdmission!.id, ok: false, error: { code: 'NOT_RUNNING', message: 'delayed admission rejected' } });
+    await waitFor(() => tui.screen().includes('delayed admission rejected'));
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    await waitFor(() => composerRows(tui).join('') === draft);
+  } finally {
+    if (pendingAdmission) send(pendingAdmission.socket, { kind: 'response', id: pendingAdmission.id, ok: false, error: { code: 'NOT_RUNNING', message: 'test cleanup' } });
+    await tui.close(); await mock.close();
+  }
+});
+
+test('a delayed chat rejection after Escape does not overwrite a newer draft', async () => {
+  let pendingAdmission: { socket: any; id: string } | undefined;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') pendingAdmission = { socket, id: request.id };
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  const newerDraft = 'newer text entered while admission waits';
+  try {
+    await tui.visible('root   idle');
+    tui.keys('c'); await tui.visible('Chat · root');
+    tui.keys('submitted text'); await waitFor(() => composerRows(tui).join('') === 'submitted text');
+    tui.keys('\x1b[13;3u'); await waitFor(() => !!pendingAdmission);
+    tui.keys(newerDraft); await waitFor(() => composerRows(tui).join('') === newerDraft);
+    tui.keys('\x1b'); await waitFor(() => composerRows(tui).length === 0);
+
+    send(pendingAdmission!.socket, { kind: 'response', id: pendingAdmission!.id, ok: false, error: { code: 'NOT_RUNNING', message: 'delayed parent rejection' } });
+    pendingAdmission = undefined;
+    await waitFor(() => tui.screen().includes('delayed parent rejection'));
+    tui.keys('c'); await tui.visible('Chat · root');
+    expect(composerRows(tui).join('')).toBe(newerDraft);
+  } finally {
+    if (pendingAdmission) send(pendingAdmission.socket, { kind: 'response', id: pendingAdmission.id, ok: false, error: { code: 'NOT_RUNNING', message: 'test cleanup' } });
+    await tui.close(); await mock.close();
+  }
+});
+
+test.each([
+  ['chat', 'queue', '\x1b\r', true],
+  ['prompt', 'interrupt', '\x1b[27;5;13~', false],
+] as const)('%s rejected %s submission preserves the draft', async (view, _mode, key, queue) => {
+  const requests: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'NOT_RUNNING', message: 'recipient unavailable' } });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    const draft = 'preserve exact rejected text';
+    tui.keys(draft); tui.keys(key);
+    await waitFor(() => requests.filter(request => request.method === 'agent.prompt').length === 1 && tui.screen().includes('recipient unavailable'));
+    expect(requests.filter(request => request.method === 'agent.prompt').map(request => request.params)).toEqual([
+      { agentId: 'root', text: draft, queue },
+    ]);
+    await waitFor(() => composerRows(tui).join('') === draft);
+    expect(requests.some(request => request.method === 'agent.steer')).toBe(false);
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('Enter submits steering promptly and shows its lifecycle without interrupting the operation', async () => {
+  const requests: any[] = [];
+  const active = { ...operation('running'), id: 'active-child-prompt', agentId: 'root' };
+  let pendingSteer: { socket: any; id: string } | undefined;
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [active] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.steer') {
+      pendingSteer = { socket, id: request.id };
+      send(socket, event(1, 'prompt.steer_submitted', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
+      respond(socket, request.id, { agentId: 'root', operationId: active.id, steeringId: 'steer-1', disposition: 'submitted' });
+    } else if (request.method === 'agent.prompt') respond(socket, request.id, operation('queued'));
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 80 });
+  try {
+    await tui.visible('root   idle'); tui.keys('c'); await tui.visible('Chat · root');
+    tui.keys('Continue after the sleep without stopping it');
+    tui.keys('\r');
+    const steeringEventCount = () => (stripAnsi(tui.screen()).match(/YOU · STEER/g) ?? []).length;
+    await waitFor(() => !!pendingSteer && steeringEventCount() >= 1);
+    expect(steeringEventCount()).toBe(1);
+    expect(requests.some(request => request.method === 'agent.steer')).toBe(true);
+    send(pendingSteer!.socket, event(2, 'prompt.steer_pending', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
+    await waitFor(() => steeringEventCount() >= 2);
+    expect(requests.find(request => request.method === 'agent.steer').params).toEqual({ agentId: 'root', operationId: active.id, text: 'Continue after the sleep without stopping it' });
+    expect(requests.some(request => request.method === 'agent.prompt')).toBe(false);
+    send(pendingSteer!.socket, event(3, 'prompt.steer_delivered', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
+    await waitFor(() => steeringEventCount() >= 3);
+    expect(steeringEventCount()).toBe(3);
+    expect(stripAnsi(tui.screen())).not.toMatch(/STEERING (SUBMITTED|PENDING|DELIVERED)/);
+    expect(active.status).toBe('running');
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('steering and queued prompt detail levels label states, stay flush-left, and use literal truncation', () => {
+  const steering = event(1, 'prompt.steer_pending', { steeringId: 's', operationId: 'o', text: 'a very long prompt text '.repeat(20) });
+  const summary = stripAnsi(renderEvent(steering, 1, 120));
+  expect(summary).toStartWith('YOU · STEER —');
+  const extended = stripAnsi(renderEvent(steering, 2, 24)).split('\n');
+  expect(extended).toHaveLength(2);
+  expect(extended[0]).toBe('YOU · STEER');
+  expect(extended[1]!.startsWith(' ')).toBe(false);
+  expect(extended[1]).toEndWith('...');
+  const full = stripAnsi(renderEvent(steering, 3, 24)).split('\n');
+  expect(full[0]).toBe('YOU · STEER');
+  expect(full.slice(1).every(line => !line.startsWith(' '))).toBe(true);
+  for (const [effect, label] of [['normal', 'PROMPT'], ['interrupt', 'INTERRUPT'], ['queue', 'QUEUE']] as const) {
+    const queued = event(2, 'prompt.queued', { effect, text: 'a long prompt '.repeat(20) });
+    expect(stripAnsi(renderEvent(queued, 1, 120))).toStartWith(`YOU · ${label}`);
+    const detail = stripAnsi(renderEvent(queued, 2, 24)).split('\n');
+    expect(detail[0]).toContain(label);
+    expect(detail[1]!.startsWith(' ')).toBe(false);
+    expect(detail[1]).toEndWith('...');
+    const all = stripAnsi(renderEvent(queued, 3, 24)).split('\n');
+    expect(all[0]).toContain(label);
+    expect(all.slice(1).every(line => !line.startsWith(' '))).toBe(true);
+  }
+});
 
 test('composer caps at the terminal height, follows the tail and restores the full draft when cleared', async () => {
   const prompts: unknown[] = [];

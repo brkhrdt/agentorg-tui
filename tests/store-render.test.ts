@@ -8,6 +8,84 @@ import { renderTable } from '../src/table.js';
 import { agent, event, operation } from './helpers.js';
 
 describe('state and transcripts', () => {
+  test('queued prompt counts follow live operation transitions and resist stale snapshots', () => {
+    const store = new Store();
+    const first = { ...operation('queued'), id: 'first', agentId: 'root' };
+    const second = { ...operation('queued'), id: 'second', agentId: 'root' };
+    store.install({ seq: 0, agents: [agent('root')], operations: [first, second] });
+    expect(store.queuedPromptCount('root')).toBe(2);
+    store.putOperation({ ...first, status: 'running', cancelRequested: true });
+    expect(store.queuedPromptCount('root')).toBe(1);
+    store.install({ seq: 0, agents: [agent('root')], operations: [first, second] });
+    expect(store.queuedPromptCount('root')).toBe(1);
+    expect(store.operations.get('first')).toMatchObject({ status: 'running', cancelRequested: true });
+    store.ingest(event(2, 'operation.changed', { ...second, status: 'completed' }));
+    expect(store.queuedPromptCount('root')).toBe(0);
+  });
+  test('authoritative snapshots omit stale operations even after their event payloads are evicted', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    store.configureHistory({ ...new Settings().history, recentEvents: 1, chatPageSize: 1 });
+    const active = { ...operation('running'), id: 'active', agentId: 'root' };
+    const queued = { ...operation('queued'), id: 'queued', agentId: 'root' };
+    store.ingest(event(1, 'operation.changed', active));
+    store.ingest(event(2, 'operation.changed', queued));
+    store.ingest(event(3, 'plugin.custom', { marker: true }, { agentId: 'root' }));
+    expect(store.events.has(1)).toBe(false);
+    expect(store.events.has(2)).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(1);
+
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('active')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+
+    const newer = { ...queued, id: 'newer-queued' };
+    store.ingest(event(4, 'operation.changed', newer));
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    expect(store.operations.get('newer-queued')?.status).toBe('queued');
+    store.install({ seq: 4, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('newer-queued')).toBe(false);
+  });
+  test('terminal operation provenance blocks delayed unsequenced queued acknowledgements after snapshots omit it', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const terminalOperation = { ...operation('completed'), id: 'settled-queue', agentId: 'root' };
+    store.ingest(event(1, 'operation.changed', terminalOperation));
+    expect(store.operations.get('settled-queue')?.status).toBe('completed');
+
+    store.install({ seq: 2, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('settled-queue')).toBe(false);
+    store.putOperation({ ...terminalOperation, status: 'queued' }); // delayed RPC acceptance has no event sequence
+    expect(store.operations.has('settled-queue')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('settled-queue')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+  });
+  test('snapshot absence blocks delayed acknowledgements after a truncated terminal update', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const queued = { ...operation('queued'), id: 'missed-terminal', agentId: 'root' };
+    store.ingest(event(1, 'operation.changed', queued));
+    store.ingest(event(2, 'operation.changed', { truncated: true, originalBytes: 256, preview: '{"id":"missed-terminal","status":"completed"}' }));
+    expect(store.queuedPromptCount('root')).toBe(1);
+
+    store.install({ seq: 2, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('missed-terminal')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+    store.putOperation(queued); // Delayed RPC acceptance has no sequence and predates the authoritative absence.
+    expect(store.queuedPromptCount('root')).toBe(0);
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    store.putOperation(queued, 3);
+    expect(store.queuedPromptCount('root')).toBe(0);
+    expect(store.operations.has('missed-terminal')).toBe(false);
+
+    store.install({ seq: 1, agents: [agent('root')], operations: [queued] });
+    expect(store.queuedPromptCount('root')).toBe(0);
+    expect(store.operations.has('missed-terminal')).toBe(false);
+    expect(store.watermark).toBe(3);
+  });
   test('tree is parent-first, indented, hides archived agents, handles orphan/cycle records', () => {
     const store = new Store();
     store.install({ seq: 5, agents: [agent('grandchild', 'child'), agent('child', 'root'), agent('root'), agent('removed', 'root', { removedAt: 'yesterday' }), agent('orphan', 'unknown')], operations: [] });
@@ -691,15 +769,21 @@ describe('four non-hidden rendering levels', () => {
   test('agent prompt cue is accented while its untouched Markdown body parses at block start in chat and tree', () => {
     const body = '# Heading\n\n- item with `code`';
     const text = `@Research lead ${body}`;
-    const queued = event(3, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Research lead '.length } });
+    const queued = event(3, 'prompt.queued', { operationId: 'op', text, effect: 'queue', promptCue: { version: 1, bodyStart: '@Research lead '.length } });
     const full = renderEvent(queued, 3, 80, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(full)).toContain('@Research lead Heading');
-    expect(full).toContain('\x1b[35m@Research lead\x1b[0m');
+    expect(stripAnsi(full)).toContain('YOU · QUEUE · @Research lead');
+    expect(stripAnsi(full)).toContain('Heading');
+    expect(full).toContain('\x1b[35mYOU · QUEUE · @Research lead\x1b[0m');
     expect(stripAnsi(full)).toContain('item with code');
     expect(stripAnsi(full)).not.toContain('# Heading');
     const tree = renderTreeEvent(queued, 80, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(tree)).toBe(text.replace(/\s+/g, ' '));
-    expect(tree).toContain('\x1b[35m@Research lead\x1b[0m');
+    const compact = new Store(); compact.install({ seq: 0, agents: [agent('root')], operations: [] }); compact.ingest(queued);
+    expect(compact.events.get(3)?.data).toMatchObject({ effect: 'queue' });
+    expect(stripAnsi(renderEvent(compact.events.get(3)!, 3, 80))).toContain('QUEUE');
+    expect(stripAnsi(tree)).toContain('QUEUE');
+    expect(stripAnsi(tree)).toContain('@Research lead');
+    expect(stripAnsi(tree)).toContain('Heading');
+    expect(tree).toContain('\x1b[35mYOU · QUEUE · @Research lead\x1b[0m');
     const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
     expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
   });
@@ -810,16 +894,25 @@ describe('four non-hidden rendering levels', () => {
     const queued = event(5, 'prompt.queued', { text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } });
     const sidecar = { rendererId: 'custom.prompt', summary: '@Root Coordinator **Custom summary**', extended: '@Root Coordinator Custom extended detail', full: '@Root Coordinator Custom full body\nsecond line' };
     const summary = renderEvent(queued, 1, 80, sidecar, { agentTarget: 'magenta' });
-    expect(stripAnsi(summary)).toBe('@Root Coordinator Custom summary');
-    expect(summary).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(stripAnsi(summary)).toBe('YOU · PROMPT · @Root Coordinator — Custom summary');
+    expect(summary).toContain('\x1b[35mYOU · PROMPT · @Root Coordinator\x1b[0m');
     expect(stripAnsi(renderEvent(queued, 2, 80, sidecar))).toContain('Custom extended detail');
     expect(stripAnsi(renderEvent(queued, 3, 80, sidecar))).toContain('Custom full body');
     const treeSidecar = renderTreeEvent(queued, 80, sidecar);
-    expect(stripAnsi(treeSidecar)).toBe('@Root Coordinator Custom summary');
+    expect(stripAnsi(treeSidecar)).toBe('YOU · PROMPT · @Root Coordinator — Custom summary');
     expect(treeSidecar).toContain('\x1b[1mCustom summary\x1b[0m');
     const noCue = { ...sidecar, summary: 'Custom summary without a cue' };
     expect(renderEvent(queued, 1, 80, noCue)).not.toContain('\x1b[35m');
-    expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('Custom summary without a cue');
+    expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('YOU · PROMPT — Custom summary without a cue');
+  });
+  test('interrupt prompt effects are distinct in chat and tree rendering', () => {
+    const text = '@Root Coordinator Return only a float';
+    const interrupted = event(8, 'prompt.queued', { operationId: 'interrupt-op', text, effect: 'interrupt', promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } });
+    expect(stripAnsi(renderEvent(interrupted, 1, 100))).toStartWith('YOU · INTERRUPT · @Root Coordinator');
+    expect(stripAnsi(renderTreeEvent(interrupted, 100))).toStartWith('YOU · INTERRUPT · @Root Coordinator');
+    const store = new Store(); store.install({ seq: 0, agents: [agent('root')], operations: [] }); store.ingest(interrupted);
+    expect(store.events.get(8)?.data).toMatchObject({ effect: 'interrupt' });
+    expect(stripAnsi(renderEvent(store.events.get(8)!, 3, 100))).toContain('YOU · INTERRUPT · @Root Coordinator');
   });
   test('narrow full prompt cues wrap without losing issuer or body, including wide graphemes', () => {
     for (const mention of ['@Long Parent Name', '@界界界界']) {
@@ -844,13 +937,14 @@ describe('four non-hidden rendering levels', () => {
     const text = '@Root Coordinator # Review the plan';
     const queued = event(4, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } }, { agentId: 'child-id' });
     const full = renderEvent(queued, 3, 100, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(full)).toContain('@Root Coordinator Review the plan');
+    expect(stripAnsi(full)).toContain('YOU · PROMPT · @Root Coordinator');
+    expect(stripAnsi(full)).toContain('Review the plan');
     expect(stripAnsi(full)).not.toContain('Child Reviewer');
-    expect(full).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(full).toContain('\x1b[35mYOU · PROMPT · @Root Coordinator\x1b[0m');
     const tree = renderTreeEvent(queued, 100, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(tree)).toBe('@Root Coordinator # Review the plan');
+    expect(stripAnsi(tree)).toBe('YOU · PROMPT · @Root Coordinator — # Review the plan');
     expect(stripAnsi(tree)).not.toContain('Child Reviewer');
-    expect(tree).toContain('\x1b[35m@Root Coordinator\x1b[0m');
+    expect(tree).toContain('\x1b[35mYOU · PROMPT · @Root Coordinator\x1b[0m');
   });
   test('full renders Markdown without dropping text, raw retains the complete wire event', () => {
     const full = renderEvent(message, 3, 80);

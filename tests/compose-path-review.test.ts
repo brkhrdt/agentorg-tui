@@ -20,7 +20,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./~'); await tui.visible('Documents');
       expect(inputs[0]).toBe('~/');
       tui.keys('\t'); await tui.visible('notes.txt');
@@ -39,10 +39,10 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./'); await tui.visible('Recipient cwd unavailable');
       tui.keys('\x1b'); await new Promise(resolve => setTimeout(resolve, 150));
-      expect(tui.screen()).toContain(view === 'chat' ? 'Chat · Root' : 'Interrupting prompt · Root');
+      expect(tui.screen()).toContain(view === 'chat' ? 'Chat · Root' : 'Prompt · Root');
       expect(tui.screen()).not.toContain('Recipient cwd unavailable');
       tui.keys('\x1b'); await tui.visible('AGENT');
     } finally { await tui.close(); await mock.close(); }
@@ -62,7 +62,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./folder @be\t'); await tui.visible('› @be-file');
       expect(inputs).toContain('./folder @be');
       expect(tui.screen()).not.toContain('› @Beta');
@@ -84,7 +84,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./file'); await tui.visible('› file.txt');
       tui.keys('\t'); await tui.visible('./file.txt');
       tui.keys('@be'); await tui.visible('› @Beta');
@@ -107,7 +107,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./file'); await tui.visible('› file.txt');
       tui.keys('\t'); await tui.visible('./file.txt');
       tui.keys('@be'); await tui.visible('› @Beta');
@@ -128,7 +128,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./literal @be'); await tui.visible('› @Beta');
       tui.keys('\t'); await tui.visible('./literal @Beta');
     } finally { await tui.close(); await mock.close(); }
@@ -143,7 +143,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('@be'); await tui.visible('› @Beta');
       tui.keys('\x1b'); await new Promise(resolve => setTimeout(resolve, 30));
       tui.keys('\t'); await new Promise(resolve => setTimeout(resolve, 30));
@@ -166,7 +166,7 @@ for (const view of ['chat', 'prompt'] as const) {
     try {
       await tui.visible('Root');
       if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
-      else { tui.keys('\r'); await tui.visible('Interrupting prompt · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
       tui.keys('./folder @be'); await tui.visible('@be-file');
       await new Promise(resolve => setTimeout(resolve, 100));
       expect(inputs).toContain('./folder @be');
