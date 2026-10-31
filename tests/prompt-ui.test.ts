@@ -158,6 +158,71 @@ test.each(['chat', 'prompt'] as const)('%s preserves Blessed Alt-q behavior insi
 });
 
 test.each([
+  ['chat', 'Alt+Enter', '\x1b[13;3u', true],
+  ['chat', 'Ctrl+Enter', '\x1b[13;5u', false],
+  ['prompt', 'Alt+Enter', '\x1b[13;3u', true],
+  ['prompt', 'Ctrl+Enter', '\x1b[13;5u', false],
+] as const)('%s preserves its %s draft after Escape and delayed rejection', async (view, _keyName, key, queue) => {
+  let pendingAdmission: { socket: any; id: string; params: unknown } | undefined;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') pendingAdmission = { socket, id: request.id, params: request.params };
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  const draft = `retain ${view} modified draft`;
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    tui.keys(draft);
+    await waitFor(() => composerRows(tui).join('') === draft);
+    tui.keys(key);
+    await waitFor(() => !!pendingAdmission);
+    expect(pendingAdmission!.params).toEqual({ agentId: 'root', text: draft, queue });
+
+    tui.keys('\x1b');
+    await waitFor(() => composerRows(tui).length === 0);
+    send(pendingAdmission!.socket, { kind: 'response', id: pendingAdmission!.id, ok: false, error: { code: 'NOT_RUNNING', message: 'delayed admission rejected' } });
+    await waitFor(() => tui.screen().includes('delayed admission rejected'));
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    await waitFor(() => composerRows(tui).join('') === draft);
+  } finally {
+    if (pendingAdmission) send(pendingAdmission.socket, { kind: 'response', id: pendingAdmission.id, ok: false, error: { code: 'NOT_RUNNING', message: 'test cleanup' } });
+    await tui.close(); await mock.close();
+  }
+});
+
+test('a delayed chat rejection after Escape does not overwrite a newer draft', async () => {
+  let pendingAdmission: { socket: any; id: string } | undefined;
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') pendingAdmission = { socket, id: request.id };
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  const newerDraft = 'newer text entered while admission waits';
+  try {
+    await tui.visible('root   idle');
+    tui.keys('c'); await tui.visible('Chat · root');
+    tui.keys('submitted text'); await waitFor(() => composerRows(tui).join('') === 'submitted text');
+    tui.keys('\x1b[13;3u'); await waitFor(() => !!pendingAdmission);
+    tui.keys(newerDraft); await waitFor(() => composerRows(tui).join('') === newerDraft);
+    tui.keys('\x1b'); await waitFor(() => composerRows(tui).length === 0);
+
+    send(pendingAdmission!.socket, { kind: 'response', id: pendingAdmission!.id, ok: false, error: { code: 'NOT_RUNNING', message: 'delayed parent rejection' } });
+    pendingAdmission = undefined;
+    await waitFor(() => tui.screen().includes('delayed parent rejection'));
+    tui.keys('c'); await tui.visible('Chat · root');
+    expect(composerRows(tui).join('')).toBe(newerDraft);
+  } finally {
+    if (pendingAdmission) send(pendingAdmission.socket, { kind: 'response', id: pendingAdmission.id, ok: false, error: { code: 'NOT_RUNNING', message: 'test cleanup' } });
+    await tui.close(); await mock.close();
+  }
+});
+
+test.each([
   ['chat', 'queue', '\x1b\r', true],
   ['prompt', 'interrupt', '\x1b[27;5;13~', false],
 ] as const)('%s rejected %s submission preserves the draft', async (view, _mode, key, queue) => {

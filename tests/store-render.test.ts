@@ -46,6 +46,23 @@ describe('state and transcripts', () => {
     store.install({ seq: 4, agents: [agent('root')], operations: [] });
     expect(store.operations.has('newer-queued')).toBe(false);
   });
+  test('terminal operation provenance blocks delayed unsequenced queued acknowledgements after snapshots omit it', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const terminalOperation = { ...operation('completed'), id: 'settled-queue', agentId: 'root' };
+    store.ingest(event(1, 'operation.changed', terminalOperation));
+    expect(store.operations.get('settled-queue')?.status).toBe('completed');
+
+    store.install({ seq: 2, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('settled-queue')).toBe(false);
+    store.putOperation({ ...terminalOperation, status: 'queued' }); // delayed RPC acceptance has no event sequence
+    expect(store.operations.has('settled-queue')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('settled-queue')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+  });
   test('tree is parent-first, indented, hides archived agents, handles orphan/cycle records', () => {
     const store = new Store();
     store.install({ seq: 5, agents: [agent('grandchild', 'child'), agent('child', 'root'), agent('root'), agent('removed', 'root', { removedAt: 'yesterday' }), agent('orphan', 'unknown')], operations: [] });

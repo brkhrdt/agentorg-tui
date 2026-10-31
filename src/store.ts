@@ -130,6 +130,7 @@ export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
   operations = new Map<string, Operation>();
   private operationSequences = new Map<string, number>();
+  private operationTombstones = new Map<string, { seq: number; status: string }>();
   events = new Map<number, ServerEvent>();
   renderings = new Map<number, EventRendering>();
   discovered = new Set<string>();
@@ -719,7 +720,7 @@ export class Store extends EventEmitter {
   }
 
   reset(): void {
-    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.events.clear(); this.renderings.clear();
+    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.operationTombstones.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.livePreviews.clear(); this.livePreviewFallbacks.clear(); this.previewSources.clear(); this.previewMessageIdentities.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear(); this.previewSubtypeIds.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
@@ -730,13 +731,32 @@ export class Store extends EventEmitter {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
     const previousOperations = this.operations;
     const previousOperationSequences = this.operationSequences;
-    this.operations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
-    this.operationSequences = new Map(snapshot.operations.map(operation => [operation.id, snapshot.seq]));
+    const snapshotOperations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
+    for (const [id, current] of previousOperations) {
+      if (!terminal(current.status)) continue;
+      const incoming = snapshotOperations.get(id);
+      if (!incoming || !terminal(incoming.status)) this.rememberOperationTombstone(id, current.status, previousOperationSequences.get(id) ?? -1);
+    }
+    this.operations = new Map();
+    this.operationSequences = new Map();
+    for (const [id, operation] of snapshotOperations) {
+      if (this.operationTombstones.has(id) && !terminal(operation.status)) continue;
+      this.operations.set(id, operation);
+      this.operationSequences.set(id, snapshot.seq);
+    }
     for (const [id, current] of previousOperations) {
       const currentSeq = previousOperationSequences.get(id) ?? -1;
-      if (currentSeq <= snapshot.seq) continue;
+      const snapshotOperation = snapshotOperations.get(id);
+      if (currentSeq <= snapshot.seq) {
+        if (terminal(current.status) && snapshotOperation && !terminal(snapshotOperation.status)) {
+          this.operations.set(id, current);
+          this.operationSequences.set(id, currentSeq);
+        }
+        continue;
+      }
       const incoming = this.operations.get(id);
-      this.operations.set(id, incoming ? mergeOperation(current, incoming) : current);
+      const merged = incoming ? mergeOperation(current, incoming) : current;
+      this.operations.set(id, merged);
       this.operationSequences.set(id, currentSeq);
     }
     this.watermark = snapshot.seq;
@@ -875,8 +895,17 @@ export class Store extends EventEmitter {
       this.emit('refresh');
     }
   }
+  private rememberOperationTombstone(id: string, status: string, seq: number): void {
+    const current = this.operationTombstones.get(id);
+    if (!current || seq >= current.seq) this.operationTombstones.set(id, { seq, status });
+  }
   putOperation(operation: Operation, seq?: number): void {
     const current = this.operations.get(operation.id);
+    const tombstone = this.operationTombstones.get(operation.id);
+    if (tombstone && !current) {
+      if (terminal(operation.status)) this.rememberOperationTombstone(operation.id, operation.status, seq ?? this.watermark);
+      return;
+    }
     const currentSeq = this.operationSequences.get(operation.id) ?? -1;
     const staleResponse = current && (terminal(current.status) || operationRank(operation.status) < operationRank(current.status));
     // RPC acknowledgements lack a wire sequence; place non-stale responses just beyond the observed watermark.

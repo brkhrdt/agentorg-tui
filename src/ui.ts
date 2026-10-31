@@ -27,6 +27,11 @@ type KeyAction = { key: string; label: string; run: () => void };
 type AgentAction = { key: string; label: string } & (
   { kind: 'create' | 'info' | 'edit' } | { kind: 'lifecycle'; method: LifecycleMethod }
 );
+type ComposeIdentity = { kind: 'chat'; id: string } | { kind: 'prompt'; agentId: string };
+function sameComposeIdentity(a: ComposeIdentity, b: ComposeIdentity): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind === 'chat' ? a.id === (b as { kind: 'chat'; id: string }).id : a.agentId === (b as { kind: 'prompt'; agentId: string }).agentId;
+}
 type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function urlLikeSkillSource(source: string): boolean { return /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith('//') || /^[^/\s]+@[^:\s]+:/.test(source); }
@@ -123,6 +128,7 @@ export class UI {
   private composeRecipient?: string;
   private composeContextStamp = '';
   private composeShift = false;
+  private pendingModifiedSubmission?: { identity: ComposeIdentity; text: string; revision: number };
   private dismissedMention?: string;
   private editorInput = blessed.textbox({
     parent: this.screen, bottom: 2, height: 3, hidden: true, keys: true, tags: false,
@@ -1792,16 +1798,20 @@ export class UI {
       }
     }
   }
-  private composeIdentity(): { kind: 'chat'; id: string } | { kind: 'prompt' } | undefined {
+  private composeIdentity(): ComposeIdentity | undefined {
     if (this.view === 'chat' && this.chatAgent) return { kind: 'chat', id: this.chatAgent };
-    if (this.view === 'prompt') return { kind: 'prompt' };
+    if (this.view === 'prompt' && this.promptAgent) return { kind: 'prompt', agentId: this.promptAgent };
     return undefined;
   }
-  private composeDraftRevision(identity: { kind: 'chat'; id: string } | { kind: 'prompt' }): number {
+  private composeDraftRevision(identity: ComposeIdentity): number {
     return identity.kind === 'chat' ? this.chatDraftRevisions.get(identity.id) ?? 0 : this.promptDraftRevision;
   }
   private saveComposeDraft(value = this.composer.getValue()): void {
     const identity = this.composeIdentity();
+    const pending = this.pendingModifiedSubmission;
+    if (identity && pending && sameComposeIdentity(identity, pending.identity) && !value &&
+        this.composeDraftRevision(identity) === pending.revision &&
+        (identity.kind === 'chat' ? this.chatDrafts.get(identity.id) : this.promptDraft) === pending.text) return;
     if (identity?.kind === 'chat') {
       if (this.chatDrafts.get(identity.id) !== value) {
         this.chatDrafts.set(identity.id, value);
@@ -2017,6 +2027,8 @@ export class UI {
     const submitted = value;
     const submittedRevision = identity ? this.composeDraftRevision(identity) : -1;
     const submittedNavigation = this.navigationGeneration;
+    const pendingSubmission = mode !== 'default' && identity ? { identity, text: submitted, revision: submittedRevision } : undefined;
+    if (pendingSubmission) this.pendingModifiedSubmission = pendingSubmission;
     this.sending = true;
     this.draw();
     // Enter ends the current textarea read cycle. Keep composition responsive
@@ -2051,10 +2063,13 @@ export class UI {
         if (view === 'prompt' && this.navigationGeneration === submittedNavigation) this.setView('tree');
       }
     } catch (error) {
-      if (mode !== 'default' && identity && this.composeDraftRevision(identity) === submittedRevision && !this.composer.getValue()) this.composer.setValue(submitted);
+      const activeIdentity = this.composeIdentity();
+      if (mode !== 'default' && identity && activeIdentity && sameComposeIdentity(identity, activeIdentity) &&
+          this.composeDraftRevision(identity) === submittedRevision && !this.composer.getValue()) this.composer.setValue(submitted);
       this.showNotice((error as Error).message);
     }
     finally {
+      if (pendingSubmission && this.pendingModifiedSubmission === pendingSubmission) this.pendingModifiedSubmission = undefined;
       this.sending = false;
       if (this.view === 'chat' || this.view === 'prompt') this.refreshComposeCompletion();
       this.draw();
