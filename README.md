@@ -541,8 +541,10 @@ runs when the current server snapshot advertises `pathCompletion: true`; there
 is no local filesystem fallback. It searches the server host filesystem, even
 for agents configured with Podman. Up/down selects and Tab inserts: directories
 receive one `/` and continue completion, while files receive a trailing space
-and close the menu. Enter always sends. Path spaces are literal and are kept in
-the query/insertion; Escape dismisses completion without leaving the draft.
+and close the menu. Typing a displayed file or directory candidate exactly also
+closes its menu; adding `/` after a manually typed directory resumes completion
+inside it. Enter always sends. Path spaces are literal and are kept in the
+query/insertion; Escape dismisses completion without leaving the draft.
 Because `organization.paths` currently exposes at most five candidates and this
 checkout has no verified hidden-entry request option, hidden entries can only
 be found according to the server's documented behavior (dot-directories when

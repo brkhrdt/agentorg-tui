@@ -103,6 +103,7 @@ export class UI {
   private composePathSource: PathCompletionSource;
   private composeSpan?: ComposeSpan;
   private composeCandidates: PathCandidate[] = [];
+  private composeCandidateSnapshot?: { span: ComposeSpan; candidates: PathCandidate[]; recipient: string; cwd: string; sourceId: string };
   private composeResultDraft?: string;
   private composeResultContext?: { recipient: string; cwd: string; sourceId: string };
   private composeSelection = 0;
@@ -112,7 +113,7 @@ export class UI {
   private composeInFlight = false;
   private composeQueued?: { request: number; draft: string; recipient: string; cwd: string; sourceId: string; span: ComposeSpan };
   private composeDismissed?: string;
-  private composeAcceptedFile?: { recipient: string; start: number; insertion: string };
+  private composeAcceptedFile?: { recipient: string; start: number; insertion: string; directory?: boolean; manual?: boolean };
   private composeStatus?: string;
   private composeRecipient?: string;
   private composeContextStamp = '';
@@ -1539,7 +1540,7 @@ export class UI {
   private clearMentionCompletion(): void {
     this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
     this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
-    this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeDismissed = undefined; this.composeAcceptedFile = undefined; this.composeLookupKey = undefined;
+    this.composeSpan = undefined; this.composeCandidates = []; this.composeCandidateSnapshot = undefined; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeDismissed = undefined; this.composeAcceptedFile = undefined; this.composeLookupKey = undefined;
     this.mentionPanel.hide();
   }
   private cancelMentionCompletion(): void {
@@ -1551,7 +1552,21 @@ export class UI {
     let span: ComposeSpan | undefined;
     if (accepted && accepted.recipient === this.currentMentionRecipient() && value.slice(accepted.start, accepted.start + accepted.insertion.length) === accepted.insertion) {
       const tailStart = accepted.start + accepted.insertion.length;
-      const tail = composeSpan(value.slice(tailStart));
+      const tailValue = value.slice(tailStart);
+      if (accepted.directory && tailValue.startsWith('/')) return { kind: 'path', start: accepted.start, query: value.slice(accepted.start) };
+      const continuedPath = composeSpan(value, { kind: 'path', start: accepted.start, query: accepted.insertion });
+      if (accepted.manual && continuedPath?.kind === 'path' && tailValue && !/^\s/u.test(tailValue)) return continuedPath;
+      if (accepted.manual && continuedPath?.kind === 'path' && tailValue && /^\s/u.test(tailValue)) {
+        const snapshot = this.composeCandidateSnapshot;
+        const continuation = snapshot && snapshot.recipient === accepted.recipient && snapshot.sourceId === this.composePathSource.id && snapshot.span.start === accepted.start && snapshot.candidates.some(item => {
+          const slash = snapshot.span.query.lastIndexOf('/');
+          const prefix = snapshot.span.query === './~' ? './~/' : slash >= 0 ? snapshot.span.query.slice(0, slash + 1) : '';
+          const candidatePath = prefix + item.name;
+          return candidatePath.startsWith(continuedPath.query) && candidatePath.length > accepted.insertion.length;
+        });
+        if (continuation) return continuedPath;
+      }
+      const tail = composeSpan(tailValue);
       span = tail ? { ...tail, start: tail.start + tailStart } : undefined;
     } else {
       if (accepted) this.composeAcceptedFile = undefined;
@@ -1620,7 +1635,7 @@ export class UI {
     const stamp = JSON.stringify([recipient, typeof cwd === 'string' ? cwd : null, this.session.pathCompletion, this.session.status.startsWith('connected')]);
     if (stamp === this.composeContextStamp) return;
     this.composeContextStamp = stamp;
-    this.composeAcceptedFile = undefined; this.composeDismissed = undefined; this.composeLookupKey = undefined;
+    this.composeAcceptedFile = undefined; this.composeCandidateSnapshot = undefined; this.composeDismissed = undefined; this.composeLookupKey = undefined;
     if (this.composeSpan || this.composeStatus || this.composeCandidates.length) {
       this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
       this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined;
@@ -1631,7 +1646,7 @@ export class UI {
     if (this.mentionOpen) this.dismissedMention = mentionQuery(this.composer.getValue());
     if (this.composeSpan || this.composeStatus) this.composeDismissed = this.composeKey(this.composeSpan ?? composeSpan(this.composer.getValue()));
     this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
-    this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
+    this.composeSpan = undefined; this.composeCandidates = []; this.composeCandidateSnapshot = undefined; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
     this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide();
     this.draw();
   }
@@ -1644,10 +1659,25 @@ export class UI {
     const value = this.composer.getValue();
     const recipient = this.currentMentionRecipient();
     const next = this.effectiveComposeSpan(value);
+    const snapshot = this.composeCandidateSnapshot;
+    if (next?.kind === 'path' && snapshot && snapshot.recipient === recipient && snapshot.cwd === this.session.store.agents.get(recipient ?? '')?.settings.cwd && snapshot.sourceId === this.composePathSource.id && snapshot.span.start === next.start) {
+      const slash = snapshot.span.query.lastIndexOf('/');
+      const prefix = snapshot.span.query === './~' ? './~/' : slash >= 0 ? snapshot.span.query.slice(0, slash + 1) : '';
+      const exactCandidate = snapshot.candidates.find(item => next.query === prefix + item.name);
+      if (exactCandidate) {
+        this.composeAcceptedFile = { recipient: recipient!, start: next.start, insertion: next.query, directory: exactCandidate.kind === 'directory', manual: true };
+        this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+        this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
+        this.mentionPanel.hide(); return;
+      }
+    }
     if (next?.kind === 'path' && this.mentionOpen) {
       this.mentionOpen = false; this.mentionResults = []; this.mentionPanel.hide();
     }
     if (next?.kind !== 'path' || !recipient) {
+      const manualAnchorCurrent = !!recipient && this.composeAcceptedFile?.manual && this.composeAcceptedFile.recipient === recipient &&
+        value.slice(this.composeAcceptedFile.start, this.composeAcceptedFile.start + this.composeAcceptedFile.insertion.length) === this.composeAcceptedFile.insertion;
+      if (!manualAnchorCurrent) this.composeCandidateSnapshot = undefined;
       const wasPath = !!this.composeSpan || !!this.composeStatus;
       this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
       this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined;
@@ -1693,11 +1723,25 @@ export class UI {
       this.session.store.agents.get(lookup.recipient)?.settings.cwd === lookup.cwd && this.session.status.startsWith('connected');
     if (!current()) return;
     this.composeInFlight = true;
-    void this.composePathSource.complete({ recipientId: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }, lookup.span.query).then(entries => {
+    void this.composePathSource.complete({ recipientId: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }, lookup.span.query).then(completion => {
       if (!current()) return;
       // organization.paths already filters/ranks before its bounded limit;
       // preserve that server order rather than reranking a truncated subset.
-      this.composeCandidates = entries; this.composeResultDraft = lookup.draft; this.composeResultContext = { recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeStatus = this.composeCandidates.length ? undefined : 'No matching paths';
+      const entries = completion.entries;
+      this.composeCandidates = entries; if (entries.length) this.composeCandidateSnapshot = { span: lookup.span, candidates: entries, recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeResultDraft = lookup.draft; this.composeResultContext = { recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeStatus = this.composeCandidates.length ? undefined : 'No matching paths';
+      const proseBoundary = !entries.length && !completion.isDirectory && /\s/u.test(lookup.span.query);
+      if (proseBoundary) {
+        // Once prose has made a path lookup empty, hide the no-match row but
+        // keep the active span so a space-containing path can continue editing.
+        this.composeStatus = undefined; this.mentionPanel.hide(); this.composeShift = true; this.draw(); return;
+      }
+      if (!entries.length && completion.isDirectory) {
+        this.composeAcceptedFile = { recipient: lookup.recipient, start: lookup.span.start, insertion: lookup.span.query, directory: true, manual: true };
+        this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
+        this.composeSpan = undefined; this.composeCandidates = []; this.composeCandidateSnapshot = undefined; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
+        this.mentionPanel.hide(); this.composeShift = true; this.draw(); return;
+      }
+      this.refreshComposeCompletion();
       this.composeShift = true; this.draw();
     }).catch(error => {
       if (!current()) return;

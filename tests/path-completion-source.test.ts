@@ -8,7 +8,7 @@ test('host source uses only organization.paths with recipient cwd and kind any, 
   } };
   const source = new HostPathCompletionSource(session as any);
   const context = { recipientId: 'agent-1', cwd: '/agent cwd', sourceId: source.id };
-  await expect(source.complete(context, './a')).resolves.toEqual([{ name: '.hidden file', path: '/server/.hidden file', kind: 'file' }]);
+  await expect(source.complete(context, './a')).resolves.toEqual({ path: './a', isDirectory: true, entries: [{ name: '.hidden file', path: '/server/.hidden file', kind: 'file' }] });
   await source.complete(context, './/home');
   await source.complete(context, './~/Documents');
   await source.complete(context, './~');
@@ -18,6 +18,6 @@ test('host source uses only organization.paths with recipient cwd and kind any, 
 });
 
 test('completion source is replaceable without a plugin/container implementation', async () => {
-  const fake: PathCompletionSource = { id: 'fixture', complete: async () => [{ name: 'fixture', path: '/fixture', kind: 'directory' }] };
-  await expect(fake.complete({ recipientId: 'r', cwd: '/r', sourceId: fake.id }, './')).resolves.toEqual([{ name: 'fixture', path: '/fixture', kind: 'directory' }]);
+  const fake: PathCompletionSource = { id: 'fixture', complete: async () => ({ path: './', isDirectory: true, entries: [{ name: 'fixture', path: '/fixture', kind: 'directory' }] }) };
+  await expect(fake.complete({ recipientId: 'r', cwd: '/r', sourceId: fake.id }, './')).resolves.toEqual({ path: './', isDirectory: true, entries: [{ name: 'fixture', path: '/fixture', kind: 'directory' }] });
 });
