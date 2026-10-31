@@ -131,6 +131,7 @@ export class Store extends EventEmitter {
   operations = new Map<string, Operation>();
   private operationSequences = new Map<string, number>();
   private operationTombstones = new Map<string, { seq: number; status: string }>();
+  private operationAbsences = new Map<string, number>();
   events = new Map<number, ServerEvent>();
   renderings = new Map<number, EventRendering>();
   discovered = new Set<string>();
@@ -720,7 +721,7 @@ export class Store extends EventEmitter {
   }
 
   reset(): void {
-    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.operationTombstones.clear(); this.events.clear(); this.renderings.clear();
+    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.operationTombstones.clear(); this.operationAbsences.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.livePreviews.clear(); this.livePreviewFallbacks.clear(); this.previewSources.clear(); this.previewMessageIdentities.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear(); this.previewSubtypeIds.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
@@ -733,9 +734,14 @@ export class Store extends EventEmitter {
     const previousOperationSequences = this.operationSequences;
     const snapshotOperations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
     for (const [id, current] of previousOperations) {
-      if (!terminal(current.status)) continue;
+      const currentSeq = previousOperationSequences.get(id) ?? -1;
       const incoming = snapshotOperations.get(id);
-      if (!incoming || !terminal(incoming.status)) this.rememberOperationTombstone(id, current.status, previousOperationSequences.get(id) ?? -1);
+      if (currentSeq <= snapshot.seq && !incoming) this.operationAbsences.set(id, Math.max(this.operationAbsences.get(id) ?? -1, snapshot.seq));
+      if (terminal(current.status) && (!incoming || !terminal(incoming.status))) this.rememberOperationTombstone(id, current.status, currentSeq);
+    }
+    for (const [id, seq] of this.operationAbsences) {
+      if (snapshotOperations.has(id)) this.operationAbsences.delete(id);
+      else this.operationAbsences.set(id, Math.max(seq, snapshot.seq));
     }
     this.operations = new Map();
     this.operationSequences = new Map();
@@ -901,6 +907,14 @@ export class Store extends EventEmitter {
   }
   putOperation(operation: Operation, seq?: number): void {
     const current = this.operations.get(operation.id);
+    const absenceSeq = this.operationAbsences.get(operation.id);
+    if (absenceSeq !== undefined) {
+      if (seq === undefined || seq <= absenceSeq) {
+        if (terminal(operation.status)) this.rememberOperationTombstone(operation.id, operation.status, seq ?? absenceSeq);
+        return;
+      }
+      this.operationAbsences.delete(operation.id);
+    }
     const tombstone = this.operationTombstones.get(operation.id);
     if (tombstone && !current) {
       if (terminal(operation.status)) this.rememberOperationTombstone(operation.id, operation.status, seq ?? this.watermark);

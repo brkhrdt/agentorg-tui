@@ -63,6 +63,24 @@ describe('state and transcripts', () => {
     expect(store.operations.has('settled-queue')).toBe(false);
     expect(store.queuedPromptCount('root')).toBe(0);
   });
+  test('snapshot absence blocks delayed acknowledgements after a truncated terminal update', () => {
+    const store = new Store();
+    store.install({ seq: 0, agents: [agent('root')], operations: [] });
+    const queued = { ...operation('queued'), id: 'missed-terminal', agentId: 'root' };
+    store.ingest(event(1, 'operation.changed', queued));
+    store.ingest(event(2, 'operation.changed', { truncated: true, originalBytes: 256, preview: '{"id":"missed-terminal","status":"completed"}' }));
+    expect(store.queuedPromptCount('root')).toBe(1);
+
+    store.install({ seq: 2, agents: [agent('root')], operations: [] });
+    expect(store.operations.has('missed-terminal')).toBe(false);
+    expect(store.queuedPromptCount('root')).toBe(0);
+    store.putOperation(queued); // Delayed RPC acceptance has no sequence and predates the authoritative absence.
+    expect(store.queuedPromptCount('root')).toBe(0);
+    store.install({ seq: 3, agents: [agent('root')], operations: [] });
+    store.putOperation(queued, 3);
+    expect(store.queuedPromptCount('root')).toBe(0);
+    expect(store.operations.has('missed-terminal')).toBe(false);
+  });
   test('tree is parent-first, indented, hides archived agents, handles orphan/cycle records', () => {
     const store = new Store();
     store.install({ seq: 5, agents: [agent('grandchild', 'child'), agent('child', 'root'), agent('root'), agent('removed', 'root', { removedAt: 'yesterday' }), agent('orphan', 'unknown')], operations: [] });
