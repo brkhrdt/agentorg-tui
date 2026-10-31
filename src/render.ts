@@ -306,7 +306,7 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   const text = typeof sidecar === 'string' ? sidecar : typeof data.text === 'string' ? data.text : pretty(event.data);
   const hasCue = !!cue && text.startsWith(`${cue.mention} `);
   const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
-  const effect = data.effect === 'queue' ? 'QUEUE' : 'PROMPT';
+  const effect = data.effect === 'queue' ? 'QUEUE' : data.effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
   const headerText = `YOU · ${effect}${hasCue ? ` · ${cue!.mention}` : ''}`;
   const header = paint(headerText, 'agentTarget', colors);
   const detail = clean(stripAnsi(markdown(body, width, false, colors))).replace(/\s+/g, ' ').trim();
@@ -340,7 +340,7 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
     const text = hasSidecar ? rendering!.summary : typeof data.text === 'string' ? data.text : pretty(event.data);
     const hasCue = !!cue && text.startsWith(`${cue.mention} `);
     const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
-    const effect = data.effect === 'queue' ? 'QUEUE' : 'PROMPT';
+    const effect = data.effect === 'queue' ? 'QUEUE' : data.effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
     const header = `YOU · ${effect}${hasCue ? ` · ${cue!.mention}` : ''}`;
     const summary = hasSidecar ? markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors) : clean(body).replace(/\s+/g, ' ').trim();
     return clipStyled(`${paint(header, 'agentTarget', colors)} — ${summary}`, width);
@@ -367,10 +367,11 @@ export function renderTreeEvent(event: ServerEvent, width: number, rendering?: E
   return renderTreeEventPreview(event, width, rendering, colors, true);
 }
 function renderSteeringEvent(event: ServerEvent, level: Exclude<Level, 4>, width: number, colors: RenderColors): string {
-  const status = ({ 'prompt.steer_submitted': 'submitted', 'prompt.steer_pending': 'pending', 'prompt.steer_delivered': 'delivered', 'prompt.steer_failed': 'failed', 'prompt.steering': 'pending', 'prompt.steered': 'delivered' } as Record<string, string>)[event.type] ?? 'submitted';
-  const failed = status === 'failed';
-  const color: ColorSetting = status === 'submitted' || status === 'pending' ? 'toolCall' : failed ? 'toolFailure' : 'toolSuccess';
-  const title = `YOU · STEERING ${status.toUpperCase()}`;
+  const submitted = event.type === 'prompt.steer_submitted';
+  const pending = event.type === 'prompt.steer_pending' || event.type === 'prompt.steering';
+  const failed = event.type === 'prompt.steer_failed';
+  const color: ColorSetting = submitted ? 'toolCall' : pending ? 'toolUpdate' : failed ? 'toolFailure' : 'toolSuccess';
+  const title = 'YOU · STEER';
   const data = object(event.data);
   const prompt = clean(typeof data.text === 'string' ? data.text : 'Steering guidance');
   const compactPrompt = prompt.replace(/\s+/g, ' ').trim();
@@ -507,8 +508,8 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
       adjacent = false;
       continue;
     }
-    if (steeringId && settings.compactToolCalls && ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steering'].includes(event.type) && raw) steeringRequests.delete(steeringId);
-    // Raw phases remain separate and end any prior replacement chain.
+    if (steeringId && settings.compactToolCalls && steeringPhase && raw) steeringRequests.delete(steeringId);
+    // Raw tool phases remain separate and end any prior replacement chain.
     if (callId && raw) toolCalls.delete(callId);
     else if (callId) {
       const priorIndex = toolCalls.get(callId);

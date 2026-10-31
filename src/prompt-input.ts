@@ -1,4 +1,5 @@
 import blessed from 'blessed';
+import type { ComposeSubmitMode } from './compose-keys.js';
 
 // Blessed exposes these methods at runtime but omits them from its typings.
 const Textarea = blessed.textarea as unknown as new (options: blessed.Widgets.TextareaOptions) => blessed.Widgets.TextareaElement & {
@@ -10,15 +11,27 @@ const Textarea = blessed.textarea as unknown as new (options: blessed.Widgets.Te
   childOffset: number;
 };
 
-/** A wrapping composer with textbox-style Enter-to-send behavior. */
+/** A wrapping composer with explicit, one-shot modified-Enter submission modes. */
 export class PromptInput extends Textarea {
+  private submitMode: ComposeSubmitMode = 'default';
+
   _listener(ch: string, key: blessed.Widgets.Events.IKeyEventArg): void {
-    if (key.name === 'enter') this.submit();
-    else super._listener(ch, key);
+    if (key.name === 'enter') {
+      if (key.ctrl && key.meta || key.ctrl && key.shift || key.meta && key.shift) return;
+      this.submit(key.ctrl ? 'interrupt' : key.meta ? 'queue' : 'default');
+    } else super._listener(ch, key);
   }
 
-  submit(): void {
-    this._done?.(null, this.value);
+  submit(mode: ComposeSubmitMode = 'default'): void {
+    if (!this._done) return;
+    this.submitMode = mode;
+    this._done(null, this.value);
+  }
+
+  takeSubmitMode(): ComposeSubmitMode {
+    const mode = this.submitMode;
+    this.submitMode = 'default';
+    return mode;
   }
 
   // Native setValue scrolls before we can grow. Defer it to reflow, avoiding

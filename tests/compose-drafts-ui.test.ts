@@ -49,15 +49,15 @@ test('tree prompt draft is shared across recipients, accepted once, and cleared 
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('root'); await new Promise(resolve => setTimeout(resolve, 50));
-    tui.keys('\r'); await tui.visible('Interrupting'); await new Promise(resolve => setTimeout(resolve, 50));
+    tui.keys('\r'); await tui.visible('Prompt · root'); await new Promise(resolve => setTimeout(resolve, 50));
     tui.keys('shared prompt draft'); await waitFor(() => tui.screen().includes('shared prompt draft'));
     tui.keys('\x1b'); await new Promise(resolve => setTimeout(resolve, 50));
-    tui.keys('\x1b[B'); await tui.visible('worker'); tui.keys('\r'); await tui.visible('Interrupting prompt · worker');
+    tui.keys('\x1b[B'); await tui.visible('worker'); tui.keys('\r'); await tui.visible('Prompt · worker');
     await waitFor(() => tui.screen().includes('shared prompt draft'));
     tui.keys('\r'); await waitFor(() => prompts.length === 1);
     expect(prompts[0]).toEqual({ agentId: 'worker', text: 'shared prompt draft', queue: false });
-    await waitFor(() => !tui.screen().includes('Interrupting prompt · worker') && tui.screen().includes('Enter prompt  c chat'));
-    tui.keys('\r'); await tui.visible('Interrupting prompt · worker');
+    await waitFor(() => !tui.screen().includes('Prompt · worker') && tui.screen().includes('Enter prompt  c chat'));
+    tui.keys('\r'); await tui.visible('Prompt · worker');
     await waitFor(() => hasComposer(tui));
     expect(rows(tui)).toBe(''); expect(prompts).toHaveLength(1);
   } finally { await tui.close(); await mock.close(); }
@@ -71,7 +71,7 @@ test.each(['chat', 'prompt'] as const)('%s replacement text survives late accept
     else if (request.method === 'agent.prompt') pending = { socket, id: request.id, params: request.params };
   });
   const tui = terminalClient(mock.path, mock.directory);
-  const header = view === 'chat' ? 'Chat · root' : 'Interrupting prompt';
+  const header = view === 'chat' ? 'Chat · root' : 'Prompt · root';
   try {
     await tui.visible('root'); await new Promise(resolve => setTimeout(resolve, 50));
     tui.keys(view === 'chat' ? 'c' : '\r'); await tui.visible(view === 'chat' ? 'Chat' : header);
@@ -98,7 +98,7 @@ test.each(['chat', 'prompt'] as const)('%s late acceptance after Escape clears t
     else if (request.method === 'agent.prompt') pending = { socket, id: request.id };
   });
   const tui = terminalClient(mock.path, mock.directory);
-  const header = view === 'chat' ? 'Chat · root' : 'Interrupting prompt';
+  const header = view === 'chat' ? 'Chat · root' : 'Prompt · root';
   const open = () => tui.keys(view === 'chat' ? 'c' : '\r');
   try {
     await tui.visible('root'); await new Promise(resolve => setTimeout(resolve, 50));

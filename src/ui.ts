@@ -1,6 +1,7 @@
 import blessed from 'blessed';
 import stringWidth from 'string-width';
 import { PromptInput } from './prompt-input.js';
+import { ComposeKeyInput, type ComposeSubmitMode } from './compose-keys.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
 import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
@@ -71,9 +72,14 @@ export function rawEventJsonLabel(eventType: string | undefined, width: number):
 }
 
 export class UI {
+  private composeKeyInput = (() => {
+    const input = new ComposeKeyInput(() => this.view === 'chat' || this.view === 'prompt');
+    input.attach(process.stdin);
+    return input;
+  })();
   readonly screen = blessed.screen({
     smartCSR: true, fullUnicode: true, title: 'Agent Organization',
-    ignoreLocked: ['C-c'], warnings: false,
+    ignoreLocked: ['C-c'], warnings: false, input: this.composeKeyInput,
   });
   private title = blessed.box({ parent: this.screen, top: 0, height: 1, tags: false, style: { fg: 'cyan', bold: true } });
   private columns = blessed.box({ parent: this.screen, top: 1, height: 1, style: { fg: 'gray' } });
@@ -342,8 +348,12 @@ export class UI {
       const input = this.input as typeof this.input & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
       if (['structured-filter', 'agent-skills-filter'].includes(this.view) && !input.__listener) input._listener(ch, key);
     });
+    this.editorInput.on('submit', (value: string) => { void this.submit(value); });
+    this.composer.on('submit', (value: string) => { void this.submit(value, this.composer.takeSubmitMode()); });
+    this.composeKeyInput.on('modifiedEnter', (mode: ComposeSubmitMode) => {
+      if (this.view === 'chat' || this.view === 'prompt') this.composer.submit(mode);
+    });
     for (const input of [this.editorInput, this.composer]) {
-      input.on('submit', (value: string) => { void this.submit(value); });
       input.on('cancel', () => {
         if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
         else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
@@ -714,13 +724,13 @@ export class UI {
       action('tab', 'Collapse / expand selected branch', () => this.toggleSelectedBranch()),
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
-        action('enter', 'Interrupting prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
+        action('enter', 'Prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
         ] : []),
       action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('l', 'Event visibility / rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
-    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool and prompt phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
+    if (this.view === 'view') return [action('enter', 'Choose selected setting', choose), ...(this.session.serverSettingsCapability ? [action('s', 'Server organization / plugin settings', () => { void this.openServerSettings(); })] : []), action('t', 'TUI colors (CLIENT ONLY)', () => this.setView('colors')), action('b', 'Table fields / order', () => this.setView('table-fields')), action('l', 'Event visibility / rendering levels (CLIENT ONLY)', () => this.setView('levels')), action('c', 'Toggle compact tool and steering phases', () => this.toggleCompactToolCalls()), action('h', 'History cache (CLIENT ONLY)', () => this.setView('history-settings')), back];
     if (this.view === 'history-settings') return [action('enter', 'Edit selected history limit', choose), action('z', 'Restore history cache defaults', () => { this.settings.history = { ...DEFAULT_HISTORY }; this.session.configureHistory(this.settings.history); this.saveSettings(); this.draw(); }), back];
     if (this.view === 'colors') return [action('space', 'Cycle selected color', cycle), action('left', 'Previous color', () => this.changeColor(-1)), action('right', 'Next color', () => this.changeColor(1)), action('enter', 'Next color', () => this.changeColor(1)), action('z', 'Reset all colors', () => { this.settings.colors = { ...DEFAULT_COLORS }; this.saveSettings(); this.draw(); }), back];
     if (this.view === 'table-fields') return [
@@ -1868,7 +1878,7 @@ export class UI {
     if (composer) { this.promptTop.show(); this.promptBottom.show(); if (this.mentionOpen) this.mentionPanel.show(); }
     this.draw();
   }
-  private async submit(value: string): Promise<void> {
+  private async submit(value: string, mode: ComposeSubmitMode = 'default'): Promise<void> {
     if (this.sending) {
       // Enter completes the current Blessed readInput cycle even though the
       // single-flight guard rejects this duplicate send. Re-arm composition.
@@ -2011,10 +2021,12 @@ export class UI {
     // while acceptance is pending so Escape and local draft edits remain usable.
     this.composer.show(); this.composer.readInput();
     this.draw();
-    const steering = !!this.session.activePrompt(agentId);
-    this.showNotice(steering ? 'Sending guidance to active prompt…' : 'Sending interrupting prompt…');
+    const steering = mode === 'default' && !!this.session.activePrompt(agentId);
+    this.showNotice(mode === 'queue' ? 'Queueing prompt…' : mode === 'interrupt' ? 'Interrupting and submitting prompt…' : steering ? 'Sending guidance to active prompt…' : 'Sending interrupting prompt…');
     try {
-      await this.session.sendPromptOrSteer(agentId, submitted);
+      if (mode === 'queue') await this.session.prompt(agentId, submitted, true);
+      else if (mode === 'interrupt') await this.session.prompt(agentId, submitted, false);
+      else await this.session.sendPromptOrSteer(agentId, submitted);
       const submittedDraftStillCurrent = !!identity && this.composeDraftRevision(identity) === submittedRevision &&
         (identity.kind === 'chat' ? this.chatDrafts.get(identity.id) === submitted : this.promptDraft === submitted);
       if (submittedDraftStillCurrent && identity?.kind === 'chat') {
@@ -2060,7 +2072,10 @@ export class UI {
       } else this.mentionPanel.hide();
     } else this.mentionPanel.hide();
     const promptLabel = ' > ';
-    this.promptTop.setContent(clip(`─${promptLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - 1))}`, width));
+    const composeAgentId = this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined;
+    const queuedCount = composeAgentId ? this.session.store.queuedPromptCount(composeAgentId) : 0;
+    const queueLabel = queuedCount > 0 ? `${queuedCount}x queued prompts ` : '';
+    this.promptTop.setContent(clip(`─${promptLabel}${queueLabel}${'─'.repeat(Math.max(0, width - promptLabel.length - queueLabel.length - 1))}`, width));
     this.promptBottom.setContent('─'.repeat(width));
     this.menu.width = '100%';
     this.preview.hide();
@@ -2081,7 +2096,7 @@ export class UI {
       this.view === 'skill-details' ? `Registered skill repository · ${this.skillDetailsFocus?.name ?? 'unknown'}` :
       this.view === 'catalog-manager' ? 'Manage registered catalog skills · reversible retirement' :
       this.view === 'catalog-delete-confirm' ? `Confirm permanent deletion · ${this.pendingCatalogDelete?.name ?? 'unknown skill'}` :
-      this.view === 'prompt' ? `Interrupting prompt · ${agent?.name ?? this.promptAgent}` :
+      this.view === 'prompt' ? `Prompt · ${agent?.name ?? this.promptAgent}` :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' && this.editor?.fields[this.selectedMenuIndex()] === 'skills' ? `Skills: ${this.editor.agentId ? `modify draft · revision ${this.editor.revision}` : 'new agent draft'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
@@ -2187,7 +2202,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ` Text: Enter send / steer active  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
+      this.footer.setContent(this.view === 'prompt' ? ` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'} · Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :
@@ -2256,7 +2271,7 @@ export class UI {
       this.footer.setContent(this.view === 'server-group' ? (this.recordEditing ? ' ↑↓ field  Enter edit  z reset (draft)  S stage entry into collection  Esc discard entry · server Save still required' : ` ↑↓ field  Enter row / field  z reset default (draft)  S review save  r discard/reload${editor?.group.namespace === 'skills' && this.session.skillsEnabled ? '  c refresh catalog' : ''}${editor?.group.namespace === 'skills' && this.session.skillRepositoryRegistrationAvailable ? '  a add skill repository' : ''}${editor?.group.namespace === 'skills' && this.session.skillsReconcileEndpointAvailable ? '  R retry legacy seeds' : ''}  Esc back`) : this.view === 'server-confirm' ? ' Enter choose  y save server-wide  n / Esc keep draft · no automatic agent restarts' : ' ↑↓ select  Enter open  Esc back · not client-local preferences');
     } else if (this.view === 'view') {
       this.updating = true;
-      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool/prompt phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
+      this.menu.setItems([...(this.session.serverSettingsCapability ? ['s  Organization / plugins (SERVER-WIDE)'] : []), 't  TUI colors (CLIENT ONLY)', 'b  Table fields / order (CLIENT ONLY)', 'l  Event visibility / rendering levels (CLIENT ONLY)', `c  Compact tool/steering phases in chat: ${this.settings.compactToolCalls ? 'on' : 'off'}`, 'h  History cache (CLIENT ONLY)']);
       this.menu.select(this.menuIndex);
       this.updating = false;
       this.footer.setContent(' s server settings   t TUI colors   b table fields   l event visibility / rendering levels   c compact phases   h history cache   ↑↓ select   Enter open   Esc tree');
@@ -2408,7 +2423,7 @@ export class UI {
         } finally { this.adjustingChatViewport = false; }
       }
       this.chatLayout = nextLayout;
-      this.footer.setContent(` Text: Enter send / steer active  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  PgUp older  PgDn latest  C-Home top  C-End follow  Ctrl+C clear`);
+      this.footer.setContent(` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc tree · PgUp older · Ctrl+C clear`);
     } else if (this.view === 'settings-choice-setup') {
       this.footer.setContent(' Enter register resource and select  Ctrl+U clear  Esc cancel · registration persists independently; no agent access yet');
     } else if (this.view === 'server-field') {
@@ -2418,7 +2433,7 @@ export class UI {
         ' ↑↓ select   Tab complete / descend   Space / Enter stage path   Ctrl+U clear   Esc discard' :
         ' Enter stage field   Ctrl+U clear   Esc discard field · choose Save changes to apply');
     } else {
-      this.footer.setContent(` Text: Enter send / steer active  ↑↓ select  Tab complete  Space literal  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'}  Ctrl+U clear`);
+      this.footer.setContent(` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc tree · Ctrl+C clear`);
     }
     if (this.sending) this.footer.setContent(this.view === 'chat' || this.view === 'prompt' ? ' Working · do not retry unknown outcomes' : this.input.visible ? ' Working · do not retry unknown outcomes' : ' Working · Esc tree  q quit · do not retry unknown outcomes');
     else if (this.contextActions().length && this.view !== 'keys') this.footer.setContent(` ? keys |${this.footer.getContent()}`);
@@ -2431,7 +2446,7 @@ export class UI {
     if (this.pathTimer) clearTimeout(this.pathTimer);
     if (this.composeTimer) clearTimeout(this.composeTimer);
     ++this.pathRequest; ++this.composeRequest;
-    this.session.close(); this.screen.destroy();
+    this.session.close(); this.screen.destroy(); this.composeKeyInput.dispose();
     void this.saveChain.finally(() => process.exit(0));
   }
 }

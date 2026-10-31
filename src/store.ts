@@ -20,6 +20,15 @@ export function appendMessageChunk(previous: ServerEvent | undefined, event: Ser
   return { ...event, data: { ...data, content: { ...data.content, text: lastData.content.text + data.content.text } } };
 }
 const terminal = (status: string) => ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
+const operationRank = (status: string) => terminal(status) ? 2 : status === 'running' || status === 'cancelling' ? 1 : 0;
+function mergeOperation(current: Operation, incoming: Operation): Operation {
+  if (terminal(current.status)) return current;
+  const stale = operationRank(incoming.status) < operationRank(current.status);
+  const merged: Operation = stale ? { ...incoming, ...current, status: current.status } : { ...current, ...incoming };
+  if (current.cancelRequested === true || incoming.cancelRequested === true) merged.cancelRequested = true;
+  if (current.cancelRequestedAt && !incoming.cancelRequestedAt) merged.cancelRequestedAt = current.cancelRequestedAt;
+  return merged;
+}
 const STREAMED_MESSAGE_KINDS = new Set(['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk']);
 function isStreamedMessage(event: ServerEvent): boolean {
   const data = object(event.data);
@@ -73,7 +82,8 @@ function compactPreview(event: ServerEvent): ServerEvent {
   if (event.type === 'prompt.queued' && typeof data.text === 'string' && object(data.promptCue).version === 1) {
     const prefix = boundedGraphemePrefix(data.text, TREE_PREVIEW_MESSAGE_BYTES);
     const cue = object(data.promptCue);
-    return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: prefix.text, promptCue: cue, ...(prefix.truncated && { previewTruncated: true }) } };
+    const effect = ['normal', 'interrupt', 'queue'].includes(data.effect) ? data.effect : undefined;
+    return { ...event, type: boundedUtf8(event.type, 128), time: boundedUtf8(event.time, 64), ...(event.agentId && { agentId: boundedUtf8(event.agentId, 128) }), ...(event.generation && { generation: boundedUtf8(event.generation, 128) }), data: { operationId: boundedUtf8(String(data.operationId ?? ''), 96), text: prefix.text, promptCue: cue, ...(effect && { effect }), ...(prefix.truncated && { previewTruncated: true }) } };
   }
   if (event.type === 'agent.message' && STREAMED_MESSAGE_KINDS.has(streamKind) && typeof data.content?.text === 'string') {
     // Keep a bounded source prefix rather than JSON-truncating an accumulated
@@ -717,7 +727,13 @@ export class Store extends EventEmitter {
   }
   install(snapshot: Snapshot): void {
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
+    const previousOperations = this.operations;
     this.operations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
+    for (const [id, current] of previousOperations) {
+      const incoming = this.operations.get(id);
+      if (incoming) this.operations.set(id, mergeOperation(current, incoming));
+      else if (!terminal(current.status)) this.operations.set(id, current);
+    }
     this.watermark = snapshot.seq;
     this.pruneLivePreviews();
     // The snapshot is for state only; older buffered events still belong in chat.
@@ -856,10 +872,14 @@ export class Store extends EventEmitter {
   }
   putOperation(operation: Operation): void {
     const current = this.operations.get(operation.id);
-    // Acceptance responses can arrive after the terminal event.
-    if (current && terminal(current.status) && !terminal(operation.status)) return;
-    this.operations.set(operation.id, operation);
+    this.operations.set(operation.id, current ? mergeOperation(current, operation) : operation);
     this.emit('change');
+  }
+  queuedPromptCount(agentId: string): number {
+    let count = 0;
+    for (const operation of this.operations.values())
+      if (operation.agentId === agentId && operation.type === 'agent.prompt' && operation.status === 'queued') count++;
+    return count;
   }
   tree(): TreeRow[] {
     const active = [...this.agents.values()].filter(agent => agent.removedAt === null);

@@ -13,7 +13,8 @@ Usage: org-tui [--socket PATH] [--config PATH] [--no-history]
   -h, --help     Show help
 
 Tree: ↑↓ select, Tab collapse/expand branch, Enter prompt, c chat, v l visibility / rendering levels, q quit.
-Chat: Enter steers the active prompt when one is running; otherwise it sends an interrupting prompt. Escape returns to the tree. Prompt composer Tab completes mentions; tree Tab collapses/expands branches.
+Chat and prompt: Enter steers the exact active prompt or submits normally; Alt-Enter queues; Ctrl-Enter interrupts and submits. Escape returns to the tree. Prompt composer Tab completes mentions; tree Tab collapses/expands branches.
+Modified Enter uses supported terminal byte mappings (legacy ESC+Enter, CSI-u, or xterm modifyOtherKeys). Prefer explicit CSI mappings: rapid Escape then Enter is ambiguous, and terminals emitting plain CR for Ctrl-Enter cannot be distinguished.
 `;
 async function main(): Promise<void> {
   let socket = process.env.ORG_SOCKET ?? '.org/server.sock';

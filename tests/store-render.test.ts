@@ -8,6 +8,20 @@ import { renderTable } from '../src/table.js';
 import { agent, event, operation } from './helpers.js';
 
 describe('state and transcripts', () => {
+  test('queued prompt counts follow live operation transitions and resist stale snapshots', () => {
+    const store = new Store();
+    const first = { ...operation('queued'), id: 'first', agentId: 'root' };
+    const second = { ...operation('queued'), id: 'second', agentId: 'root' };
+    store.install({ seq: 0, agents: [agent('root')], operations: [first, second] });
+    expect(store.queuedPromptCount('root')).toBe(2);
+    store.putOperation({ ...first, status: 'running', cancelRequested: true });
+    expect(store.queuedPromptCount('root')).toBe(1);
+    store.install({ seq: 0, agents: [agent('root')], operations: [first, second] });
+    expect(store.queuedPromptCount('root')).toBe(1);
+    expect(store.operations.get('first')).toMatchObject({ status: 'running', cancelRequested: true });
+    store.ingest(event(2, 'operation.changed', { ...second, status: 'completed' }));
+    expect(store.queuedPromptCount('root')).toBe(0);
+  });
   test('tree is parent-first, indented, hides archived agents, handles orphan/cycle records', () => {
     const store = new Store();
     store.install({ seq: 5, agents: [agent('grandchild', 'child'), agent('child', 'root'), agent('root'), agent('removed', 'root', { removedAt: 'yesterday' }), agent('orphan', 'unknown')], operations: [] });
@@ -637,18 +651,21 @@ describe('four non-hidden rendering levels', () => {
   test('agent prompt cue is accented while its untouched Markdown body parses at block start in chat and tree', () => {
     const body = '# Heading\n\n- item with `code`';
     const text = `@Research lead ${body}`;
-    const queued = event(3, 'prompt.queued', { operationId: 'op', text, promptCue: { version: 1, bodyStart: '@Research lead '.length } });
+    const queued = event(3, 'prompt.queued', { operationId: 'op', text, effect: 'queue', promptCue: { version: 1, bodyStart: '@Research lead '.length } });
     const full = renderEvent(queued, 3, 80, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(full)).toContain('YOU · PROMPT · @Research lead');
+    expect(stripAnsi(full)).toContain('YOU · QUEUE · @Research lead');
     expect(stripAnsi(full)).toContain('Heading');
-    expect(full).toContain('\x1b[35mYOU · PROMPT · @Research lead\x1b[0m');
+    expect(full).toContain('\x1b[35mYOU · QUEUE · @Research lead\x1b[0m');
     expect(stripAnsi(full)).toContain('item with code');
     expect(stripAnsi(full)).not.toContain('# Heading');
     const tree = renderTreeEvent(queued, 80, undefined, { agentTarget: 'magenta' });
-    expect(stripAnsi(tree)).toContain('PROMPT');
+    const compact = new Store(); compact.install({ seq: 0, agents: [agent('root')], operations: [] }); compact.ingest(queued);
+    expect(compact.events.get(3)?.data).toMatchObject({ effect: 'queue' });
+    expect(stripAnsi(renderEvent(compact.events.get(3)!, 3, 80))).toContain('QUEUE');
+    expect(stripAnsi(tree)).toContain('QUEUE');
     expect(stripAnsi(tree)).toContain('@Research lead');
     expect(stripAnsi(tree)).toContain('Heading');
-    expect(tree).toContain('\x1b[35mYOU · PROMPT · @Research lead\x1b[0m');
+    expect(tree).toContain('\x1b[35mYOU · QUEUE · @Research lead\x1b[0m');
     const forged = event(4, 'prompt.queued', { text: '@Human # literal', promptCue: { version: 1, bodyStart: 8 } });
     expect(stripAnsi(renderEvent(forged, 3, 80))).toContain('@Human # literal');
   });
@@ -667,6 +684,15 @@ describe('four non-hidden rendering levels', () => {
     const noCue = { ...sidecar, summary: 'Custom summary without a cue' };
     expect(renderEvent(queued, 1, 80, noCue)).not.toContain('\x1b[35m');
     expect(stripAnsi(renderEvent(queued, 1, 80, noCue))).toBe('YOU · PROMPT — Custom summary without a cue');
+  });
+  test('interrupt prompt effects are distinct in chat and tree rendering', () => {
+    const text = '@Root Coordinator Return only a float';
+    const interrupted = event(8, 'prompt.queued', { operationId: 'interrupt-op', text, effect: 'interrupt', promptCue: { version: 1, bodyStart: '@Root Coordinator '.length } });
+    expect(stripAnsi(renderEvent(interrupted, 1, 100))).toStartWith('YOU · INTERRUPT · @Root Coordinator');
+    expect(stripAnsi(renderTreeEvent(interrupted, 100))).toStartWith('YOU · INTERRUPT · @Root Coordinator');
+    const store = new Store(); store.install({ seq: 0, agents: [agent('root')], operations: [] }); store.ingest(interrupted);
+    expect(store.events.get(8)?.data).toMatchObject({ effect: 'interrupt' });
+    expect(stripAnsi(renderEvent(store.events.get(8)!, 3, 100))).toContain('YOU · INTERRUPT · @Root Coordinator');
   });
   test('narrow full prompt cues wrap without losing issuer or body, including wide graphemes', () => {
     for (const mention of ['@Long Parent Name', '@界界界界']) {

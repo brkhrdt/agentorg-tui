@@ -25,7 +25,7 @@ for (const view of ['prompt', 'chat'] as const) {
       try {
         await tui.visible('root   idle');
         tui.keys(view === 'chat' ? 'c' : '\r');
-        await tui.visible(view === 'chat' ? 'Chat · root' : 'Interrupting');
+        await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
         let draft = '';
         // Include exact row boundaries and multiple growth transitions. The
         // textarea reserves one column so the cursor never wraps the terminal.
@@ -68,6 +68,82 @@ for (const view of ['prompt', 'chat'] as const) {
   }
 }
 
+test.each([
+  ['chat', '\x1b\r', '\x1b[13;5u'],
+  ['prompt', '\x1b[27;3;13~', '\x1b[27;5;13~'],
+] as const)('%s accepts raw Alt-Enter queue and Ctrl-Enter interrupt modes exactly once', async (view, altEnter, ctrlEnter) => {
+  const requests: any[] = [];
+  let accepted = 0;
+  const active = { ...operation('running'), id: 'active-prompt', agentId: 'root' };
+  const backlog = { ...operation('queued'), id: 'old-backlog', agentId: 'root' };
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [active, backlog] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') {
+      accepted++;
+      respond(socket, request.id, { ...operation('queued'), id: `queued-${accepted}`, agentId: 'root' });
+    } else if (request.method === 'agent.steer') respond(socket, request.id, { agentId: 'root', operationId: 'active-prompt', steeringId: 'plain-enter-steer', disposition: 'submitted' });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    const openCompose = async () => {
+      tui.keys(view === 'chat' ? 'c' : '\r');
+      await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    };
+    await openCompose();
+    await tui.visible('1x queued prompts');
+    tui.keys('queue this exact draft'); tui.keys(altEnter);
+    await waitFor(() => requests.filter(request => request.method === 'agent.prompt').length === 1);
+    if (view === 'prompt') await openCompose();
+    await tui.visible('2x queued prompts');
+    expect(requests.filter(request => request.method === 'agent.prompt').map(request => request.params)).toEqual([
+      { agentId: 'root', text: 'queue this exact draft', queue: true },
+    ]);
+    tui.keys('replace active with this'); tui.keys(ctrlEnter);
+    await waitFor(() => requests.filter(request => request.method === 'agent.prompt').length === 2);
+    if (view === 'prompt') { await openCompose(); await tui.visible('3x queued prompts'); }
+    else await tui.visible('3x queued prompts');
+    expect(requests.filter(request => request.method === 'agent.prompt').map(request => request.params)).toEqual([
+      { agentId: 'root', text: 'queue this exact draft', queue: true },
+      { agentId: 'root', text: 'replace active with this', queue: false },
+    ]);
+    tui.keys('plain Enter keeps default'); tui.keys('\r');
+    await waitFor(() => requests.filter(request => request.method === 'agent.steer').length === 1);
+    expect(requests.filter(request => request.method === 'agent.steer').map(request => request.params)).toEqual([
+      { agentId: 'root', operationId: 'active-prompt', text: 'plain Enter keeps default' },
+    ]);
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test.each([
+  ['chat', 'queue', '\x1b\r', true],
+  ['prompt', 'interrupt', '\x1b[27;5;13~', false],
+] as const)('%s rejected %s submission preserves the draft', async (view, _mode, key, queue) => {
+  const requests: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    requests.push(request);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root')], operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.prompt') send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'NOT_RUNNING', message: 'recipient unavailable' } });
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 100 });
+  try {
+    await tui.visible('root   idle');
+    tui.keys(view === 'chat' ? 'c' : '\r');
+    await tui.visible(view === 'chat' ? 'Chat · root' : 'Prompt · root');
+    const draft = 'preserve exact rejected text';
+    tui.keys(draft); tui.keys(key);
+    await waitFor(() => requests.filter(request => request.method === 'agent.prompt').length === 1 && tui.screen().includes('recipient unavailable'));
+    expect(requests.filter(request => request.method === 'agent.prompt').map(request => request.params)).toEqual([
+      { agentId: 'root', text: draft, queue },
+    ]);
+    await waitFor(() => composerRows(tui).join('') === draft);
+    expect(requests.some(request => request.method === 'agent.steer')).toBe(false);
+  } finally { await tui.close(); await mock.close(); }
+});
+
 test('Enter submits steering promptly and shows its lifecycle without interrupting the operation', async () => {
   const requests: any[] = [];
   const active = { ...operation('running'), id: 'active-child-prompt', agentId: 'root' };
@@ -87,17 +163,18 @@ test('Enter submits steering promptly and shows its lifecycle without interrupti
     await tui.visible('root   idle'); tui.keys('c'); await tui.visible('Chat · root');
     tui.keys('Continue after the sleep without stopping it');
     tui.keys('\r');
-    await waitFor(() => !!pendingSteer && tui.screen().includes('STEERING SUBMITTED'));
-    expect(tui.screen()).toContain('STEERING SUBMITTED');
+    const steeringEventCount = () => (stripAnsi(tui.screen()).match(/YOU · STEER/g) ?? []).length;
+    await waitFor(() => !!pendingSteer && steeringEventCount() >= 1);
+    expect(steeringEventCount()).toBe(1);
     expect(requests.some(request => request.method === 'agent.steer')).toBe(true);
     send(pendingSteer!.socket, event(2, 'prompt.steer_pending', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
-    await waitFor(() => tui.screen().includes('STEERING PENDING'));
+    await waitFor(() => steeringEventCount() >= 2);
     expect(requests.find(request => request.method === 'agent.steer').params).toEqual({ agentId: 'root', operationId: active.id, text: 'Continue after the sleep without stopping it' });
     expect(requests.some(request => request.method === 'agent.prompt')).toBe(false);
     send(pendingSteer!.socket, event(3, 'prompt.steer_delivered', { steeringId: 'steer-1', operationId: active.id, text: 'Continue after the sleep without stopping it' }));
-    await waitFor(() => tui.screen().includes('STEERING DELIVERED'));
-    expect(tui.screen()).toContain('STEERING PENDING');
-    expect(tui.screen()).toContain('STEERING SUBMITTED');
+    await waitFor(() => steeringEventCount() >= 3);
+    expect(steeringEventCount()).toBe(3);
+    expect(stripAnsi(tui.screen())).not.toMatch(/STEERING (SUBMITTED|PENDING|DELIVERED)/);
     expect(active.status).toBe('running');
   } finally { await tui.close(); await mock.close(); }
 });
@@ -105,16 +182,16 @@ test('Enter submits steering promptly and shows its lifecycle without interrupti
 test('steering and queued prompt detail levels label states, stay flush-left, and use literal truncation', () => {
   const steering = event(1, 'prompt.steer_pending', { steeringId: 's', operationId: 'o', text: 'a very long prompt text '.repeat(20) });
   const summary = stripAnsi(renderEvent(steering, 1, 120));
-  expect(summary).toStartWith('YOU · STEERING PENDING —');
+  expect(summary).toStartWith('YOU · STEER —');
   const extended = stripAnsi(renderEvent(steering, 2, 24)).split('\n');
   expect(extended).toHaveLength(2);
-  expect(extended[0]).toBe('YOU · STEERING PENDING');
+  expect(extended[0]).toBe('YOU · STEER');
   expect(extended[1]!.startsWith(' ')).toBe(false);
   expect(extended[1]).toEndWith('...');
   const full = stripAnsi(renderEvent(steering, 3, 24)).split('\n');
-  expect(full[0]).toContain('STEERING PENDING');
+  expect(full[0]).toBe('YOU · STEER');
   expect(full.slice(1).every(line => !line.startsWith(' '))).toBe(true);
-  for (const [effect, label] of [['normal', 'PROMPT'], ['interrupt', 'PROMPT'], ['queue', 'QUEUE']] as const) {
+  for (const [effect, label] of [['normal', 'PROMPT'], ['interrupt', 'INTERRUPT'], ['queue', 'QUEUE']] as const) {
     const queued = event(2, 'prompt.queued', { effect, text: 'a long prompt '.repeat(20) });
     expect(stripAnsi(renderEvent(queued, 1, 120))).toStartWith(`YOU · ${label}`);
     const detail = stripAnsi(renderEvent(queued, 2, 24)).split('\n');

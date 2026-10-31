@@ -716,13 +716,13 @@ export class Session extends EventEmitter {
     await this.prompt(agentId, text);
     return 'prompt';
   }
-  async prompt(agentId: string, text: string): Promise<void> {
+  async prompt(agentId: string, text: string, queue = false): Promise<void> {
     if (!text.trim()) return;
     const client = this.client;
     if (!client || !this.status.startsWith('connected')) throw new Error('Server is not connected');
-    const operation = await client.request<Operation>('agent.prompt', { agentId, text, queue: false });
+    const operation = await client.request<Operation>('agent.prompt', { agentId, text, queue });
     this.store.putOperation(operation);
-    this.emit('notice', `Prompt accepted · ${operation.id}`);
+    this.emit('notice', `${queue ? 'Prompt queued' : 'Prompt accepted'} · ${operation.id}`);
     void this.watch(client, operation).catch(error => this.emit('notice', error.message));
   }
   async modifyPodman(params: Record<string, unknown>, imageScope: ImageScope): Promise<void> {
