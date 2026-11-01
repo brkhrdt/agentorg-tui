@@ -324,7 +324,7 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
   const hasCue = !!cue && text.startsWith(`${cue.mention} `);
   const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
   const effect = ['normal', 'interrupt', 'queue'].includes(data.effect) ? data.effect : undefined;
-  if (effect || (cue && !(cue.sender && cue.recipient))) {
+  if (!(cue && cue.sender && cue.recipient) && (effect || cue)) {
     const label = effect === 'queue' ? 'QUEUE' : effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
     const attribution = hasCue && cue!.sender && cue!.recipient ? `${cue!.sender}: @${cue!.recipient}` : hasCue ? cue!.mention : '';
     const header = paint(`YOU · ${label}${attribution ? ` · ${attribution}` : ''}`, 'agentTarget', colors);
@@ -334,8 +334,8 @@ function renderPromptCue(event: ServerEvent, level: Exclude<Level, 4>, width: nu
     if (level === 3) return `${wrapAnsi(header, width, { hard: true, trim: false })}\n${markdown(body, width, false, colors, preserveBreaks)}`;
     return `${clipStyled(header, width)}\n${literalEllipsis(detail, width)}`;
   }
-  if (hasCue && cue!.sender && cue!.recipient) {
-    const prefix = `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `;
+  if (cue && cue.sender && cue.recipient) {
+    const prefix = `${paint(`${cue.sender}: `, 'agentTarget', colors)}${paint(`@${cue.recipient}`, 'agentTarget', colors)} `;
     return formatAttributed(prefix, body, level, width, colors);
   }
   const mention = hasCue ? paint(clean(cue!.mention), 'agentTarget', colors) : '';
@@ -390,13 +390,13 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
     const hasCue = !!cue && text.startsWith(`${cue.mention} `);
     const body = hasCue ? text.slice(cue!.mention.length + 1) : text;
     const effect = ['normal', 'interrupt', 'queue'].includes(data.effect) ? data.effect : undefined;
-    const showMode = !!effect || (!!cue && !(cue.sender && cue.recipient));
-    const attribution = hasCue && cue!.sender && cue!.recipient ? `${cue!.sender}: @${cue!.recipient}` : hasCue ? cue!.mention : '';
-    const attributedSummary = hasCue && cue!.sender && cue!.recipient;
+    const showMode = !(cue && cue.sender && cue.recipient) && (!!effect || !!cue);
+    const attributedSummary = !!cue && !!cue.sender && !!cue.recipient;
+    const attribution = attributedSummary ? `${cue!.sender}: @${cue!.recipient}` : hasCue ? cue!.mention : '';
     const summary = hasSidecar || attributedSummary ? markdown(body.replace(/\s+/g, ' ').trim(), width, true, colors) : clean(body).replace(/\s+/g, ' ').trim();
     if (!showMode && (!hasCue || (cue!.sender && cue!.recipient))) {
-      const prefix = hasCue && cue!.sender && cue!.recipient
-        ? `${paint(`${cue!.sender}: `, 'agentTarget', colors)}${paint(`@${cue!.recipient}`, 'agentTarget', colors)} `
+      const prefix = cue && cue.sender && cue.recipient
+        ? `${paint(`${cue.sender}: `, 'agentTarget', colors)}${paint(`@${cue.recipient}`, 'agentTarget', colors)} `
         : hasCue ? `${paint(clean(cue!.mention), 'agentTarget', colors)} ` : '';
       return clipStyled(prefix + summary, width);
     }

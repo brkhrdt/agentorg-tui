@@ -629,7 +629,7 @@ describe('state and transcripts', () => {
     store.install({ seq: 0, agents: [agent('root'), agent('worker')], operations: [] });
     const sender = '界'.repeat(140), recipient = 'Worker', mention = `@${sender} `;
     const queued = event(1, 'prompt.queued', {
-      operationId: 'long-name-prompt', text: `${mention}${'body remains visible '.repeat(30)}`,
+      operationId: 'long-name-prompt', effect: 'queue', text: `${mention}${'body remains visible '.repeat(30)}`,
       promptCue: { version: 1, bodyStart: mention.length },
       promptAttribution: { version: 1, sender, recipient },
     });
@@ -643,9 +643,14 @@ describe('state and transcripts', () => {
     expect(data.promptCue).toEqual({ version: 1, bodyStart: mention.length });
     expect(data.text.slice(0, mention.length)).toBe(mention);
     expect(data.promptAttribution).toEqual({ version: 1, sender, recipient });
+    expect(data.effect).toBe('queue');
     const rendered = stripAnsi(renderTreeEvent(preview, 500));
     expect(rendered).toContain(`${sender}: @${recipient}`);
     expect(rendered).toContain('body remains visible');
+    expect(rendered).not.toContain('YOU ·');
+    const row = stripAnsi(renderTable(store.tree(), store.latest(settings), ['event'], 500).items[0]!);
+    expect(row).toContain(`${sender}: @${recipient}`);
+    expect(row).not.toContain('YOU ·');
   });
   test('tree table retains the beginning of a long live message after raw events are evicted', () => {
     const store = new Store(), settings = new Settings();
@@ -817,7 +822,7 @@ describe('four non-hidden rendering levels', () => {
     expect(tree).toContain('\x1b[35mSender: \x1b[0m\x1b[35m@Receiver\x1b[0m');
     expect(tree).not.toContain('\x1b[35mBody heading');
   });
-  test('effect-bearing attributed prompt bodies preserve exact embedded newlines in full renders', () => {
+  test('effect-bearing attributed prompts show authenticated sender/target in chat and tree; human effects stay labeled', () => {
     const mention = '@Previous sender ';
     const body = 'First line\nSecond line\n\nThird line';
     for (const effect of ['normal', 'queue', 'interrupt'] as const) {
@@ -825,7 +830,43 @@ describe('four non-hidden rendering levels', () => {
         effect, text: `${mention}${body}`, promptCue: { version: 1, bodyStart: mention.length },
         promptAttribution: { version: 1, sender: 'Sender', recipient: 'Receiver' },
       });
-      expect(stripAnsi(renderEvent(queued, 3, 100))).toContain(body);
+      for (const level of [1, 2, 3] as const) {
+        const rendered = stripAnsi(renderEvent(queued, level, 100));
+        expect(rendered).toContain('Sender: @Receiver');
+        expect(rendered).not.toContain('YOU ·');
+        if (level === 3) expect(rendered).toContain(body);
+      }
+      const tree = stripAnsi(renderTreeEvent(queued, 100));
+      expect(tree).toContain('Sender: @Receiver');
+      expect(tree).toContain('First line');
+      expect(tree).not.toContain('YOU ·');
+
+      const humanText = '@Sender sender: @target human body';
+      const human = event(30, 'prompt.queued', { effect, text: humanText });
+      const label = effect === 'queue' ? 'QUEUE' : effect === 'interrupt' ? 'INTERRUPT' : 'PROMPT';
+      for (const level of [1, 2, 3] as const) expect(stripAnsi(renderEvent(human, level, 100))).toContain(`YOU · ${label}`);
+      expect(stripAnsi(renderTreeEvent(human, 100))).toContain(`YOU · ${label}`);
+    }
+  });
+  test('attributed effect prompts keep sender and target when selected sidecars include or omit the cue', () => {
+    const mention = '@Source name ';
+    const queued = event(31, 'prompt.queued', {
+      effect: 'queue', text: `${mention}wire body`, promptCue: { version: 1, bodyStart: mention.length },
+      promptAttribution: { version: 1, sender: 'Authenticated sender', recipient: 'Actual target' },
+    });
+    const cases = [
+      { summary: '@Source name summary body', extended: '@Source name extended body', full: '@Source name full body' },
+      { summary: 'custom summary body', extended: 'custom extended body', full: 'custom full body' },
+    ];
+    for (const sidecar of cases) {
+      for (const [level, body] of [[1, sidecar.summary], [2, sidecar.extended], [3, sidecar.full]] as const) {
+        const rendered = stripAnsi(renderEvent(queued, level, 120, { rendererId: 'custom', ...sidecar }));
+        expect(rendered).toContain(`Authenticated sender: @Actual target ${body.replace('@Source name ', '')}`);
+        expect(rendered).not.toContain('YOU ·');
+      }
+      const tree = stripAnsi(renderTreeEvent(queued, 120, { rendererId: 'custom', ...sidecar }));
+      expect(tree).toContain(`Authenticated sender: @Actual target ${sidecar.summary.replace('@Source name ', '')}`);
+      expect(tree).not.toContain('YOU ·');
     }
   });
   test('receiver attribution preserves complete multiline Markdown blocks at extended and full levels', () => {
