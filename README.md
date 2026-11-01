@@ -596,11 +596,12 @@ Resizing the terminal rewraps the draft.
   CR for Enter and Ctrl+Enter cannot be distinguished; the TUI never guesses
   Ctrl+Enter from plain CR. tmux defaults `extended-keys` off, which can collapse
   Ctrl+Enter to plain Enter; enable forwarding with `tmux set-option -s
-  extended-keys always`. Normal prompt events render as `PROMPT`, steering
-  events as `STEER` with phase-specific colors, interrupt submissions as `INTERRUPT`, and queued
-  events (`queue: true`) as `QUEUE`. Summary is one line, extended is two flush-left
-  lines with `...` truncation, and full shows the complete prompt. Steering
-  lifecycle events stay distinct when compaction is off; compact-phases may
+  extended-keys always`. Human prompt submissions render as `PROMPT`, interrupt
+  submissions as `INTERRUPT`, and queued events (`queue: true`) as `QUEUE`;
+  authenticated agent prompts instead show the sender, target, and message body.
+  Steering events render as `STEER` with phase-specific colors. Summary is one line,
+  extended is two flush-left lines with `...` truncation, and full shows the complete
+  prompt. Steering lifecycle events stay distinct when compaction is off; compact-phases may
   replace earlier phases with the latest event in chat.
 - **Page Up / mouse-wheel up** browse older content and pause viewport auto-scroll only; incoming events still join this chat while its position remains anchored. At the loaded top, Page Up (or wheel-up) fetches another older page for this agent.
 - **Page Down / mouse-wheel down** reveal already-appended events. Reaching the actual bottom resumes auto-follow; a no-op Page Down at the bottom (including when the transcript is shorter than the viewport) keeps following. **Ctrl+Home** jumps to the loaded top; **Ctrl+End** explicitly reloads the latest bounded chat window and resumes auto-follow.
