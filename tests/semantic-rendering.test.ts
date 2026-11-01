@@ -29,18 +29,16 @@ test.skipIf(!coreModule)('real core MCP sidecars/catalog preserve all 15 Pi iden
     expect(validEventRendering(rendering)).toBe(true); expect(rendering.subtype).toBe(emitted);
     for (const level of [1, 2, 3] as const) expect(stripAnsi(renderEvent(e, level, 80, rendering))).toStartWith('∴ ');
     if (tool === 'prompt_subagent') expect(stripAnsi(renderEvent(e, 1, 80, rendering))).toBe('∴ @child-7 Review this change');
-    if (tool === 'prompt_parent') expect(stripAnsi(renderEvent(e, 1, 80, rendering))).toContain('∴ @parent');
     expect(JSON.parse(renderEvent(e, 4, 10000, rendering))).toEqual(e);
     const preview = rendererPreview(row, 'tool.update', 2, 80, 12, {}, emitted);
     expect(preview).toContain('∴'); expect(preview).not.toContain('lines received');
   }
 });
 
-test.skipIf(!coreModule)('prompt_subagent and prompt_parent sidecars show trusted sender/receiver attribution with Markdown bodies', () => {
+test.skipIf(!coreModule)('prompt_subagent sidecars show trusted sender/receiver attribution with Markdown bodies', () => {
   const core = registry();
   for (const { tool, recipient } of [
     { tool: 'prompt_subagent', recipient: 'Receiver' },
-    { tool: 'prompt_parent', recipient: 'Parent' },
   ]) {
     const emitted = `mcp__agentorg__${tool}`;
     const prompt = '**Body emphasis** and `inline code`';
@@ -80,13 +78,13 @@ test.skipIf(!coreModule)('attributed sender Markdown parses complete multiline b
     '- outer item',
     '  - nested item with `code`',
   ].join('\n');
-  for (const tool of ['prompt_subagent', 'prompt_parent']) {
+  for (const tool of ['prompt_subagent']) {
     const emitted = `mcp__agentorg__${tool}`;
     const e = { ...event(emitted, { status: 'queued' }, { agentId: 'recipient', text: body }), type: 'tool.call' };
     const presentation = core.render(e, 'pi', 'core.tools', { senderName: 'Sender', targetName: 'Receiver', parentTargetName: 'Parent' })!;
     for (const level of [2, 3] as const) {
       const rendered = renderEvent(e, level, 100, presentation, { agentTarget: 'magenta' });
-      expect(stripAnsi(rendered)).toContain(`Sender: @${tool === 'prompt_parent' ? 'Parent' : 'Receiver'}`);
+      expect(stripAnsi(rendered)).toContain('Sender: @Receiver');
       expect(stripAnsi(rendered)).toContain('Strong text starts here');
       expect(rendered).toContain('\x1b[1mStrong text starts here');
       expect(rendered).toContain('\x1b[3m');
