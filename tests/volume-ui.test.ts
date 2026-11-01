@@ -23,7 +23,9 @@ test('grant summaries report singular, plural, zero and malformed drafts safely'
   expect(editor.grantSummary('readWriteDirs')).toBe('2 directories');
   editor.values.readOnlyDirs = '{';
   expect(editor.grantSummary('readOnlyDirs')).toBe('(invalid; Enter to edit)');
-  expect(editor.values.readOnlyDirs).toBe('{');
+  editor.values.readOnlyDirs = '{}';
+  expect(editor.grantSummary('readOnlyDirs')).toBe('(invalid; Enter to edit)');
+  expect(editor.values.readOnlyDirs).toBe('{}');
 });
 
 test('volume fields are arrays, preserve grants on container edits, and suppress duplicate generic descriptors', () => {
@@ -62,6 +64,47 @@ test('edit overview shows full grant names and staged counts at 80 and 120 colum
       } finally { await ui.close(); }
     }
   } finally { await mock.close(); }
+}, 30_000);
+
+test('directory and volume editor staging updates overview counts; removal and discard stay local', async () => {
+  const root = agent('root', null, { name: 'grant-count-draft', settings: { harness: 'fixture', cwd: '/workspace', extensions: { podman: {
+    readOnlyDirs: ['/config'], readWriteDirs: ['/workspace/data', '/workspace/output'], readOnlyVolumes: ['data-ro'], readWriteVolumes: [],
+  } } } });
+  const changes: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: {
+      harnesses: ['fixture'], plugins: { podman: { endpoints: { modify: 'agent.modify', volumes: 'podman.volumes' } } },
+    } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 1, latestSeq: 0, expired: false });
+    else if (request.method === 'podman.volumes') respond(socket, request.id, { volumes: [{ name: 'fresh-volume', destination: '/data', readOnly: false }] });
+    else if (request.method === 'agent.modify') { changes.push(request.params); respond(socket, request.id, operation('completed')); }
+  });
+  const ui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });
+  const { keys, visible, screen } = ui;
+  const countRow = (field: string, count: string) => screen().split('\n').find(line => line.includes(field) && line.includes(count));
+  try {
+    await visible('grant-count-draft'); keys('e'); await visible('Modify agent');
+    expect(countRow('readWriteDirs', '2 directories')).toBeDefined();
+    keys('\x1b[B'.repeat(10) + '\r'); await visible('Edit readWriteDirs · list / map');
+    keys('a'); await visible('Edit readWriteDirs · value'); keys('/workspace/new-path\r'); await visible('Edit readWriteDirs · list / map');
+    await visible('/workspace/new-path'); keys('S'); await visible('Modify agent');
+    expect(countRow('readWriteDirs', '3 directories')).toBeDefined();
+    keys('\r'); await visible('Edit readWriteDirs · list / map'); keys('/'); await visible('Filter: type freely');
+    keys('new-path\x1b'); await visible('filter: new-path'); keys('d'); await visible('No matching entries');
+    keys('S'); await visible('Modify agent');
+    expect(countRow('readWriteDirs', '2 directories')).toBeDefined();
+
+    keys('\x1b[B\r'); await visible('Edit readOnlyVolumes · list / map'); keys('a'); await visible('fresh-volume →');
+    keys('\t'); await visible('fresh-volume'); keys('\r'); await visible('Edit readOnlyVolumes · list / map');
+    await visible('fresh-volume'); keys('S'); await visible('Modify agent');
+    expect(countRow('readOnlyVolumes', '2 volumes')).toBeDefined();
+    expect(changes).toHaveLength(0);
+
+    keys('\x1b'); await visible('LATEST TRACKED EVENT'); keys('e'); await visible('Modify agent');
+    expect(countRow('readWriteDirs', '2 directories')).toBeDefined();
+    expect(countRow('readOnlyVolumes', '1 volume'), screen()).toBeDefined();
+    expect(changes).toHaveLength(0);
+  } finally { await ui.close(); await mock.close(); }
 }, 30_000);
 
 test('volume discovery uses the advertised server endpoint, never local Podman', async () => {
