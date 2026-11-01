@@ -2257,7 +2257,10 @@ export class UI {
         this.view === 'image-scope' ? ['This node only (pin inheriting child branches to the old image)', 'This node + descendants inheriting its image', 'This node + all descendants (replace explicit overrides)'] :
         this.view === 'confirm' ? ['Cancel', 'Confirm — interrupts work; subtree actions affect descendants'] :
         this.view === 'harness-options' ? [...this.agentOptions.map(choice => `${choice.value === this.editor?.values[this.optionField] ? '●' : '○'} ${choice.label}`), 'Enter manually…'] :
-        [...this.editor!.fields.map((field, index) => clip(`${cell(field === 'skills' && index !== this.selectedMenuIndex() ? 'Skills' : this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 12)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.display(field) || '(omitted)'}`, width - 1)), 'Save changes']);
+        [...this.editor!.fields.map((field, index) => {
+          const summary = this.editor!.grantSummary(field);
+          return clip(`${cell(field === 'skills' && index !== this.selectedMenuIndex() ? 'Skills' : this.editor!.label(field), field.startsWith('plugin:') || field === 'container' ? 28 : 18)} ${this.editor!.spec(field).sensitive ? '(hidden; Enter to edit)' : summary ?? (collection(this.editor!.spec(field).editor) ? '(structured; Enter to edit)' : this.editor?.display(field) || '(omitted)')}`, width - 1);
+        }), 'Save changes']);
       this.menu.select(this.menuIndex); this.updating = false;
       this.footer.setContent(this.sending ? ' Operation in progress · Esc tree · do not retry unknown outcomes' :
         this.view === 'confirm' ? ' ↑↓ select   Enter choose   y confirm   n / Esc cancel' :

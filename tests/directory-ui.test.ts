@@ -2,6 +2,51 @@ import { expect, test } from 'bun:test';
 import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 
+test('cwd-only edit submits once, updates the snapshot, and reopens with all grants intact', async () => {
+  const root = agent('root', null, { name: 'grant-preservation-root', settings: { harness: 'fixture', cwd: '/before', extensions: {
+    podman: { image: 'fixture:v1', profile: { id: 'profile', name: 'Profile' }, runtime: { network: 'none' },
+      configGrants: { readOnlyDirs: ['/configured-ro'], readWriteDirs: ['/configured-rw'], readOnlyVolumes: ['config-ro'], readWriteVolumes: ['config-rw'] },
+      readOnlyDirs: ['/ro'], readWriteDirs: ['/rw-one', '/rw-two'], readOnlyVolumes: ['data-ro'], readWriteVolumes: ['data-rw'] },
+    sibling: { retained: true },
+  } } });
+  const changes: any[] = [], snapshots: any[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') {
+      snapshots.push(structuredClone(root));
+      respond(socket, request.id, { seq: snapshots.length - 1, agents: [root], operations: [], capabilities: { harnesses: ['fixture'] } });
+    } else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 1, latestSeq: 0, expired: false });
+    else if (request.method === 'agent.modify') {
+      changes.push(structuredClone(request.params));
+      root.settings = { ...root.settings, ...request.params.settings };
+      root.revision++;
+      respond(socket, request.id, operation('completed'));
+    }
+  });
+  const ui = terminalClient(mock.path, mock.directory, { cols: 100, rows: 30 });
+  const { keys, visible, screen } = ui;
+  try {
+    await visible('grant-preservation-root'); keys('e'); await visible('Modify agent');
+    keys('\x1b[B'.repeat(4) + '\r'); await visible('Edit cwd · text');
+    keys('\x15/after'); keys('\r'); await visible('Modify agent');
+    expect(changes).toHaveLength(0);
+    keys('S'); await visible('grant-preservation-root');
+    await waitFor(() => changes.length === 1 && snapshots.at(-1)?.revision === 2);
+    expect(changes).toEqual([{ agentId: 'root', expectedRevision: 1, settings: { cwd: '/after' } }]);
+    expect(snapshots).toHaveLength(2);
+    expect(root.settings.cwd).toBe('/after');
+    const podman = root.settings.extensions!.podman as any;
+    expect(podman).toMatchObject({ readOnlyDirs: ['/ro'], readWriteDirs: ['/rw-one', '/rw-two'], readOnlyVolumes: ['data-ro'], readWriteVolumes: ['data-rw'],
+      profile: { id: 'profile', name: 'Profile' }, runtime: { network: 'none' },
+      configGrants: { readOnlyDirs: ['/configured-ro'], readWriteDirs: ['/configured-rw'], readOnlyVolumes: ['config-ro'], readWriteVolumes: ['config-rw'] } });
+    expect(root.settings.extensions!.sibling).toEqual({ retained: true });
+    keys('e'); await visible('Modify agent · revision 2');
+    for (const [field, count] of [['readOnlyDirs', '1 directory'], ['readWriteDirs', '2 directories'], ['readOnlyVolumes', '1 volume'], ['readWriteVolumes', '1 volume']]) {
+      expect(screen().split('\n').some(line => line.includes(field) && line.includes(count))).toBe(true);
+    }
+    expect(changes).toHaveLength(1);
+  } finally { await ui.close(); await mock.close(); }
+}, 30_000);
+
 test('Podman grants reuse server cwd completion for add/edit/remove without creating directories', async () => {
   const root = agent('root', null, { name: 'directory-root', settings: { harness: 'fixture', cwd: '/project', extensions: { podman: { image: null, readOnlyDirs: ['/existing'], readWriteDirs: ['/project'] }, other: { preserved: true } } } });
   const paths: any[] = [], changes: any[] = [];
