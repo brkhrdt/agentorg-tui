@@ -10,6 +10,22 @@ const choices = [
   { name: 'pi-secondary', destination: '/home/pi/.pi', readOnly: false },
   { name: 'claude', destination: '/home/pi/.claude', readOnly: true },
 ];
+test('grant summaries report singular, plural, zero and malformed drafts safely', () => {
+  const root = agent('root', null, { settings: { harness: 'pi', extensions: { podman: {
+    readOnlyDirs: [], readWriteDirs: ['/workspace'], readOnlyVolumes: ['data'], readWriteVolumes: [],
+  } } } });
+  const editor = new AgentEditor(null, root, true, [], true);
+  expect(editor.grantSummary('readOnlyDirs')).toBe('0 directories');
+  expect(editor.grantSummary('readWriteDirs')).toBe('1 directory');
+  expect(editor.grantSummary('readOnlyVolumes')).toBe('1 volume');
+  expect(editor.grantSummary('readWriteVolumes')).toBe('0 volumes');
+  editor.stage('readWriteDirs', '["/one", "/two"]');
+  expect(editor.grantSummary('readWriteDirs')).toBe('2 directories');
+  editor.values.readOnlyDirs = '{';
+  expect(editor.grantSummary('readOnlyDirs')).toBe('(invalid; Enter to edit)');
+  expect(editor.values.readOnlyDirs).toBe('{');
+});
+
 test('volume fields are arrays, preserve grants on container edits, and suppress duplicate generic descriptors', () => {
   const root = agent('root', null, { settings: { harness: 'pi', cwd: '/project', extensions: { podman: { readOnlyDirs: ['/project'], readOnlyVolumes: ['pi-main'], readWriteVolumes: [] } } } });
   const editor = new AgentEditor(null, root, true, [
@@ -21,6 +37,32 @@ test('volume fields are arrays, preserve grants on container edits, and suppress
   expect(filterVolumes(choices, 'pm', false).map(v => v.name)).toEqual(['pi-main']);
   expect(filterVolumes(choices, '', true).map(v => v.name)).toEqual(['pi-main', 'pi-secondary']);
 });
+
+test('edit overview shows full grant names and staged counts at 80 and 120 columns', async () => {
+  const root = agent('root', null, { name: 'grant-summary-root', settings: { harness: 'fixture', cwd: '/project', extensions: { podman: {
+    readOnlyDirs: ['/one'], readWriteDirs: ['/one', '/two'], readOnlyVolumes: ['data'], readWriteVolumes: [],
+  } } } });
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [root], operations: [], capabilities: { harnesses: ['fixture'] } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], latestSeq: 0 });
+  });
+  try {
+    for (const cols of [80, 120]) {
+      const ui = terminalClient(mock.path, mock.directory, { cols, rows: 30 });
+      try {
+        const { keys, visible, screen } = ui;
+        await visible('grant-summary-root'); keys('e'); await visible('Modify agent');
+        const row = (field: string, count: string) => screen().split('\n').find(line => line.includes(field) && line.includes(count));
+        for (const [field, count] of [['readOnlyDirs', '1 directory'], ['readWriteDirs', '2 directories'], ['readOnlyVolumes', '1 volume'], ['readWriteVolumes', '0 volumes']]) {
+          const rendered = row(field, count);
+          expect(rendered, `${cols} columns: ${field}`).toBeDefined();
+          expect(rendered).not.toContain('(structured; Enter to edit)');
+        }
+        expect(screen()).not.toContain('readOnlyDir…');
+      } finally { await ui.close(); }
+    }
+  } finally { await mock.close(); }
+}, 30_000);
 
 test('volume discovery uses the advertised server endpoint, never local Podman', async () => {
   const requests: string[] = [];

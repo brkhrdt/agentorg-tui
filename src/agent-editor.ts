@@ -100,6 +100,16 @@ export class AgentEditor {
     }
     return this.values[field];
   }
+  grantSummary(field: AgentField): string | undefined {
+    if (!(PODMAN_FIELDS as readonly string[]).includes(field)) return undefined;
+    try {
+      const value: unknown = JSON.parse(this.values[field]);
+      if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || !item.trim())) return '(invalid; Enter to edit)';
+      const noun = field.endsWith('Dirs') ? 'directory' : 'volume';
+      const plural = field.endsWith('Dirs') ? 'directories' : 'volumes';
+      return `${value.length} ${value.length === 1 ? noun : plural}`;
+    } catch { return '(invalid; Enter to edit)'; }
+  }
   skillChoices(catalog?: readonly Skill[], states?: SkillStates) { return this.skillDraft?.choices(catalog, states) ?? []; }
   staleSkills(catalog: readonly Skill[]): string[] { return this.skillDraft?.staleSelections(catalog) ?? []; }
   skillStates(): SkillStates { return this.skillDraft?.states ?? {}; }

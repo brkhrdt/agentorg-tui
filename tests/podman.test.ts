@@ -25,6 +25,29 @@ test('Podman agent editor selects containers instead of exposing a separate imag
   expect(new AgentEditor(null).fields).not.toContain('container');
 });
 
+test('unrelated editor mutations keep all persisted grant drafts untouched and omit grant replacements', () => {
+  const record = agent('worker', null, { revision: 7, settings: { harness: 'fixture', cwd: '/before', options: { retries: 1 }, extensions: {
+    podman: { image: 'fixture:v1', profile: { id: 'p' }, runtime: { network: 'none' },
+      configGrants: { readOnlyDirs: ['/configured'], readWriteDirs: ['/configured-rw'], readOnlyVolumes: ['config-ro'], readWriteVolumes: ['config-rw'] },
+      readOnlyDirs: ['/extra-ro'], readWriteDirs: ['/extra-rw'], readOnlyVolumes: ['extra-ro'], readWriteVolumes: ['extra-rw'] },
+    sibling: { retained: true },
+  } } });
+  const grants = { readOnlyDirs: '["/extra-ro"]', readWriteDirs: '["/extra-rw"]', readOnlyVolumes: '["extra-ro"]', readWriteVolumes: '["extra-rw"]' };
+  const cwd = new AgentEditor(null, record, true, [], true);
+  cwd.values.cwd = '/after';
+  expect(cwd.params()).toEqual({ agentId: 'worker', expectedRevision: 7, settings: { cwd: '/after' } });
+  expect(Object.fromEntries(Object.keys(grants).map(key => [key, cwd.values[key as keyof typeof cwd.values]]))).toEqual(grants);
+  const rename = new AgentEditor(null, record, true, [], true);
+  rename.values.name = 'renamed';
+  expect(rename.params()).toEqual({ agentId: 'worker', expectedRevision: 7, name: 'renamed' });
+  const options = new AgentEditor(null, record, true, [], true);
+  options.values.options = '{"retries":2}';
+  expect(options.params()).toEqual({ agentId: 'worker', expectedRevision: 7, settings: { options: { retries: 2 } } });
+  const clear = new AgentEditor(null, record, true, [], true);
+  clear.values.readOnlyDirs = '[]';
+  expect((clear.params().settings as any).extensions.podman).toMatchObject({ readOnlyDirs: [], readWriteDirs: ['/extra-rw'], readOnlyVolumes: ['extra-ro'], readWriteVolumes: ['extra-rw'], configGrants: { readOnlyDirs: ['/configured'] } });
+});
+
 test('selecting a container configuration snapshots its runtime and grants without changing harness settings', () => {
   const profile: ContainerProfile = { id: 'coding', name: 'Coding', image: 'pi:v2', network: 'none', containerUid: 2000, containerGid: 2001,
     env: ['PUBLIC_CONFIG'], cwd: '/project', readOnlyDirs: ['/configuration'], readWriteDirs: ['/project'], readOnlyVolumes: ['config'], readWriteVolumes: [] };
