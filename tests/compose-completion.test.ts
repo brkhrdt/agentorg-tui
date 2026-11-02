@@ -24,6 +24,9 @@ describe('compose completion spans', () => {
     expect(fresh).toEqual({ kind: 'path', start: 11, query: './' });
     expect(composeSpan(updated, initial)).toEqual(fresh);
     expect(composeSpan('./notafile ./src', initial)).toEqual({ kind: 'path', start: 11, query: './src' });
+    expect(composeSpan('./notafile ordinary text', initial)).toEqual({ kind: 'path', start: 0, query: './notafile ordinary text' });
+    expect(composeSpan('./notafile x./src', initial)).toEqual({ kind: 'path', start: 0, query: './notafile x./src' });
+    expect(composeSpan('embedded x./src')).toBeUndefined();
   });
   test('keeps spaces and Unicode in the active path and preserves prompt prefix on replacement', () => {
     const span = composeSpan('inspect ./space dir/你好')!;

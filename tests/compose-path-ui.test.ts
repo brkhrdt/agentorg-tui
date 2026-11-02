@@ -3,6 +3,30 @@ import { agent, mockServer, operation, respond } from './helpers.js';
 import { terminalClient } from './terminal.js';
 
 for (const view of ['chat', 'prompt'] as const) {
+  test(`${view} composer completes a later path trigger without replacing its prefix`, async () => {
+    const inputs: string[] = [];
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+      else if (request.method === 'organization.paths') {
+        inputs.push(request.params.input);
+        const entries = request.params.input === './' ? [{ name: 'new file.txt', path: '/recipient/new file.txt', kind: 'file' }] : [];
+        respond(socket, request.id, { path: request.params.input, isDirectory: false, entries });
+      }
+    });
+    const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+    try {
+      await tui.visible('Root');
+      if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
+      tui.keys('./notafile'); await tui.visible('No matching paths');
+      tui.keys(' ./'); await tui.visible('new file.txt');
+      expect(inputs).toEqual(['./notafile', './']);
+      tui.keys('\t'); await new Promise(resolve => setTimeout(resolve, 30));
+      expect(tui.screen()).toContain('./notafile ./new file.txt');
+    } finally { await tui.close(); await mock.close(); }
+  });
+
   test(`${view} composer completes server-host paths relative to fixed recipient cwd`, async () => {
     const requests: any[] = [], prompts: any[] = [];
     const root = agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/srv/agent cwd' } });

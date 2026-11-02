@@ -5,6 +5,14 @@ export interface ComposeCandidate { name: string; path: string; kind: 'directory
 
 /** Completion is deliberately end-of-draft only, matching Blessed's composer behavior. */
 export function composeSpan(value: string, active?: ComposeSpan): ComposeSpan | undefined {
+  const match = [...value.matchAll(/(?:^|\s)(\.\/)/gu)].at(-1);
+  if (match && match.index !== undefined) {
+    const start = match.index + match[0].length - match[1].length;
+    if (active?.kind === 'path' && start > active.start) {
+      const query = value.slice(start);
+      if (query && !/[\r\n\u0000-\u001f]/u.test(query)) return { kind: 'path', start, query };
+    }
+  }
   if (active?.kind === 'path' && active.start <= value.length && value.slice(active.start).length >= 0) {
     const suffix = value.slice(active.start);
     // Keep a path span (including spaces) until its marker is removed or the
@@ -14,7 +22,6 @@ export function composeSpan(value: string, active?: ComposeSpan): ComposeSpan | 
   }
   // An explicit path trigger owns the remainder of its span, including spaces
   // and `@`; it must take precedence over an @-word at the end of that path.
-  const match = [...value.matchAll(/(?:^|\s)(\.\/)/gu)].at(-1);
   if (match && match.index !== undefined) {
     const start = match.index + match[0].length - match[1].length;
     const query = value.slice(start);
