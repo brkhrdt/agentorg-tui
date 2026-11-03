@@ -237,6 +237,30 @@ for (const view of ['chat', 'prompt'] as const) {
     } finally { await tui.close(); await mock.close(); }
   });
 
+  test(`${view} later path trigger escapes a manually accepted directory span`, async () => {
+    const inputs: string[] = [];
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+      else if (request.method === 'organization.paths') {
+        const input = request.params.input as string;
+        inputs.push(input);
+        const entries = input.startsWith('./s') && !input.endsWith('/') ? [{ name: 'src', path: '/recipient/src', kind: 'directory' as const }] : input === './src/' ? [{ name: 'child.ts', path: '/recipient/src/child.ts', kind: 'file' as const }] : input === './' ? [{ name: 'ROOT.txt', path: '/recipient/ROOT.txt', kind: 'file' as const }] : [];
+        respond(socket, request.id, { path: input, isDirectory: input === './src' || input === './src/', entries });
+      }
+    });
+    const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+    try {
+      await tui.visible('Root'); tui.keys(view === 'chat' ? 'c' : '\r'); await tui.visible(view === 'chat' ? 'Chat · Root' : 'Prompt · Root');
+      tui.keys('./s'); await tui.visible('src'); tui.keys('rc'); await new Promise(resolve => setTimeout(resolve, 100));
+      tui.keys('/'); await tui.visible('child.ts');
+      tui.keys(' prose ./'); await new Promise(resolve => setTimeout(resolve, 150));
+      expect(inputs).toContain('./');
+      expect(inputs).not.toContain('./src/ prose ./');
+      await tui.visible('ROOT.txt');
+    } finally { await tui.close(); await mock.close(); }
+  });
+
   test(`${view} composer descends into directories and keeps exactly one slash`, async () => {
     const paths: any[] = [];
     const mock = await mockServer((socket, request) => {
