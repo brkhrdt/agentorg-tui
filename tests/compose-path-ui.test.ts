@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { agent, mockServer, operation, respond } from './helpers.js';
+import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 
 for (const view of ['chat', 'prompt'] as const) {
@@ -27,7 +27,7 @@ for (const view of ['chat', 'prompt'] as const) {
     } finally { await tui.close(); await mock.close(); }
   });
 
-  test(`${view} queries a space path omitted from the bounded candidate snapshot`, async () => {
+  test(`${view} queries an omitted space path from a saturated candidate snapshot`, async () => {
     const inputs: string[] = [];
     const firstFive = ['foo', 'fooa', 'foob', 'fooc', 'food'].map(name => ({ name, path: `/recipient/${name}`, kind: 'file' as const }));
     const mock = await mockServer((socket, request) => {
@@ -38,7 +38,7 @@ for (const view of ['chat', 'prompt'] as const) {
         inputs.push(input);
         const entries = input === './foo bar'
           ? [{ name: 'foo bar.txt', path: '/recipient/foo bar.txt', kind: 'file' as const }]
-          : firstFive;
+          : input === './foo b' ? [] : firstFive;
         respond(socket, request.id, { path: input, isDirectory: false, entries });
       }
     });
@@ -50,12 +50,103 @@ for (const view of ['chat', 'prompt'] as const) {
       tui.keys('./f'); await tui.visible('fooc');
       expect(inputs).toEqual(['./f']);
       tui.keys('oo'); await new Promise(resolve => setTimeout(resolve, 120));
-      tui.keys(' bar'); await new Promise(resolve => setTimeout(resolve, 180));
-      expect(tui.screen()).toContain('./foo bar');
-      expect(inputs).toContain('./foo bar');
-      await tui.visible('foo bar.txt');
+      expect(inputs).toEqual(['./f']);
+      tui.keys(' b'); await waitFor(() => inputs.includes('./foo b'));
+      await new Promise(resolve => setTimeout(resolve, 100)); // Let the empty response settle; prose has no visible completion row.
+      expect(tui.screen()).toContain('./foo b');
+      expect(tui.screen()).not.toContain('No matching paths');
+      tui.keys('ar'); await tui.visible('foo bar.txt');
+      expect(inputs).toEqual(['./f', './foo b', './foo bar']);
     } finally { await tui.close(); await mock.close(); }
   });
+
+  test(`${view} keeps prose after an unsaturated exact file from starting a lookup`, async () => {
+    const inputs: string[] = [];
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+      else if (request.method === 'organization.paths') {
+        const input = request.params.input as string;
+        inputs.push(input);
+        respond(socket, request.id, { path: input, isDirectory: false, entries: [{ name: 'foo', path: '/recipient/foo', kind: 'file' }] });
+      }
+    });
+    const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+    try {
+      await tui.visible('Root');
+      if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
+      tui.keys('./f'); await tui.visible('foo  [file]');
+      tui.keys('oo'); await new Promise(resolve => setTimeout(resolve, 120));
+      expect(inputs).toEqual(['./f']);
+      tui.keys(' bar'); await waitFor(() => tui.screen().includes('./foo bar'));
+      await new Promise(resolve => setTimeout(resolve, 150)); // No-request assertion: allow the completion debounce window.
+      expect(inputs).toEqual(['./f']);
+    } finally { await tui.close(); await mock.close(); }
+  });
+
+  test(`${view} ignores a delayed space-path response after a later ./ trigger`, async () => {
+    const inputs: string[] = [];
+    let pendingSpace: { socket: import('node:net').Socket; id: string } | undefined;
+    const firstFive = ['foo', 'fooa', 'foob', 'fooc', 'food'].map(name => ({ name, path: `/recipient/${name}`, kind: 'file' as const }));
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+      else if (request.method === 'organization.paths') {
+        const input = request.params.input as string;
+        inputs.push(input);
+        if (input === './foo b') { pendingSpace = { socket, id: request.id }; return; }
+        const entries = input === './'
+          ? [{ name: 'ROOT.txt', path: '/recipient/ROOT.txt', kind: 'file' as const }]
+          : firstFive;
+        respond(socket, request.id, { path: input, isDirectory: false, entries });
+      }
+    });
+    const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+    try {
+      await tui.visible('Root');
+      if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
+      tui.keys('./f'); await tui.visible('fooc');
+      tui.keys('oo'); await new Promise(resolve => setTimeout(resolve, 120));
+      expect(inputs).toEqual(['./f']);
+      tui.keys(' b'); await waitFor(() => !!pendingSpace);
+      tui.keys(' ./'); await waitFor(() => tui.screen().includes('./foo b ./'));
+      respond(pendingSpace!.socket, pendingSpace!.id, { path: './foo b', isDirectory: false, entries: [{ name: 'foo bar.txt', path: '/recipient/foo bar.txt', kind: 'file' }] });
+      await tui.visible('ROOT.txt');
+      expect(inputs).toEqual(['./f', './foo b', './']);
+      expect(tui.screen()).not.toContain('foo bar.txt');
+    } finally { await tui.close(); await mock.close(); }
+  });
+
+  for (const saturated of [false, true]) {
+    test(`${view} continues a manual directory with spaces (${saturated ? 'saturated' : 'unsaturated'} snapshot)`, async () => {
+      const inputs: string[] = [];
+      const directory = { name: 'sub dir', path: '/recipient/sub dir', kind: 'directory' as const };
+      const extra = ['suba', 'subb', 'subc', 'subd'].map(name => ({ name, path: `/recipient/${name}`, kind: 'file' as const }));
+      const mock = await mockServer((socket, request) => {
+        if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+        else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+        else if (request.method === 'organization.paths') {
+          const input = request.params.input as string;
+          inputs.push(input);
+          const entries = input === './su' ? [directory, ...(saturated ? extra : [])] : input === './sub dir child' ? [{ name: 'sub dir child', path: '/recipient/sub dir child', kind: 'directory' as const }] : [];
+          respond(socket, request.id, { path: input, isDirectory: false, entries });
+        }
+      });
+      const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+      try {
+        await tui.visible('Root');
+        if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
+        else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
+        tui.keys('./su'); await tui.visible('sub dir/');
+        tui.keys('b dir'); await new Promise(resolve => setTimeout(resolve, 120));
+        expect(inputs).toEqual(['./su']);
+        tui.keys(' child'); await waitFor(() => inputs.includes('./sub dir child'));
+        expect(tui.screen()).toContain('./sub dir child');
+      } finally { await tui.close(); await mock.close(); }
+    });
+  }
 
   test(`${view} composer completes server-host paths relative to fixed recipient cwd`, async () => {
     const requests: any[] = [], prompts: any[] = [];

@@ -114,7 +114,7 @@ export class UI {
   private composePathSource: PathCompletionSource;
   private composeSpan?: ComposeSpan;
   private composeCandidates: PathCandidate[] = [];
-  private composeCandidateSnapshot?: { span: ComposeSpan; candidates: PathCandidate[]; recipient: string; cwd: string; sourceId: string };
+  private composeCandidateSnapshot?: { span: ComposeSpan; candidates: PathCandidate[]; recipient: string; cwd: string; sourceId: string; saturated: boolean };
   private composeResultDraft?: string;
   private composeResultContext?: { recipient: string; cwd: string; sourceId: string };
   private composeSelection = 0;
@@ -124,7 +124,7 @@ export class UI {
   private composeInFlight = false;
   private composeQueued?: { request: number; draft: string; recipient: string; cwd: string; sourceId: string; span: ComposeSpan };
   private composeDismissed?: string;
-  private composeAcceptedFile?: { recipient: string; start: number; insertion: string; directory?: boolean; manual?: boolean };
+  private composeAcceptedFile?: { recipient: string; start: number; insertion: string; directory?: boolean; manual?: boolean; snapshotSaturated?: boolean };
   private composeStatus?: string;
   private composeRecipient?: string;
   private composeContextStamp = '';
@@ -1589,7 +1589,7 @@ export class UI {
           const candidatePath = prefix + item.name;
           return candidatePath.startsWith(continuedPath.query) && candidatePath.length > accepted.insertion.length;
         });
-        if (continuation) return continuedPath;
+        if (accepted.directory || continuation || accepted.snapshotSaturated) return continuedPath;
       }
       const tail = composeSpan(tailValue);
       span = tail ? { ...tail, start: tail.start + tailStart } : undefined;
@@ -1690,7 +1690,7 @@ export class UI {
       const prefix = snapshot.span.query === './~' ? './~/' : slash >= 0 ? snapshot.span.query.slice(0, slash + 1) : '';
       const exactCandidate = snapshot.candidates.find(item => next.query === prefix + item.name);
       if (exactCandidate) {
-        this.composeAcceptedFile = { recipient: recipient!, start: next.start, insertion: next.query, directory: exactCandidate.kind === 'directory', manual: true };
+        this.composeAcceptedFile = { recipient: recipient!, start: next.start, insertion: next.query, directory: exactCandidate.kind === 'directory', manual: true, snapshotSaturated: snapshot.saturated };
         this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
         this.composeSpan = undefined; this.composeCandidates = []; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeLookupKey = undefined;
         this.mentionPanel.hide(); return;
@@ -1753,7 +1753,7 @@ export class UI {
       // organization.paths already filters/ranks before its bounded limit;
       // preserve that server order rather than reranking a truncated subset.
       const entries = completion.entries;
-      this.composeCandidates = entries; if (entries.length) this.composeCandidateSnapshot = { span: lookup.span, candidates: entries, recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeResultDraft = lookup.draft; this.composeResultContext = { recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeStatus = this.composeCandidates.length ? undefined : 'No matching paths';
+      this.composeCandidates = entries; if (entries.length) this.composeCandidateSnapshot = { span: lookup.span, candidates: entries, recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId, saturated: entries.length >= 5 }; this.composeResultDraft = lookup.draft; this.composeResultContext = { recipient: lookup.recipient, cwd: lookup.cwd, sourceId: lookup.sourceId }; this.composeStatus = this.composeCandidates.length ? undefined : 'No matching paths';
       const proseBoundary = !entries.length && !completion.isDirectory && /\s/u.test(lookup.span.query);
       if (proseBoundary) {
         // Once prose has made a path lookup empty, hide the no-match row but
