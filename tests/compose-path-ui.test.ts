@@ -27,6 +27,36 @@ for (const view of ['chat', 'prompt'] as const) {
     } finally { await tui.close(); await mock.close(); }
   });
 
+  test(`${view} queries a space path omitted from the bounded candidate snapshot`, async () => {
+    const inputs: string[] = [];
+    const firstFive = ['foo', 'fooa', 'foob', 'fooc', 'food'].map(name => ({ name, path: `/recipient/${name}`, kind: 'file' as const }));
+    const mock = await mockServer((socket, request) => {
+      if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+      else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+      else if (request.method === 'organization.paths') {
+        const input = request.params.input as string;
+        inputs.push(input);
+        const entries = input === './foo bar'
+          ? [{ name: 'foo bar.txt', path: '/recipient/foo bar.txt', kind: 'file' as const }]
+          : firstFive;
+        respond(socket, request.id, { path: input, isDirectory: false, entries });
+      }
+    });
+    const tui = terminalClient(mock.path, mock.directory, { cols: 80, rows: 24 });
+    try {
+      await tui.visible('Root');
+      if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
+      else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
+      tui.keys('./f'); await tui.visible('fooc');
+      expect(inputs).toEqual(['./f']);
+      tui.keys('oo'); await new Promise(resolve => setTimeout(resolve, 120));
+      tui.keys(' bar'); await new Promise(resolve => setTimeout(resolve, 180));
+      expect(tui.screen()).toContain('./foo bar');
+      expect(inputs).toContain('./foo bar');
+      await tui.visible('foo bar.txt');
+    } finally { await tui.close(); await mock.close(); }
+  });
+
   test(`${view} composer completes server-host paths relative to fixed recipient cwd`, async () => {
     const requests: any[] = [], prompts: any[] = [];
     const root = agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/srv/agent cwd' } });
