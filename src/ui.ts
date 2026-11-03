@@ -1578,8 +1578,8 @@ export class UI {
     if (accepted && accepted.recipient === this.currentMentionRecipient() && value.slice(accepted.start, accepted.start + accepted.insertion.length) === accepted.insertion) {
       const tailStart = accepted.start + accepted.insertion.length;
       const tailValue = value.slice(tailStart);
-      if (accepted.directory && tailValue.startsWith('/')) return { kind: 'path', start: accepted.start, query: value.slice(accepted.start) };
       const continuedPath = composeSpan(value, { kind: 'path', start: accepted.start, query: accepted.insertion });
+      if (accepted.directory && tailValue.startsWith('/') && !(continuedPath?.kind === 'path' && continuedPath.start > accepted.start)) return { kind: 'path', start: accepted.start, query: value.slice(accepted.start) };
       if (accepted.manual && continuedPath?.kind === 'path' && tailValue && !/^\s/u.test(tailValue)) return continuedPath;
       if (accepted.manual && continuedPath?.kind === 'path' && tailValue && /^\s/u.test(tailValue)) {
         const snapshot = this.composeCandidateSnapshot;
