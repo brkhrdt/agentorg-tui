@@ -20,9 +20,11 @@ async function foldedPrompt(exit: 'submit' | 'cancel') {
   const tui = terminalClient(mock.path, mock.directory);
   try {
     await tui.visible('  a'); await tui.visible('  b');
-    tui.keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40));
+    tui.keys('\x1b[B\x1b[B'); await new Promise(resolve => setTimeout(resolve, 50));
+    tui.keys('\t'); await tui.visible('a1 ▸');
+    tui.keys('\x1b[A'); await new Promise(resolve => setTimeout(resolve, 50));
     tui.keys('\t'); await tui.visible('a ▸');
-    tui.keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 40));
+    tui.keys('\x1b[B'); await new Promise(resolve => setTimeout(resolve, 50));
     tui.keys('\t'); await tui.visible('b ▸');
     const assertProjection = () => {
       const lines = tui.screen().split('\n');
