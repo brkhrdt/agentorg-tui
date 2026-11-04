@@ -128,7 +128,14 @@ export interface ServerSettingsGroup extends ServerSettingsDescriptor {
 }
 export interface ServerSettingsCatalog { groups: ServerSettingsGroup[]; facts: { cwd: string; dataDir: string; socketPath: string; harnesses: string[]; plugins: string[] } }
 export interface ServerSettingsCapability { version: number; groups: ServerSettingsDescriptor[]; endpoints: { list: string; get: string; update: string } }
-export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; capabilities?: { rendering?: RenderingCapability; usage?: UsageCapability; cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
+export interface AgentCommand { name: string; description: string; input?: { hint: string } }
+export interface AgentCommandsState { version: 1; generation: string; sessionId: string; commands: AgentCommand[] }
+export interface AgentCommandsCapability { version: 1 }
+export function validAgentCommandsState(value: unknown): value is AgentCommandsState {
+  if (!object(value) || value.version !== 1 || typeof value.generation !== 'string' || !value.generation || typeof value.sessionId !== 'string' || !value.sessionId || !Array.isArray(value.commands) || value.commands.length > 128 || Buffer.byteLength(JSON.stringify(value)) > 17 * 1024) return false;
+  return value.commands.every((command: any) => command && object(command) && typeof command.name === 'string' && command.name.length > 0 && Buffer.byteLength(command.name) <= 128 && !command.name.startsWith('/') && !/[\s\p{C}\u2028\u2029]/u.test(command.name) && typeof command.description === 'string' && Buffer.byteLength(command.description) <= 512 && !/[\u001b\u2028\u2029]/u.test(command.description) && (command.input === undefined || object(command.input) && typeof command.input.hint === 'string' && Buffer.byteLength(command.input.hint) <= 256 && !/[\u001b\u2028\u2029]/u.test(command.input.hint)));
+}
+export interface Snapshot { seq: number; agents: Agent[]; operations: Operation[]; agentCommands?: Record<string, AgentCommandsState>; capabilities?: { agentCommands?: AgentCommandsCapability; rendering?: RenderingCapability; usage?: UsageCapability; cwd?: string; pathCompletion?: boolean; harnesses?: string[]; modelDiscovery?: string[]; settingsEditors?: Record<string, unknown>; plugins?: Record<string, unknown>; serverSettings?: ServerSettingsCapability; loadedPlugins?: string[] } }
 export interface HistoryPage {
   events: ServerEvent[];
   renderings?: Record<string, EventRendering>;

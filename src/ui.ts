@@ -4,6 +4,7 @@ import { PromptInput } from './prompt-input.js';
 import { ComposeKeyInput, type ComposeSubmitMode } from './compose-keys.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
+import { commandSpan, matchCommands, validCommandList, type CommandChoice, type CommandSpan } from './command-completion.js';
 import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
@@ -108,6 +109,15 @@ export class UI {
   private promptTop = blessed.box({ parent: this.screen, bottom: 4, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private promptBottom = blessed.box({ parent: this.screen, bottom: 2, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private mentionPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
+  private commandPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
+  private commandOpen = false;
+  private commandResults: CommandChoice[] = [];
+  private commandIndex = 0;
+  private commandSpan?: CommandSpan;
+  private commandDraft = '';
+  private commandDismissed?: string;
+  private commandSelectionStale = false;
+  private commandSource?: { recipient: string; generation: string; sessionId: string; seq: number };
   private mentionResults: MentionChoice[] = [];
   private mentionIndex = 0;
   private mentionOpen = false;
@@ -375,11 +385,16 @@ export class UI {
     this.composer._listener = function(ch, key) {
       const previous = thisUI.composer.getValue();
       const compose = thisUI.view === 'chat' || thisUI.view === 'prompt';
-      if (compose && key.name === 'escape' && (thisUI.mentionOpen || thisUI.composeSpan || thisUI.composeStatus)) {
+      if (compose && key.name === 'escape' && (thisUI.commandOpen || thisUI.mentionOpen || thisUI.composeSpan || thisUI.composeStatus)) {
+        if (thisUI.commandOpen) { thisUI.commandDismissed = thisUI.composer.getValue(); thisUI.commandOpen = false; thisUI.commandPanel.setItems([]); thisUI.commandPanel.hide(); thisUI.draw(); return; }
         thisUI.dismissComposeCompletion(); return;
       }
       const pathActive = compose && thisUI.composeSpan?.kind === 'path';
       const mentionActive = compose && thisUI.mentionOpen;
+      if (compose && thisUI.commandOpen && thisUI.commandResults.length && (key.name === 'up' || key.name === 'down')) {
+        thisUI.commandIndex = (thisUI.commandIndex + (key.name === 'down' ? 1 : -1) + thisUI.commandResults.length) % thisUI.commandResults.length;
+        thisUI.draw(); return;
+      }
       if ((pathActive && thisUI.composeCandidates.length || mentionActive && thisUI.mentionResults.length) && (key.name === 'up' || key.name === 'down')) {
         const count = pathActive ? thisUI.composeCandidates.length : thisUI.mentionResults.length;
         if (pathActive) thisUI.composeSelection = (thisUI.composeSelection + (key.name === 'down' ? 1 : -1) + count) % count;
@@ -387,6 +402,7 @@ export class UI {
         thisUI.draw(); return;
       }
       if (key.name === 'tab' && compose && !key.ctrl && !key.meta) {
+        if (thisUI.commandOpen) { thisUI.acceptCommandCompletion(); return; }
         const effectiveSpan = thisUI.effectiveComposeSpan(thisUI.composer.getValue());
         if (effectiveSpan?.kind === 'path') {
           if (pathActive) thisUI.acceptComposePath();
@@ -416,7 +432,7 @@ export class UI {
         if (!active || active.kind !== identity.kind || (identity.kind === 'chat' && (active.kind !== 'chat' || active.id !== identity.id))) return;
         const value = this.composer.getValue();
         if (!this.sending) this.saveComposeDraft(value);
-        this.updateMentionCompletion(); this.refreshComposeCompletion();
+        this.updateMentionCompletion(); this.refreshComposeCompletion(); this.refreshCommandCompletion();
       }, 0);
     });
     this.composer.key(['pageup', 'pagedown', 'C-home', 'C-end'], (_ch, key) => {
@@ -460,11 +476,12 @@ export class UI {
       this.scheduleDraw();
     });
     this.session.store.on('change', () => {
+      if (this.view === 'chat' || this.view === 'prompt') this.refreshCommandCompletion();
       if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) this.refreshMentionCompletion();
       this.checkComposeContext();
       this.scheduleDraw();
     });
-    this.session.on('status', () => { this.checkComposeContext(); this.scheduleDraw(); });
+    this.session.on('status', () => { this.checkComposeContext(); this.refreshCommandCompletion(); this.scheduleDraw(); });
     this.session.on('notice', (message: string) => this.showNotice(message));
     this.tree.focus();
     this.draw();
@@ -1566,11 +1583,11 @@ export class UI {
     this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
     this.composeRequest++; if (this.composeTimer) clearTimeout(this.composeTimer); this.composeTimer = undefined;
     this.composeSpan = undefined; this.composeCandidates = []; this.composeCandidateSnapshot = undefined; this.composeResultDraft = undefined; this.composeResultContext = undefined; this.composeStatus = undefined; this.composeDismissed = undefined; this.composeAcceptedFile = undefined; this.composeLookupKey = undefined;
-    this.mentionPanel.hide();
+    this.mentionPanel.hide(); this.commandOpen = false; this.commandPanel.hide(); this.commandResults = [];
   }
   private cancelMentionCompletion(): void {
     this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
-    this.mentionPanel.hide();
+    this.mentionPanel.hide(); this.commandOpen = false; this.commandPanel.hide();
   }
   private effectiveComposeSpan(value: string): ComposeSpan | undefined {
     const accepted = this.composeAcceptedFile;
@@ -1602,6 +1619,43 @@ export class UI {
       return query ? { kind: 'mention', start: value.length - query.length, query } : undefined;
     }
     return span;
+  }
+  private refreshCommandCompletion(): void {
+    const recipient = this.currentMentionRecipient(), draft = this.composer.getValue();
+    const span = commandSpan(draft);
+    const state = recipient && this.session.status.startsWith('connected') ? this.session.store.getCommands(recipient) : undefined;
+    const sourceSeq = recipient ? this.session.store.getCommandSequence(recipient) : undefined;
+    const commands = state && validCommandList(state.commands) ? state.commands : [];
+    if (this.commandDismissed !== draft) this.commandDismissed = undefined;
+    const results = span && state && this.commandDismissed !== draft ? matchCommands(commands, span.query) : [];
+    const stamp = state && sourceSeq !== undefined && recipient ? { recipient, generation: state.generation, sessionId: state.sessionId, seq: sourceSeq } : undefined;
+    const oldSelected = this.commandResults[this.commandIndex]?.name;
+    const draftChanged = this.commandDraft !== draft;
+    if (draftChanged) this.commandSelectionStale = false;
+    else if (this.commandOpen && oldSelected && !results.some(command => command.name === oldSelected)) this.commandSelectionStale = true;
+    const changed = this.commandOpen !== !!results.length || draftChanged || JSON.stringify(this.commandSource) !== JSON.stringify(stamp) || JSON.stringify(this.commandResults) !== JSON.stringify(results);
+    this.commandDraft = draft; this.commandSpan = span; this.commandSource = stamp; this.commandResults = results;
+    this.commandIndex = Math.min(this.commandIndex, Math.max(0, results.length - 1));
+    this.commandOpen = results.length > 0;
+    if (this.commandOpen) {
+      this.commandPanel.setItems(results.slice(0, 4).map(command => `/${command.name}${command.description ? ` · ${command.description}` : ''}${command.input?.hint ? ` (${command.input.hint})` : ''}`));
+      this.commandPanel.select(Math.min(this.commandIndex, Math.max(0, Math.min(4, results.length) - 1)));
+      this.commandPanel.show();
+    } else { this.commandPanel.setItems([]); this.commandPanel.hide(); }
+    if (changed && (this.view === 'chat' || this.view === 'prompt')) this.draw();
+  }
+  private acceptCommandCompletion(): void {
+    const recipient = this.currentMentionRecipient(), state = recipient ? this.session.store.getCommands(recipient) : undefined;
+    const seq = recipient ? this.session.store.getCommandSequence(recipient) : undefined;
+    const selected = this.commandResults[this.commandIndex];
+    if (this.commandSelectionStale) { this.commandSelectionStale = false; this.refreshCommandCompletion(); return; }
+    if (!recipient || !state || !selected || !this.commandSpan || !this.session.status.startsWith('connected') || this.composer.getValue() !== this.commandDraft || seq !== this.commandSource?.seq || recipient !== this.commandSource?.recipient || state.generation !== this.commandSource?.generation || state.sessionId !== this.commandSource?.sessionId || !validCommandList(state.commands) || !state.commands.some(command => command.name === selected.name)) {
+      this.commandOpen = false; this.commandPanel.hide(); this.refreshCommandCompletion(); return;
+    }
+    this.commandDismissed = undefined; this.commandSelectionStale = false;
+    this.composer.setValue(`/${selected.name} `);
+    this.saveComposeDraft(this.composer.getValue());
+    this.commandOpen = false; this.commandPanel.hide(); this.commandResults = []; this.draw();
   }
   private currentMentionResults(query: string): MentionChoice[] {
     const recipient = this.currentMentionRecipient();
@@ -1880,7 +1934,7 @@ export class UI {
     this.previewIndex = 0;
     ++this.pathRequest;
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
-    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.rawView.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.mentionPanel.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
+    this.tree.hide(); this.menu.hide(); this.chat.hide(); this.rawView.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.mentionPanel.hide(); this.commandPanel.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
     const composer = view === 'chat' || view === 'prompt';
     // Blessed's typings omit removable borders and their runtime side flags.
@@ -1912,7 +1966,7 @@ export class UI {
       this.input.show(); this.input.focus();
       if (!this.sending) this.input.readInput();
     }
-    if (composer) { this.promptTop.show(); this.promptBottom.show(); if (this.mentionOpen) this.mentionPanel.show(); }
+    if (composer) { this.promptTop.show(); this.promptBottom.show(); if (this.mentionOpen) this.mentionPanel.show(); if (this.commandOpen) this.commandPanel.show(); }
     this.draw();
   }
   private async submit(value: string, mode: ComposeSubmitMode = 'default'): Promise<void> {
@@ -2119,6 +2173,16 @@ export class UI {
         this.mentionPanel.show();
       } else this.mentionPanel.hide();
     } else this.mentionPanel.hide();
+    if (this.view === 'chat' || this.view === 'prompt') {
+      if (this.commandOpen) {
+        const window = composeWindow(this.commandResults, this.commandIndex, 4);
+        const lines = window.items.map((command, index) => {
+          const clean = (text: string) => text.replace(/[\p{C}\u001b]/gu, '').replace(/\s+/gu, ' ');
+          return clip(`${window.start + index === this.commandIndex ? '›' : ' '} /${command.name}${command.description ? ` · ${clean(command.description)}` : ''}${command.input?.hint ? ` (${clean(command.input.hint)})` : ''}`, width);
+        });
+        this.commandPanel.setItems(lines); this.commandPanel.select(this.commandIndex - window.start); this.commandPanel.show();
+      } else { this.commandPanel.setItems([]); this.commandPanel.hide(); }
+    } else { this.commandPanel.setItems([]); this.commandPanel.hide(); }
     const promptLabel = ' > ';
     const composeAgentId = this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined;
     const queuedCount = composeAgentId ? this.session.store.queuedPromptCount(composeAgentId) : 0;

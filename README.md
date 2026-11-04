@@ -651,6 +651,10 @@ expire; oversized wire/cache records may be explicitly marked previews without
 changing their durable copies. Treat
 raw output as sensitive: it can include settings, prompts, and tool arguments.
 
+## Slash command completion
+
+In chat and tree-prompt composers, type `/` at the beginning of a draft to see commands advertised by the selected live ACP session. Tab inserts `/name ` into the draft; it never executes a command. Continue with ordinary free-form arguments and submit explicitly. Up/Down changes selection and Escape dismisses suggestions. Discovery is optional and commands are hidden while the server/source is disconnected or stale. Existing Enter/Alt+Enter/Ctrl+Enter behavior is unchanged.
+
 ## Development
 
 ```sh

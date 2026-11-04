@@ -123,7 +123,7 @@ export class Settings {
     const key = subtype ? `${type}:${subtype}` : type;
     const parent = type.split(':')[0]!;
     if (this.inheritedLevels.has(key)) return this.levels[parent] ?? 1;
-    return this.levels[key] ?? this.levels[parent] ?? 1;
+    return this.levels[key] ?? this.levels[parent] ?? (type === 'agent.commands' ? 0 : 1);
   }
   types(discovered: Iterable<string>): string[] {
     return [...new Set([...EVENT_TYPES, ...discovered, ...Object.keys(this.levels), ...this.inheritedLevels])].sort();
