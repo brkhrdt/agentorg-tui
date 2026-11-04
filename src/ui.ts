@@ -4,7 +4,7 @@ import { PromptInput } from './prompt-input.js';
 import { ComposeKeyInput, type ComposeSubmitMode } from './compose-keys.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
-import { commandSpan, matchCommands, validCommandList, type CommandChoice, type CommandSpan } from './command-completion.js';
+import { acceptCommand, commandSpan, matchCommands, validCommandList, type CommandChoice, type CommandSpan } from './command-completion.js';
 import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
@@ -1652,9 +1652,11 @@ export class UI {
     if (!recipient || !state || !selected || !this.commandSpan || !this.session.status.startsWith('connected') || this.composer.getValue() !== this.commandDraft || seq !== this.commandSource?.seq || recipient !== this.commandSource?.recipient || state.generation !== this.commandSource?.generation || state.sessionId !== this.commandSource?.sessionId || !validCommandList(state.commands) || !state.commands.some(command => command.name === selected.name)) {
       this.commandOpen = false; this.commandPanel.hide(); this.refreshCommandCompletion(); return;
     }
+    const accepted = acceptCommand(this.composer.getValue(), this.commandSpan, selected, state.commands);
+    if (accepted === undefined) { this.commandOpen = false; this.commandPanel.hide(); this.refreshCommandCompletion(); return; }
     this.commandDismissed = undefined; this.commandSelectionStale = false;
-    this.composer.setValue(`/${selected.name} `);
-    this.saveComposeDraft(this.composer.getValue());
+    this.composer.setValue(accepted);
+    this.saveComposeDraft(accepted);
     this.commandOpen = false; this.commandPanel.hide(); this.commandResults = []; this.draw();
   }
   private currentMentionResults(query: string): MentionChoice[] {

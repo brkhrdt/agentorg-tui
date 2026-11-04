@@ -4,9 +4,10 @@ const commands = [{ name: 'skill:review', description: 'review', input: { hint: 
 test('command completion is prefix-only at draft start and preserves arbitrary arguments', () => {
   expect(commandSpan('/')).toEqual({ start: 0, query: '' });
   expect(commandSpan('/skill:re')).toEqual({ start: 0, query: 'skill:re' });
-  for (const text of ['hello /we', 'https://example.org', '/web args', '/web\nnext', './path']) expect(commandSpan(text)).toBeUndefined();
+  expect(commandSpan('Please use /skill:re')).toEqual({ start: 11, query: 'skill:re' });
+  for (const text of ['https://example.org', 'ordinary prose', '/web args', 'Please use /web args', '/web\nnext', './path']) expect(commandSpan(text)).toBeUndefined();
   expect(matchCommands(commands, 'web').map(x => x.name)).toEqual(['web', 'web-search']);
-  expect(acceptCommand('/skill:re', { start: 0, query: 'skill:re' }, commands[0]!, commands)).toBe('/skill:review ');
+  expect(acceptCommand('Please use /skill:re', { start: 11, query: 'skill:re' }, commands[0]!, commands)).toBe('Please use /skill:review ');
   expect(acceptCommand('/skill:re', { start: 0, query: 'skill:re' }, commands[0]!, commands.slice(1))).toBeUndefined();
 });
 test('command lists fail closed on malformed or oversized payloads', () => {
