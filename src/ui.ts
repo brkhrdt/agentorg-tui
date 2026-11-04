@@ -2234,13 +2234,13 @@ export class UI {
       this.footer.setContent(' ↑↓ scroll  PgUp/PgDn page  Home/End top/bottom  j readable/JSON  ? keys  Esc back');
     } else if (this.view === 'tree' || this.view === 'prompt') {
       const allRows = store.tree();
-      this.rows = this.view === 'tree' ? visibleTreeRows(allRows, this.collapsedAgentIds) : allRows;
+      this.rows = visibleTreeRows(allRows, this.collapsedAgentIds);
       let selectedIndex = this.rows.findIndex(row => row.agent.id === this.selectedAgent);
       if (selectedIndex < 0) selectedIndex = this.rows.length ? 0 : -1;
       this.selectedAgent = this.rows[selectedIndex]?.agent.id;
       const fields = this.settings.tableFields.length ? this.settings.tableFields : [...DEFAULT_TABLE_FIELDS];
       // Blessed lists reserve a scrollbar cell even when it is hidden.
-      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex, this.view === 'tree' ? this.collapsedAgentIds : undefined, this.session.usageMetrics);
+      const { header, items: tableItems } = renderTable(this.rows, store.latest(this.settings), fields, width - 1, store.treeRenderings(), this.settings.colors, selectedIndex, this.collapsedAgentIds, this.session.usageMetrics);
       this.columns.setContent(header);
       this.updating = true;
       if (JSON.stringify(tableItems) !== JSON.stringify(this.lastTreeItems)) {
