@@ -111,6 +111,7 @@ export class UI {
   private mentionPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
   private mentionResults: MentionChoice[] = [];
   private searchResults: AgentSearchChoice[] = [];
+  private pendingAgentSearchKeys: { ch: string; key: blessed.Widgets.Events.IKeyEventArg }[] = [];
   private searchOriginal?: { selected?: string; scroll: number };
   private pendingSearchCenter?: string;
   private mentionIndex = 0;
@@ -424,10 +425,26 @@ export class UI {
     const thisUI = this;
     this.composer.on('keypress', (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => {
       if (this.view === 'agent-search') {
-        const input = this.composer as typeof this.composer & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
+        const input = this.composer as typeof this.composer & { __listener?: unknown; _reading?: boolean; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
         // readInput installs its handler next tick; keys buffered after `/` can
         // reach the focused composer first. Mirror editor-filter fallback once.
-        if (!input.__listener) input._listener(ch, key);
+        if (!input.__listener) {
+          if (this.pendingAgentSearchKeys.length || key.name === 'enter') {
+            this.pendingAgentSearchKeys.push({ ch, key: { ...key } });
+            if (!input._reading) input.readInput();
+            const drain = () => {
+              if (thisUI.view !== 'agent-search') { thisUI.pendingAgentSearchKeys = []; return; }
+              if (!input.__listener) { if (!input._reading) input.readInput(); setImmediate(drain); return; }
+              for (const queued of this.pendingAgentSearchKeys.splice(0)) {
+                if (thisUI.view !== 'agent-search') break;
+                input._listener(queued.ch, queued.key);
+              }
+            };
+            setImmediate(drain);
+          } else input._listener(ch, key);
+        } else if (this.pendingAgentSearchKeys.length) {
+          for (const queued of this.pendingAgentSearchKeys.splice(0)) input._listener(queued.ch, queued.key);
+        }
         setTimeout(() => this.refreshAgentSearch(), 0); return;
       }
       const identity = this.composeIdentity();

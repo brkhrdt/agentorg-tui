@@ -41,13 +41,40 @@ test('Escape cancels search in one press while preserving a folded branch', asyn
   } finally { await tui.close(); await mock.close(); }
 });
 
-test('buffered slash plus query filters before the composer listener is armed', async () => {
+test('buffered slash-query-Enter accepts once and later prompt typing is not duplicated', async () => {
   const agents = Array.from({ length: 60 }, (_, i) => agent(`id-${i}`, null, { name: `Agent${i}` }));
-  const mock = await serve(agents), tui = terminalClient(mock.path, mock.directory);
+  const requests: string[] = [];
+  const mock = await mockServer((socket, request) => {
+    requests.push(request.method);
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents, operations: [] });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+  });
+  const tui = terminalClient(mock.path, mock.directory);
   try {
-    await tui.visible('Agent0'); tui.keys('/Agent45');
-    await waitFor(() => tui.screen().includes('› Agent45'));
-    expect(tui.screen()).not.toContain('› Agent0');
+    await tui.visible('Agent0'); tui.keys('/Agent45\r');
+    await waitFor(() => !tui.screen().includes('Jump to agent') && tui.screen().includes('Agent45'));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(tui.screen()).not.toContain('Jump to agent');
+    tui.keys('\r'); await tui.visible('Prompt · Agent45');
+    tui.keys('hello'); await waitFor(() => tui.screen().includes('hello'));
+    expect(tui.screen().split('hello').length - 1).toBe(1);
+    expect(requests).not.toContain('agent.prompt');
+  } finally { await tui.close(); await mock.close(); }
+});
+
+test('no-result Enter remains armed and accepts a later matching query', async () => {
+  const mock = await serve([agent('target', null, { name: 'Target' })]);
+  const tui = terminalClient(mock.path, mock.directory);
+  try {
+    await tui.visible('Target'); tui.keys('/Missing');
+    await tui.visible('No matching agents'); expect(tui.screen()).toContain('Jump to agent');
+    tui.keys('\r'); await new Promise(resolve => setTimeout(resolve, 100));
+    tui.keys('\x7f'.repeat('Missing'.length)); await new Promise(resolve => setTimeout(resolve, 50));
+    tui.keys('Target'); await waitFor(() => tui.screen().includes('› Target'));
+    tui.keys('\r');
+    await waitFor(() => !tui.screen().includes('Jump to agent') && tui.screen().includes('Target'));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(tui.screen()).not.toContain('Jump to agent');
   } finally { await tui.close(); await mock.close(); }
 });
 
