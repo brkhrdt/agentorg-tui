@@ -422,8 +422,14 @@ export class UI {
       if (current !== previous) thisUI.saveComposeDraft(current);
     };
     const thisUI = this;
-    this.composer.on('keypress', () => {
-      if (this.view === 'agent-search') { setTimeout(() => this.refreshAgentSearch(), 0); return; }
+    this.composer.on('keypress', (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => {
+      if (this.view === 'agent-search') {
+        const input = this.composer as typeof this.composer & { __listener?: unknown; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void };
+        // readInput installs its handler next tick; keys buffered after `/` can
+        // reach the focused composer first. Mirror editor-filter fallback once.
+        if (!input.__listener) input._listener(ch, key);
+        setTimeout(() => this.refreshAgentSearch(), 0); return;
+      }
       const identity = this.composeIdentity();
       if (!identity) return;
       setTimeout(() => {
@@ -2303,7 +2309,10 @@ export class UI {
         const target = this.rows.findIndex(row => row.agent.id === this.pendingSearchCenter);
         const viewport = Math.max(1, Number(this.tree.height));
         const origin = Math.max(0, Math.min(Math.max(0, this.rows.length - viewport), target - Math.floor(viewport / 2)));
-        this.tree.setScroll(origin); this.pendingSearchCenter = undefined;
+        // List.select()/scrollTo() can leave a selected-row childOffset. Set
+        // the actual absolute list viewport origin after selection instead.
+        this.tree.childBase = origin; this.tree.childOffset = 0;
+        this.pendingSearchCenter = undefined;
       }
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');

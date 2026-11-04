@@ -13,21 +13,23 @@ export function visibleTreeRows(rows: readonly TreeRow[], collapsedIds: Readonly
   return visible;
 }
 
-/** Toggle a branch, clearing any nested collapse choices when expanding it. */
 /** Expand only the ancestor chain of a target, preserving all other fold choices. */
 export function revealTreeAncestors(rows: readonly TreeRow[], collapsedIds: Set<string>, agentId: string): boolean {
   const index = rows.findIndex(row => row.agent.id === agentId);
   if (index < 0) return false;
   const ancestors: string[] = [];
+  const targetDepth = rows[index]!.depth;
   for (let i = 0; i < index; i++) {
     const row = rows[i]!;
     ancestors.length = row.depth;
     ancestors[row.depth] = row.agent.id;
   }
+  ancestors.length = targetDepth;
   for (const id of ancestors) if (id) collapsedIds.delete(id);
   return true;
 }
 
+/** Toggle a branch, clearing any nested collapse choices when expanding it. */
 export function toggleCollapsedBranch(rows: readonly TreeRow[], collapsedIds: Set<string>, agentId: string): boolean {
   const index = rows.findIndex(row => row.agent.id === agentId);
   if (index < 0) return false;

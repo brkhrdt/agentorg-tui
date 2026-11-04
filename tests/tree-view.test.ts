@@ -33,6 +33,16 @@ test('reveal expands only target ancestors and preserves target and unrelated fo
   expect(revealTreeAncestors([], collapsed, 'missing')).toBe(false);
 });
 
+test('revealing a sibling or later root never clears folds from preceding branches', () => {
+  const siblingFolds = new Set(['root', 'a', 'b']);
+  expect(revealTreeAncestors(rows, siblingFolds, 'b')).toBe(true);
+  expect([...siblingFolds]).toEqual(['a', 'b']);
+  const roots = [{ agent: agent('first'), depth: 0 }, { agent: agent('first-child', 'first'), depth: 1 }, { agent: agent('later'), depth: 0 }];
+  const rootFolds = new Set(['first', 'first-child', 'later']);
+  expect(revealTreeAncestors(roots, rootFolds, 'later')).toBe(true);
+  expect([...rootFolds]).toEqual(['first', 'first-child', 'later']);
+});
+
 test('a leaf before a sibling branch is not mistaken for a parent', () => {
   const siblingTree = [
     { agent: agent('root'), depth: 0 },
