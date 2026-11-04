@@ -432,19 +432,9 @@ export class UI {
           if (this.pendingAgentSearchKeys.length || key.name === 'enter') {
             this.pendingAgentSearchKeys.push({ ch, key: { ...key } });
             if (!input._reading) input.readInput();
-            const drain = () => {
-              if (thisUI.view !== 'agent-search') { thisUI.pendingAgentSearchKeys = []; return; }
-              if (!input.__listener) { if (!input._reading) input.readInput(); setImmediate(drain); return; }
-              for (const queued of this.pendingAgentSearchKeys.splice(0)) {
-                if (thisUI.view !== 'agent-search') break;
-                input._listener(queued.ch, queued.key);
-              }
-            };
-            setImmediate(drain);
+            setImmediate(() => thisUI.drainAgentSearchKeys(input));
           } else input._listener(ch, key);
-        } else if (this.pendingAgentSearchKeys.length) {
-          for (const queued of this.pendingAgentSearchKeys.splice(0)) input._listener(queued.ch, queued.key);
-        }
+        } else if (this.pendingAgentSearchKeys.length) this.drainAgentSearchKeys(input);
         setTimeout(() => this.refreshAgentSearch(), 0); return;
       }
       const identity = this.composeIdentity();
@@ -1606,6 +1596,20 @@ export class UI {
     this.searchOriginal = { selected: this.selectedAgent, scroll: this.tree.getScroll() };
     this.searchResults = matchAgentSearchChoices(agentSearchChoices(this.session.store.tree()), '');
     this.clearMentionCompletion(); this.composeShift = true; this.composer.setValue(''); this.setView('agent-search');
+  }
+  private drainAgentSearchKeys(input: PromptInput & { __listener?: unknown; _reading?: boolean; _listener: (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => void }): void {
+    if (this.view !== 'agent-search') { this.pendingAgentSearchKeys = []; return; }
+    if (!input.__listener) {
+      if (!input._reading) input.readInput();
+      setImmediate(() => this.drainAgentSearchKeys(input));
+      return;
+    }
+    while (this.pendingAgentSearchKeys.length && input.__listener) {
+      const queued = this.pendingAgentSearchKeys.shift()!;
+      input._listener(queued.ch, queued.key);
+      if (this.view !== 'agent-search') { this.pendingAgentSearchKeys = []; return; }
+    }
+    if (this.pendingAgentSearchKeys.length) setImmediate(() => this.drainAgentSearchKeys(input));
   }
   private refreshAgentSearch(): void {
     if (this.view !== 'agent-search') return;

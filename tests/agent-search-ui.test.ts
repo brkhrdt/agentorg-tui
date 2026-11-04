@@ -62,19 +62,21 @@ test('buffered slash-query-Enter accepts once and later prompt typing is not dup
   } finally { await tui.close(); await mock.close(); }
 });
 
-test('no-result Enter remains armed and accepts a later matching query', async () => {
+test('double buffered no-result Enter rearms, then accepts and leaves later prompt input intact', async () => {
   const mock = await serve([agent('target', null, { name: 'Target' })]);
   const tui = terminalClient(mock.path, mock.directory);
   try {
-    await tui.visible('Target'); tui.keys('/Missing');
-    await tui.visible('No matching agents'); expect(tui.screen()).toContain('Jump to agent');
-    tui.keys('\r'); await new Promise(resolve => setTimeout(resolve, 100));
+    await tui.visible('Target'); tui.keys('/Missing\r\r');
+    await waitFor(() => tui.screen().includes('No matching agents'));
+    expect(tui.screen()).toContain('Jump to agent');
     tui.keys('\x7f'.repeat('Missing'.length)); await new Promise(resolve => setTimeout(resolve, 50));
     tui.keys('Target'); await waitFor(() => tui.screen().includes('› Target'));
     tui.keys('\r');
     await waitFor(() => !tui.screen().includes('Jump to agent') && tui.screen().includes('Target'));
     await new Promise(resolve => setTimeout(resolve, 40));
-    expect(tui.screen()).not.toContain('Jump to agent');
+    tui.keys('\r'); await tui.visible('Prompt · Target');
+    tui.keys('hello'); await waitFor(() => tui.screen().includes('hello'));
+    expect(tui.screen().split('hello').length - 1).toBe(1);
   } finally { await tui.close(); await mock.close(); }
 });
 
