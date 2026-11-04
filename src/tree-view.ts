@@ -14,6 +14,20 @@ export function visibleTreeRows(rows: readonly TreeRow[], collapsedIds: Readonly
 }
 
 /** Toggle a branch, clearing any nested collapse choices when expanding it. */
+/** Expand only the ancestor chain of a target, preserving all other fold choices. */
+export function revealTreeAncestors(rows: readonly TreeRow[], collapsedIds: Set<string>, agentId: string): boolean {
+  const index = rows.findIndex(row => row.agent.id === agentId);
+  if (index < 0) return false;
+  const ancestors: string[] = [];
+  for (let i = 0; i < index; i++) {
+    const row = rows[i]!;
+    ancestors.length = row.depth;
+    ancestors[row.depth] = row.agent.id;
+  }
+  for (const id of ancestors) if (id) collapsedIds.delete(id);
+  return true;
+}
+
 export function toggleCollapsedBranch(rows: readonly TreeRow[], collapsedIds: Set<string>, agentId: string): boolean {
   const index = rows.findIndex(row => row.agent.id === agentId);
   if (index < 0) return false;

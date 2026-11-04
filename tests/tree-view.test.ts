@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { visibleTreeRows, toggleCollapsedBranch } from '../src/tree-view.js';
+import { revealTreeAncestors, visibleTreeRows, toggleCollapsedBranch } from '../src/tree-view.js';
 import { agent } from './helpers.js';
 
 const rows = [
@@ -22,6 +22,15 @@ test('expanding clears nested collapse choices without affecting unrelated branc
   expect(toggleCollapsedBranch(rows, collapsed, 'a')).toBe(true);
   expect([...collapsed]).toEqual(['b1']);
   expect(ids(visibleTreeRows(rows, collapsed))).toEqual(['root', 'a', 'a1', 'a1x', 'b', 'b1']);
+});
+
+test('reveal expands only target ancestors and preserves target and unrelated fold choices', () => {
+  const collapsed = new Set(['root', 'a', 'a1', 'b']);
+  expect(revealTreeAncestors(rows, collapsed, 'a1')).toBe(true);
+  expect([...collapsed]).toEqual(['a1', 'b']);
+  expect(ids(visibleTreeRows(rows, collapsed))).toEqual(['root', 'a', 'a1', 'b']);
+  expect(revealTreeAncestors(rows, collapsed, 'missing')).toBe(false);
+  expect(revealTreeAncestors([], collapsed, 'missing')).toBe(false);
 });
 
 test('a leaf before a sibling branch is not mistaken for a parent', () => {

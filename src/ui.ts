@@ -10,7 +10,8 @@ import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, availableTableFields, type TableField, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable, tableFieldLabel } from './table.js';
-import { toggleCollapsedBranch, visibleTreeRows } from './tree-view.js';
+import { revealTreeAncestors, toggleCollapsedBranch, visibleTreeRows } from './tree-view.js';
+import { agentSearchChoices, matchAgentSearchChoices, type AgentSearchChoice } from './agent-search.js';
 import { genericPreview, rendererPreview, rendererCandidates, rendererSubtypes } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
 import { AgentEditor, PODMAN_FIELDS, type AgentField, type ImageScope } from './agent-editor.js';
@@ -32,7 +33,7 @@ function sameComposeIdentity(a: ComposeIdentity, b: ComposeIdentity): boolean {
   if (a.kind !== b.kind) return false;
   return a.kind === 'chat' ? a.id === (b as { kind: 'chat'; id: string }).id : a.agentId === (b as { kind: 'prompt'; agentId: string }).agentId;
 }
-type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
+type View = 'history-settings' | 'history-field' | 'settings-choice-setup' | 'settings-options' | 'settings-records' | 'server-settings' | 'server-group' | 'server-field' | 'server-confirm' | 'server-facts' | 'volume-destination' | 'structured' | 'structured-filter' | 'structured-raw' | 'entry-key' | 'entry-type' | 'entry-value' | 'keys' | 'tree' | 'view' | 'colors' | 'table-fields' | 'levels' | 'chat' | 'raw-events' | 'raw-event-json' | 'prompt' | 'agent-search' | 'agent-skills' | 'agent-skills-filter' | 'local-skill-path' | 'local-skill-confirm' | 'skill-details' | 'catalog-manager' | 'catalog-delete-confirm' | 'actions' | 'agent-edit' | 'agent-field' | 'harness-options' | 'image-scope' | 'confirm' | 'agent-info';
 
 function urlLikeSkillSource(source: string): boolean { return /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith('//') || /^[^/\s]+@[^:\s]+:/.test(source); }
 function pathCompletionAllowed(source: string): boolean {
@@ -78,7 +79,7 @@ export function rawEventJsonLabel(eventType: string | undefined, width: number):
 
 export class UI {
   private composeKeyInput = (() => {
-    const input = new ComposeKeyInput(() => this.view === 'chat' || this.view === 'prompt');
+    const input = new ComposeKeyInput(() => this.view === 'chat' || this.view === 'prompt' || this.view === 'agent-search');
     input.attach(process.stdin);
     return input;
   })();
@@ -109,6 +110,9 @@ export class UI {
   private promptBottom = blessed.box({ parent: this.screen, bottom: 2, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private mentionPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
   private mentionResults: MentionChoice[] = [];
+  private searchResults: AgentSearchChoice[] = [];
+  private searchOriginal?: { selected?: string; scroll: number };
+  private pendingSearchCenter?: string;
   private mentionIndex = 0;
   private mentionOpen = false;
   private composePathSource: PathCompletionSource;
@@ -138,7 +142,7 @@ export class UI {
     parent: this.screen, bottom: 3, height: 1, hidden: true, keys: true, tags: false,
   });
   private get input(): blessed.Widgets.TextareaElement {
-    return this.view === 'chat' || this.view === 'prompt' ? this.composer : this.editorInput;
+    return this.view === 'chat' || this.view === 'prompt' || this.view === 'agent-search' ? this.composer : this.editorInput;
   }
   private paths = blessed.list({
     parent: this.screen, bottom: 2, height: 5, hidden: true, tags: false,
@@ -347,7 +351,8 @@ export class UI {
     // The screen may not receive global keys while Blessed's textarea grabs
     // input; route compose Ctrl-C through the focused widget as well.
     this.composer.key('C-c', () => {
-      if (this.view === 'chat' || this.view === 'prompt') this.clearComposeDraft();
+      if (this.view === 'agent-search') { this.composer.setValue(''); this.refreshAgentSearch(); }
+      else if (this.view === 'chat' || this.view === 'prompt') this.clearComposeDraft();
     });
     // readInput installs its listener next tick. Preserve a fast typed/pasted
     // filter tail during the navigation -> input transition.
@@ -364,7 +369,8 @@ export class UI {
     });
     for (const input of [this.editorInput, this.composer]) {
       input.on('cancel', () => {
-        if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
+        if (this.view === 'agent-search') this.cancelAgentSearch();
+        else if (['volume-destination', 'entry-key', 'entry-value', 'structured-raw', 'structured-filter'].includes(this.view)) this.returnStructured();
         else if (this.view === 'agent-skills-filter') this.cancelSkillFilter();
         else if (this.view === 'local-skill-path' || this.view === 'local-skill-confirm') this.returnLocalSkill();
         else if (this.view === 'agent-skills') this.cancelAgentSkills();
@@ -374,6 +380,14 @@ export class UI {
     const composerListener = this.composer._listener;
     this.composer._listener = function(ch, key) {
       const previous = thisUI.composer.getValue();
+      if (thisUI.view === 'agent-search') {
+        if (key.name === 'escape') { thisUI.cancelAgentSearch(); return; }
+        if (key.name === 'up' || key.name === 'down') { if (thisUI.searchResults.length) thisUI.mentionIndex = (thisUI.mentionIndex + (key.name === 'down' ? 1 : -1) + thisUI.searchResults.length) % thisUI.searchResults.length; thisUI.draw(); return; }
+        if (key.name === 'tab') return;
+        composerListener.call(this, ch, key);
+        if (thisUI.composer.getValue() !== previous) { thisUI.mentionIndex = 0; thisUI.refreshAgentSearch(); }
+        return;
+      }
       const compose = thisUI.view === 'chat' || thisUI.view === 'prompt';
       if (compose && key.name === 'escape' && (thisUI.mentionOpen || thisUI.composeSpan || thisUI.composeStatus)) {
         thisUI.dismissComposeCompletion(); return;
@@ -409,6 +423,7 @@ export class UI {
     };
     const thisUI = this;
     this.composer.on('keypress', () => {
+      if (this.view === 'agent-search') { setTimeout(() => this.refreshAgentSearch(), 0); return; }
       const identity = this.composeIdentity();
       if (!identity) return;
       setTimeout(() => {
@@ -453,13 +468,15 @@ export class UI {
       }
     });
     this.screen.key('C-c', () => {
-      if (this.view !== 'chat' && this.view !== 'prompt') this.close();
+      if (this.view === 'agent-search') { this.composer.setValue(''); this.mentionIndex = 0; this.refreshAgentSearch(); }
+      else if (this.view !== 'chat' && this.view !== 'prompt') this.close();
     });
     this.screen.on('resize', () => {
       this.lastTreeItems = []; this.lastChat = ''; this.renderedEvents.clear();
       this.scheduleDraw();
     });
     this.session.store.on('change', () => {
+      if (this.view === 'agent-search') this.refreshAgentSearch();
       if (this.mentionOpen && (this.view === 'chat' || this.view === 'prompt')) this.refreshMentionCompletion();
       this.checkComposeContext();
       this.scheduleDraw();
@@ -735,7 +752,7 @@ export class UI {
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
         action('enter', 'Prompt', () => this.openPrompt()), action('c', 'Chat', () => this.openChat()), action('z', 'Raw events', () => this.openRawEvents()),
         ] : []),
-      action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
+      action('/', 'Jump to agent', () => this.openAgentSearch()), action('a', 'Agent actions', () => this.openActions()), action('v', 'Settings (server / client)', () => this.setView('view')),
       action('l', 'Event visibility / rendering levels', () => this.setView('levels')),
       action('q', 'Quit client', () => this.close()), back,
     ];
@@ -1561,6 +1578,33 @@ export class UI {
     this.composer.setValue(this.promptDraft);
     this.setView('prompt');
   }
+  private openAgentSearch(): void {
+    if (this.sending) return;
+    this.searchOriginal = { selected: this.selectedAgent, scroll: this.tree.getScroll() };
+    this.searchResults = matchAgentSearchChoices(agentSearchChoices(this.session.store.tree()), '');
+    this.clearMentionCompletion(); this.composeShift = true; this.composer.setValue(''); this.setView('agent-search');
+  }
+  private refreshAgentSearch(): void {
+    if (this.view !== 'agent-search') return;
+    const old = this.searchResults[this.mentionIndex]?.agentId;
+    this.searchResults = matchAgentSearchChoices(agentSearchChoices(this.session.store.tree()), this.composer.getValue());
+    const found = old ? this.searchResults.findIndex(item => item.agentId === old) : -1;
+    this.mentionIndex = Math.max(0, found >= 0 ? found : Math.min(this.mentionIndex, this.searchResults.length - 1));
+    this.draw();
+  }
+  private cancelAgentSearch(): void {
+    const original = this.searchOriginal; this.searchOriginal = undefined; this.searchResults = []; this.composeShift = false;
+    this.selectedAgent = original?.selected && this.session.store.agents.has(original.selected) ? original.selected : this.rows[0]?.agent.id;
+    this.setView('tree'); if (original) this.tree.setScroll(original.scroll); this.draw();
+  }
+  private acceptAgentSearch(value: string): void {
+    const choices = matchAgentSearchChoices(agentSearchChoices(this.session.store.tree()), value);
+    const target = choices.find(item => item.agentId === this.searchResults[this.mentionIndex]?.agentId) ?? choices[0];
+    if (!target) { this.searchResults = []; this.mentionIndex = 0; this.showNotice('No matching agents'); this.composer.setValue(value); this.composer.readInput(); this.draw(); return; }
+    const all = this.session.store.tree(); revealTreeAncestors(all, this.collapsedAgentIds, target.agentId);
+    this.selectedAgent = target.agentId; this.pendingSearchCenter = target.agentId; this.searchOriginal = undefined; this.searchResults = []; this.composeShift = false;
+    this.setView('tree'); this.draw();
+  }
   private currentMentionRecipient(): string | undefined { return this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined; }
   private clearMentionCompletion(): void {
     this.mentionOpen = false; this.mentionResults = []; this.mentionIndex = 0; this.dismissedMention = undefined;
@@ -1797,7 +1841,7 @@ export class UI {
     this.resizeComposer(); this.draw();
   }
   private resizeComposer(): void {
-    if (this.view !== 'prompt' && this.view !== 'chat') return;
+    if (this.view !== 'prompt' && this.view !== 'chat' && this.view !== 'agent-search') return;
     const previous = Number(this.composer.height);
     const previousChatHeight = Number(this.chat.height);
     const previousTreeHeight = Number(this.tree.height);
@@ -1882,7 +1926,7 @@ export class UI {
     if (this.pathTimer) { clearTimeout(this.pathTimer); this.pathTimer = undefined; }
     this.tree.hide(); this.menu.hide(); this.chat.hide(); this.rawView.hide(); this.details.hide(); this.editorInput.hide(); this.composer.hide(); this.promptTop.hide(); this.promptBottom.hide(); this.mentionPanel.hide(); this.columns.hide(); this.paths.hide(); this.form.hide(); this.preview.hide();
     this.menu.bottom = 2;
-    const composer = view === 'chat' || view === 'prompt';
+    const composer = view === 'chat' || view === 'prompt' || view === 'agent-search';
     // Blessed's typings omit removable borders and their runtime side flags.
     this.input.border = (composer ? undefined : { type: 'line', left: true, right: true, top: true, bottom: true }) as unknown as blessed.Widgets.Border;
     this.input.height = composer ? 1 : 3;
@@ -1890,9 +1934,10 @@ export class UI {
     this.promptTop.bottom = 4;
     this.tree.bottom = view === 'prompt' ? 5 : 2;
     if (this.isPathInput() || this.isVolumeInput()) { this.paths.show(); if (this.isPathInput()) this.refreshPaths(); }
-    if (view === 'tree' || view === 'prompt') {
+    if (view === 'tree' || view === 'prompt' || view === 'agent-search') {
       this.tree.show(); this.columns.show();
       if (view === 'tree') this.tree.focus();
+      else if (view === 'agent-search') { this.input.show(); this.input.focus(); this.input.readInput(); }
       else {
         // Reselecting the same row is a no-op in Blessed; explicitly reveal it
         // after reducing the viewport to make room for the composer.
@@ -1916,6 +1961,7 @@ export class UI {
     this.draw();
   }
   private async submit(value: string, mode: ComposeSubmitMode = 'default'): Promise<void> {
+    if (this.view === 'agent-search') { if (mode === 'default') this.acceptAgentSearch(value); else this.composer.readInput(); return; }
     if (this.sending) {
       // Enter completes the current Blessed readInput cycle even though the
       // single-flight guard rejects this duplicate send. Re-arm composition.
@@ -2105,7 +2151,12 @@ export class UI {
     if (this.closing) return;
     this.renderColors();
     const width = Math.max(1, Number(this.screen.width));
-    if (this.view === 'chat' || this.view === 'prompt') {
+    if (this.view === 'agent-search') {
+      const window = mentionWindow(this.searchResults, this.mentionIndex, 4);
+      const lines = window.items.map((choice, index) => clip(`${window.start + index === this.mentionIndex ? '›' : ' '} ${choice.path}`, width));
+      this.mentionPanel.setItems(lines.length ? lines : [this.session.store.tree().length ? '  No matching agents' : '  No agents']);
+      this.mentionPanel.select(lines.length ? this.mentionIndex - window.start : 0); this.mentionPanel.show();
+    } else if (this.view === 'chat' || this.view === 'prompt') {
       if (this.mentionOpen) {
         const window = mentionWindow(this.mentionResults, this.mentionIndex, 4);
         const lines = window.items.map((_choice, index) => clip(`${window.start + index === this.mentionIndex ? '›' : ' '} ${window.items[index]!.token}`, width));
@@ -2119,7 +2170,7 @@ export class UI {
         this.mentionPanel.show();
       } else this.mentionPanel.hide();
     } else this.mentionPanel.hide();
-    const promptLabel = ' > ';
+    const promptLabel = this.view === 'agent-search' ? ' Jump to agent · ' : ' > ';
     const composeAgentId = this.view === 'chat' ? this.chatAgent : this.view === 'prompt' ? this.promptAgent : undefined;
     const queuedCount = composeAgentId ? this.session.store.queuedPromptCount(composeAgentId) : 0;
     const queueLabel = queuedCount > 0 ? `${queuedCount}x queued prompts ` : '';
@@ -2144,7 +2195,7 @@ export class UI {
       this.view === 'skill-details' ? `Registered skill repository · ${this.skillDetailsFocus?.name ?? 'unknown'}` :
       this.view === 'catalog-manager' ? 'Manage registered catalog skills · reversible retirement' :
       this.view === 'catalog-delete-confirm' ? `Confirm permanent deletion · ${this.pendingCatalogDelete?.name ?? 'unknown skill'}` :
-      this.view === 'prompt' ? `Prompt · ${agent?.name ?? this.promptAgent}` :
+      this.view === 'prompt' ? `Prompt · ${agent?.name ?? this.promptAgent}` : this.view === 'agent-search' ? 'Jump to agent' :
       this.view === 'actions' ? `Agent actions · ${this.actionAgent?.name ?? 'empty organization'}` :
       this.view === 'agent-edit' && this.editor?.fields[this.selectedMenuIndex()] === 'skills' ? `Skills: ${this.editor.agentId ? `modify draft · revision ${this.editor.revision}` : 'new agent draft'}` :
       this.view === 'agent-edit' ? `${this.editor?.agentId ? 'Modify agent' : 'Create agent'} · ${this.editor?.agentId ? `revision ${this.editor.revision}` : this.editor?.parentId ? 'child' : 'root'}` :
@@ -2232,8 +2283,9 @@ export class UI {
         this.details.setScroll(scroll);
       }
       this.footer.setContent(' ↑↓ scroll  PgUp/PgDn page  Home/End top/bottom  j readable/JSON  ? keys  Esc back');
-    } else if (this.view === 'tree' || this.view === 'prompt') {
+    } else if (this.view === 'tree' || this.view === 'prompt' || this.view === 'agent-search') {
       const allRows = store.tree();
+      // Prompt and search retain the tree's folded projection; only the viewport changes.
       this.rows = visibleTreeRows(allRows, this.collapsedAgentIds);
       let selectedIndex = this.rows.findIndex(row => row.agent.id === this.selectedAgent);
       if (selectedIndex < 0) selectedIndex = this.rows.length ? 0 : -1;
@@ -2247,10 +2299,16 @@ export class UI {
         this.tree.setItems(tableItems); this.lastTreeItems = tableItems;
       }
       this.tree.select(selectedIndex);
+      if (this.pendingSearchCenter && this.view === 'tree') {
+        const target = this.rows.findIndex(row => row.agent.id === this.pendingSearchCenter);
+        const viewport = Math.max(1, Number(this.tree.height));
+        const origin = Math.max(0, Math.min(Math.max(0, this.rows.length - viewport), target - Math.floor(viewport / 2)));
+        this.tree.setScroll(origin); this.pendingSearchCenter = undefined;
+      }
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'} · Ctrl+C clear` : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit');
+      this.footer.setContent(this.view === 'prompt' ? ` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'} · Ctrl+C clear` : this.view === 'agent-search' ? ' ↑↓ select · Enter jump · Esc cancel · Ctrl+C clear' : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit  / jump');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :

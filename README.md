@@ -95,6 +95,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | --- | --- |
 | ↑ / ↓ | Select a visible agent (metadata highlighted; configurable colors) |
 | Tab | Collapse / expand the selected agent's branch (when it has children) |
+| / | Search agents by full ancestry path; space-separated fuzzy terms match independently. Includes folded descendants. Enter reveals, selects and centers the match; Esc cancels. Search never sends a prompt. |
 | Enter | Open a prompt composer; sends a normal prompt when idle or steers the exact active prompt when running |
 | c | Open the selected agent's chat |
 | z | Open the selected agent's raw events from currently loaded chat history |
@@ -113,6 +114,8 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | v, then l | Configure event visibility / rendering levels |
 | v, then h | Configure history cache limits and idle expiry (client only) |
 | q / Ctrl+C | Quit the client, leaving server work running |
+
+Jump search matches complete ancestry paths and includes agents hidden under folded branches. Enter reveals the target's ancestors and selects it; Escape returns without changing folds.
 
 Collapsing hides every descendant; expanding restores the branch, including nested
 branches. Collapse choices are local to this TUI instance, survive chat and Escape,
