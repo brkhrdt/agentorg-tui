@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { validAgentCommandsState, type AgentCommandsState } from './protocol.js';
 import { createHash } from 'node:crypto';
 import type { Agent, Operation, ServerEvent, Snapshot, EventRendering } from './protocol.js';
 import { DEFAULT_HISTORY, historySettings, type HistorySettings, type Settings } from './settings.js';
@@ -149,6 +150,10 @@ type LivePreviewFallback = { event: ServerEvent; subtype?: string; rendering?: E
 
 export class Store extends EventEmitter {
   agents = new Map<string, Agent>();
+  agentCommands = new Map<string, AgentCommandsState>();
+  private commandCapability = false;
+  private commandSequences = new Map<string, number>();
+  private commandTombstones = new Map<string, number>();
   operations = new Map<string, Operation>();
   private operationSequences = new Map<string, number>();
   private operationTombstones = new Map<string, { seq: number; status: string }>();
@@ -744,7 +749,7 @@ export class Store extends EventEmitter {
   }
 
   reset(): void {
-    this.agents.clear(); this.operations.clear(); this.operationSequences.clear(); this.operationTombstones.clear(); this.operationAbsences.clear(); this.events.clear(); this.renderings.clear();
+    this.agents.clear(); this.agentCommands.clear(); this.commandCapability = false; this.commandSequences.clear(); this.commandTombstones.clear(); this.operations.clear(); this.operationSequences.clear(); this.operationTombstones.clear(); this.operationAbsences.clear(); this.events.clear(); this.renderings.clear();
     this.sortedCache = undefined; this.latestByType.clear(); this.lastByAgent.clear();
     this.livePreviews.clear(); this.livePreviewFallbacks.clear(); this.previewSources.clear(); this.previewMessageIdentities.clear(); this.livePreviewBoundaries.clear(); this.livePreviewStreams.clear(); this.livePreviewWatermarks.clear(); this.livePreviewNeedsHistory.clear(); this.previewGeneration.clear(); this.previewFloors.clear(); this.previewRenderings.clear(); this.previewSubtypeIds.clear();
     this.latestIndexedSeq = -1; this.latestDirty = false;
@@ -752,7 +757,24 @@ export class Store extends EventEmitter {
     this.cache.clear(); this.recentSequences.clear(); this.cachedBytes = 0; this.activeChat = undefined; this.activeAnchorSeq = undefined; this.browsingOlder = false;
   }
   install(snapshot: Snapshot): void {
+    const previousCommands = new Map(this.agentCommands), previousCommandSequences = new Map(this.commandSequences), previousTombstones = new Map(this.commandTombstones);
     this.agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
+    this.commandCapability = snapshot.capabilities?.agentCommands?.version === 1;
+    this.agentCommands.clear(); this.commandSequences.clear(); this.commandTombstones.clear();
+    for (const agent of snapshot.agents) {
+      const state = snapshot.capabilities?.agentCommands?.version === 1 ? snapshot.agentCommands?.[agent.id] : undefined;
+      if (state && validAgentCommandsState(state) && state.generation === agent.generation && state.sessionId === (agent as any).sessionId && agent.removedAt === null && ['running','idle','waiting'].includes(agent.state)) {
+        this.agentCommands.set(agent.id, state); this.commandSequences.set(agent.id, snapshot.seq);
+      } else this.commandTombstones.set(agent.id, snapshot.seq);
+      const newerSeq = previousCommandSequences.get(agent.id) ?? -1;
+      const previous = previousCommands.get(agent.id);
+      const tombstone = previousTombstones.get(agent.id) ?? -1;
+      if (this.commandCapability && newerSeq > snapshot.seq && previous && previous.generation === agent.generation && agent.removedAt === null && ['running','idle','waiting'].includes(agent.state)) {
+        this.agentCommands.set(agent.id, previous); this.commandSequences.set(agent.id, newerSeq);
+      } else if (Math.max(newerSeq, tombstone) > snapshot.seq) {
+        this.agentCommands.delete(agent.id); this.commandSequences.delete(agent.id); this.commandTombstones.set(agent.id, Math.max(newerSeq, tombstone));
+      }
+    }
     const previousOperations = this.operations;
     const previousOperationSequences = this.operationSequences;
     const snapshotOperations = new Map(snapshot.operations.map(operation => [operation.id, operation]));
@@ -914,8 +936,20 @@ export class Store extends EventEmitter {
     const agentId = event.agentId ?? (event.type === 'agent.usage' && typeof data.agentId === 'string' ? data.agentId : undefined);
     if (!agentId) return;
     const previous = this.agents.get(agentId);
+    if (event.type === 'agent.commands') {
+      if (!this.commandCapability) return;
+      const state = data;
+      if (previous && validAgentCommandsState(state) && state.generation === event.generation && state.generation === previous.generation && previous.removedAt === null && ['running','idle','waiting'].includes(previous.state) && state.sessionId === (previous as any).sessionId && event.seq > Math.max(this.commandSequences.get(agentId) ?? -1, this.commandTombstones.get(agentId) ?? -1)) {
+        this.agentCommands.set(agentId, state); this.commandSequences.set(agentId, event.seq); this.commandTombstones.delete(agentId);
+      } else if (event.seq > Math.max(this.commandSequences.get(agentId) ?? -1, this.commandTombstones.get(agentId) ?? -1)) {
+        this.agentCommands.delete(agentId); this.commandSequences.delete(agentId); this.commandTombstones.set(agentId, event.seq);
+      }
+      this.emit('change');
+      return;
+    }
     if (['agent.created', 'agent.modified'].includes(event.type) && typeof data.id === 'string' && data.settings) {
       this.agents.set(data.id, data as Agent);
+      if (previous && (previous.generation !== data.generation || (previous as any).sessionId !== data.sessionId || data.removedAt !== null)) this.invalidateCommands(agentId, event.seq);
       // Generation/session can change after allocation/modification.
       this.emit('refresh');
     } else if (event.type === 'agent.usage' && previous) {
@@ -936,14 +970,28 @@ export class Store extends EventEmitter {
       if (scope !== 'subtree') this.recomputeUsageSubtrees(previous.id);
       this.emit('change');
     } else if (event.type === 'agent.state') {
-      if (previous) this.agents.set(previous.id, { ...previous, ...data, generation: event.generation ?? null });
+      if (previous) {
+        const nextGeneration = event.generation ?? null;
+        this.agents.set(previous.id, { ...previous, ...data, generation: nextGeneration });
+        if (nextGeneration !== previous.generation || !['running','idle','waiting'].includes(String(data.state))) this.invalidateCommands(agentId, event.seq);
+      }
       this.emit('refresh');
     } else if (event.type === 'agent.removed' && previous) {
-      this.agents.set(previous.id, { ...previous, removedAt: data.removedAt });
+      this.agents.set(previous.id, { ...previous, removedAt: data.removedAt }); this.invalidateCommands(agentId, event.seq);
     } else if (event.type === 'agent.session_replaced' || !previous) {
+      if (event.type === 'agent.session_replaced') this.invalidateCommands(agentId, event.seq);
       this.emit('refresh');
     }
   }
+  private invalidateCommands(agentId: string, seq: number): void {
+    this.agentCommands.delete(agentId); this.commandSequences.delete(agentId);
+    this.commandTombstones.set(agentId, Math.max(this.commandTombstones.get(agentId) ?? -1, seq));
+  }
+  getCommands(agentId: string): AgentCommandsState | undefined {
+    const state = this.agentCommands.get(agentId), agent = this.agents.get(agentId);
+    return state && agent && agent.generation === state.generation && agent.removedAt === null && ['running','idle','waiting'].includes(agent.state) ? state : undefined;
+  }
+  getCommandSequence(agentId: string): number | undefined { return this.commandSequences.get(agentId); }
   private recomputeUsageSubtrees(changedAgentId: string): void {
     const ancestors = new Set<string>();
     let current = this.agents.get(changedAgentId);

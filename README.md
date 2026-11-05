@@ -512,13 +512,15 @@ settings are saved, not prompts, agent settings, or transcript data.
 
 The chat shows the selected agent's retained event history using the configured
 levels. Compatible contiguous message chunks are combined for readable text;
-raw mode preserves each original record. **v → c** toggles compact tool and
-steering phases (chat only): tool updates replace their call, and results replace
-the latest visible phase in that call's position. Steering events with the same
-ID similarly replace the previous phase through delivery/failure; with compaction
-off, each steering event remains separate. They render as `STEER`, colored by
-phase. Tool correlation is scoped to agent and process generation; events without
-an ID remain separate. The tree view is unchanged. Thinking and user chunks are
+raw mode preserves each original record. **v → c** toggles compact tool,
+steering, and compaction phases (chat only): tool updates replace their call, and
+results replace the latest visible phase in that call's position. Steering events
+with the same ID similarly replace the previous phase through delivery/failure;
+compaction start is replaced by its completion/abort/failure event. With compact
+mode off, each lifecycle event remains separate. Steering renders as `STEER`, and
+compaction as `COMPACTING`/`COMPACTION COMPLETE`, colored by phase. Tool/steering
+correlation is scoped to agent and process generation; older compaction events
+without an ID pair by agent and generation. The tree view is unchanged. Thinking and user chunks are
 labeled separately. Generation changes and intervening events prevent chunk
 merging. Prompt result text is not appended again as an assistant response.
 
@@ -653,6 +655,10 @@ be recovered by this client. In-memory history and derived caches are bounded an
 expire; oversized wire/cache records may be explicitly marked previews without
 changing their durable copies. Treat
 raw output as sensitive: it can include settings, prompts, and tool arguments.
+
+## Slash command completion
+
+In chat and tree-prompt composers, type `/` at the beginning of a draft or after whitespace to complete the trailing command token (for example, `Please use /skill:dev`). At the beginning, suggestions include all advertised commands; after prose, only `skill:` commands are offered, so action commands such as `/compact` stay at the start. URLs and `./` paths do not trigger command completion. Tab inserts the completed `/name ` in place and preserves earlier draft text; it never executes a command. Continue with ordinary free-form text and submit explicitly. Up/Down changes selection and Escape dismisses suggestions. Discovery is optional and commands are hidden while the server/source is disconnected or stale. Existing Enter/Alt+Enter/Ctrl+Enter behavior is unchanged.
 
 ## Development
 
