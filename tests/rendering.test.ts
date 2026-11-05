@@ -27,6 +27,17 @@ test('compaction lifecycle has visible start and completion renderings', () => {
   expect(stripAnsi(renderEvent(end, 1, 120))).toBe('COMPACTION COMPLETE — Context compacted (24,195 → 19,993 estimated tokens).');
 });
 
+test('compaction start is replaced by completion when lifecycle compaction is enabled', () => {
+  const start = event(1, 'agent.compaction', { compactionId: 'compact-1', phase: 'start', reason: 'manual' });
+  const end = event(2, 'agent.compaction', { compactionId: 'compact-1', phase: 'end', reason: 'manual', tokensBefore: 24195, estimatedTokensAfter: 19993 });
+  const settings = new Settings();
+  expect(chatGroups([start, end], settings).map(item => item.data)).toEqual([start.data, end.data]);
+  settings.compactToolCalls = true;
+  expect(chatGroups([start, end], settings)).toEqual([end]);
+  settings.levels['agent.compaction'] = 4;
+  expect(chatGroups([start, end], settings)).toEqual([start, end]);
+});
+
 test('steering phases use tool lifecycle colors and compact to latest state when enabled', () => {
   const submitted = event(1, 'prompt.steer_submitted', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });
   const pending = event(2, 'prompt.steer_pending', { steeringId: 'steer-1', operationId: 'op-1', text: 'Return 5' });

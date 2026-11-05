@@ -509,13 +509,15 @@ settings are saved, not prompts, agent settings, or transcript data.
 
 The chat shows the selected agent's retained event history using the configured
 levels. Compatible contiguous message chunks are combined for readable text;
-raw mode preserves each original record. **v → c** toggles compact tool and
-steering phases (chat only): tool updates replace their call, and results replace
-the latest visible phase in that call's position. Steering events with the same
-ID similarly replace the previous phase through delivery/failure; with compaction
-off, each steering event remains separate. They render as `STEER`, colored by
-phase. Tool correlation is scoped to agent and process generation; events without
-an ID remain separate. The tree view is unchanged. Thinking and user chunks are
+raw mode preserves each original record. **v → c** toggles compact tool,
+steering, and compaction phases (chat only): tool updates replace their call, and
+results replace the latest visible phase in that call's position. Steering events
+with the same ID similarly replace the previous phase through delivery/failure;
+compaction start is replaced by its completion/abort/failure event. With compact
+mode off, each lifecycle event remains separate. Steering renders as `STEER`, and
+compaction as `COMPACTING`/`COMPACTION COMPLETE`, colored by phase. Correlation is
+scoped to agent and process generation; events without an ID remain separate. The
+tree view is unchanged. Thinking and user chunks are
 labeled separately. Generation changes and intervening events prevent chunk
 merging. Prompt result text is not appended again as an assistant response.
 

@@ -561,6 +561,7 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
   };
   const toolCalls = new Map<string, number>();
   const steeringRequests = new Map<string, number>();
+  const compactions = new Map<string, number>();
   let adjacent = false;
   for (const event of events) {
     const data = object(event.data);
@@ -569,6 +570,8 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
       ? `${event.agentId}\0${event.generation ?? ''}\0${data.toolCallId}` : undefined;
     const steeringId = ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered'].includes(event.type) && typeof data.steeringId === 'string' && event.agentId
       ? `${event.agentId}\0${event.generation ?? ''}\0${data.steeringId}` : undefined;
+    const compactionId = settings.compactToolCalls && event.type === 'agent.compaction' && typeof data.compactionId === 'string' && event.agentId
+      ? `${event.agentId}\0${event.generation ?? ''}\0${data.compactionId}` : undefined;
     const raw = settings.level(event.type, rendering?.subtype) === 4;
     const steeringTerminal = ['prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steered'].includes(event.type);
     const steeringPhase = ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steering'].includes(event.type);
@@ -590,6 +593,23 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
       continue;
     }
     if (steeringId && settings.compactToolCalls && raw) steeringRequests.delete(steeringId);
+    if (compactionId && raw) compactions.delete(compactionId);
+    else if (compactionId) {
+      const priorIndex = compactions.get(compactionId);
+      if (data.phase === 'start') {
+        if (settings.visible(event.type)) {
+          if (priorIndex !== undefined) replace(priorIndex, event);
+          else compactions.set(compactionId, add(event, `${compactionId}\0compaction`));
+        }
+      } else {
+        if (priorIndex !== undefined) {
+          if (settings.visible(event.type)) replace(priorIndex, event);
+        } else if (settings.visible(event.type)) add(event, `${compactionId}\0compaction`);
+        compactions.delete(compactionId);
+      }
+      adjacent = false;
+      continue;
+    }
     // Raw tool phases remain separate and end any prior replacement chain.
     if (callId && raw) toolCalls.delete(callId);
     else if (callId) {
