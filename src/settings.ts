@@ -32,6 +32,7 @@ export const DEFAULT_LEVELS: Record<string, Level> = {
   'tool.update': 3,
   'tool.result': 2,
   'tool.call:mcp__agentorg__prompt_subagent': 3,
+  // Retained only to display persisted historical events; not a registered/live tool.
   'tool.call:mcp__agentorg__prompt_parent': 3,
   'tool.call:cancel_operation': 2,
   'prompt.steer_submitted': 3, 'prompt.steer_pending': 3, 'prompt.steer_delivered': 3, 'prompt.steer_failed': 3, 'prompt.steering': 3, 'prompt.steered': 3,
@@ -48,6 +49,7 @@ export const DEFAULT_LEVELS: Record<string, Level> = {
   'tool.result:mcp__agentorg__get_operation': 2,
   'tool.result:mcp__agentorg__get_subagent': 2,
   'tool.result:mcp__agentorg__prompt_subagent': 2,
+  // Retained only to display persisted historical events; not a registered/live tool.
   'tool.result:mcp__agentorg__prompt_parent': 2,
   'tool.result:mcp__agentorg__remove_subagent': 2,
 };

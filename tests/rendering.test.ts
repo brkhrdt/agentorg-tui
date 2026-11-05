@@ -247,7 +247,7 @@ test('completion lifecycle events render named receipt and review progress', () 
   expect(eventText(event(5, 'completion.dispatch_finished', { status: 'failed' }))).toBe('Done reviewing messages (failed).');
 });
 
-test('sender-attributed prompt tool tree previews retain the sender, receiver, and bounded body', () => {
+test('current prompt_subagent and historical prompt_parent sidecars retain sender, receiver, and bounded body', () => {
   for (const tool of ['prompt_subagent', 'prompt_parent']) {
     const target = tool === 'prompt_parent' ? '@Coordinator' : '@Researcher';
     const prompt = '**Review this** and inspect `the code`.';
@@ -273,7 +273,7 @@ test('sender-attributed prompt tool tree previews retain the sender, receiver, a
   }
 });
 
-test('sender attribution remains visible when Markdown body has no rendered rows', () => {
+test('current and historical prompt sidecars retain sender attribution without Markdown rows', () => {
   for (const tool of ['prompt_subagent', 'prompt_parent']) for (const prompt of ['   ', '[docs]: https://example.com']) {
     const target = tool === 'prompt_parent' ? '@Coordinator' : '@Researcher';
     const e = event(1, 'tool.call', { title: `mcp__agentorg__${tool}`, status: 'pending' });
@@ -460,7 +460,10 @@ test('presentation sidecars select tree summaries independently of chat subtype 
 });
 
 test('MCP level previews select alias-specific Pi examples and retain emitted identity for all public tools', () => {
-  const names = ['create_subagent', 'prompt_subagent', 'prompt_parent', 'get_subagent', 'snapshot_organization', 'stop_subagent', 'restart_subagent', 'restart_subagent_subtree', 'replace_subagent_session', 'remove_subagent', 'modify_subagent', 'get_completion', 'get_operation', 'wait_operation', 'cancel_operation'];
+  const names = ['create_subagent', 'prompt_subagent', 'get_subagent', 'usage_get', 'snapshot_organization', 'stop_subagent', 'restart_subagent', 'restart_subagent_subtree', 'replace_subagent_session', 'remove_subagent', 'modify_subagent', 'get_completion', 'get_operation', 'wait_operation', 'cancel_operation'];
+  expect(names).toHaveLength(15);
+  expect(names).toContain('usage_get');
+  expect(names).not.toContain('prompt_parent');
   for (const tool of names) {
     const emitted = `mcp__agentorg__${tool}`;
     const example = (identity: string, subtype?: string) => {

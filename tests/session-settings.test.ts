@@ -15,6 +15,8 @@ test('settings round-trip defaults, level-zero visibility, plugin levels and inv
     expect(settings.level('agent.message')).toBe(3);
     expect(settings.level('tool.call')).toBe(1);
     expect(settings.level('tool.call', 'mcp__agentorg__prompt_subagent')).toBe(3);
+    expect(settings.level('tool.call', 'mcp__agentorg__prompt_parent')).toBe(3); // historical event rendering only
+    expect(settings.level('tool.result', 'mcp__agentorg__prompt_parent')).toBe(2); // historical event rendering only
     expect(settings.level('tool.call', 'cancel_operation')).toBe(2);
     expect(settings.level('tool.call', 'mcp__agentorg__create_subagent')).toBe(1);
     expect(settings.level('tool.result', 'mcp__agentorg__get_operation')).toBe(2);
@@ -33,6 +35,8 @@ test('settings round-trip defaults, level-zero visibility, plugin levels and inv
     settings.levels['agent.message'] = 0;
     settings.tableFields = ['error', 'name', 'status'];
     settings.levels['plugin.custom'] = 4;
+    settings.levels['tool.call:mcp__agentorg__prompt_parent'] = 1;
+    settings.levels['tool.result:mcp__agentorg__prompt_parent'] = 4;
     settings.levels['tool.result'] = 4;
     delete settings.levels['tool.call:mcp__agentorg__prompt_subagent'];
     settings.inheritedLevels.add('tool.call:mcp__agentorg__prompt_subagent');
@@ -47,6 +51,8 @@ test('settings round-trip defaults, level-zero visibility, plugin levels and inv
     const loaded = await Settings.load(path);
     expect(loaded.visible('agent.message')).toBe(false);
     expect(loaded.level('plugin.custom')).toBe(4);
+    expect(loaded.level('tool.call', 'mcp__agentorg__prompt_parent')).toBe(1);
+    expect(loaded.level('tool.result', 'mcp__agentorg__prompt_parent')).toBe(4);
     expect(loaded.inheritedLevels).toEqual(new Set(['tool.call:mcp__agentorg__prompt_subagent', 'tool.result:mcp__agentorg__get_operation']));
     expect(loaded.level('tool.result', 'mcp__agentorg__get_operation')).toBe(4);
     expect(loaded.level('tool.result', 'mcp__agentorg__get_completion')).toBe(2);
