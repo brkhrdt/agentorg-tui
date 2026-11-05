@@ -112,6 +112,14 @@ export function eventText(event: ServerEvent): string {
   if (truncated(data)) return `[TRUNCATED · ${data.originalBytes} bytes]\n${data.preview}`;
   switch (event.type) {
     case 'agent.message': return textContent(data.content ?? event.data);
+    case 'agent.compaction': {
+      if (data.phase === 'start') return `Compacting context (${data.reason ?? 'unknown'}).`;
+      if (data.errorMessage) return `Compaction failed: ${clean(data.errorMessage)}`;
+      if (data.aborted === true) return 'Compaction aborted.';
+      const before = Number.isFinite(data.tokensBefore) ? Number(data.tokensBefore).toLocaleString() : undefined;
+      const after = Number.isFinite(data.estimatedTokensAfter) ? Number(data.estimatedTokensAfter).toLocaleString() : undefined;
+      return before !== undefined && after !== undefined ? `Context compacted (${before} → ${after} estimated tokens).` : 'Context compacted.';
+    }
     case 'prompt.queued': return typeof data.text === 'string' ? data.text : pretty(event.data);
     case 'prompt.steering': case 'prompt.steered': return typeof data.text === 'string' ? data.text : pretty(event.data);
     case 'prompt.steer_failed': return `${typeof data.text === 'string' ? data.text : 'Steering guidance'}${data.error?.message ? ` · ${data.error.message}` : ''}`;
@@ -255,6 +263,7 @@ function label(event: ServerEvent): string {
     if (data.sessionUpdate === 'agent_message_chunk') return 'agent.message · assistant';
   }
   if (event.type === 'prompt.queued') return `prompt.queued · ${object(event.data).effect ?? 'normal'}`;
+  if (event.type === 'agent.compaction') return 'agent.compaction';
   return event.type;
 }
 /** Render AgentOrg delegated prompt text with a bounded summary/detail and complete Markdown view. */
@@ -375,7 +384,18 @@ function renderCompletionNotice(event: ServerEvent, width: number, colors: Rende
   const symbol = paint('∴', 'agentTarget', colors, true);
   return clipStyled(`${symbol} ${summary}`, width);
 }
+function renderCompactionNotice(event: ServerEvent, width: number, colors: RenderColors, level: Exclude<Level, 4> = 1): string {
+  const data = object(event.data);
+  const state = data.phase === 'start' ? 'COMPACTING' : data.errorMessage ? 'COMPACTION FAILED' : data.aborted ? 'COMPACTION ABORTED' : 'COMPACTION COMPLETE';
+  const color: ColorSetting = data.phase === 'start' ? 'toolUpdate' : data.errorMessage || data.aborted ? 'toolFailure' : 'toolSuccess';
+  const header = paint(state, color, colors);
+  const body = markdown(eventText(event), width, true, colors);
+  if (level === 1) return clipStyled(`${header} — ${body}`, width);
+  if (level === 2) return `${clipStyled(header, width)}\n${body}`;
+  return `${paint(clip(event.time, width), 'gray', colors)}\n${clipStyled(header, width)}\n${markdown(eventText(event), width, false, colors)}`;
+}
 function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean): string {
+  if (event.type === 'agent.compaction') return renderCompactionNotice(event, width, colors);
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
   if (isTool(event) && rendering?.toolPrompt !== undefined && rendering.toolSender && rendering.toolTarget) {
     const symbol = paint(clean(rendering.toolSymbol ?? '∴').replace(/\s/g, ''), toolColor(event, rendering.subtype, rendering.invocationError), colors);
@@ -444,6 +464,7 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
   width = Math.max(1, width);
   if (level === 0) return '';
   if (level === 4) return wrapAnsi(pretty(event), width, { hard: true, trim: false });
+  if (event.type === 'agent.compaction') return renderCompactionNotice(event, width, colors, level);
   if (event.type === 'prompt.queued') return renderPromptCue(event, level, width, colors, rendering);
   if (['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered'].includes(event.type)) return renderSteeringEvent(event, level, width, colors);
   if (event.type.startsWith('completion.')) {

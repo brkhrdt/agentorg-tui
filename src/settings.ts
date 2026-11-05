@@ -25,6 +25,7 @@ export const DEFAULT_TABLE_FIELDS: readonly TableField[] = ['name', 'status', 'm
 export const DEFAULT_LEVELS: Record<string, Level> = {
   'agent.created': 0, 'agent.error': 0, 'agent.modified': 0, 'agent.plan': 0, 'agent.removed': 0,
   'agent.session_replaced': 0, 'agent.state': 0, 'agent.update': 0, 'agent.usage': 0, 'operation.changed': 0,
+  'agent.compaction': 3,
   'permission.requested': 0, 'permission.resolved': 0, 'plugin.error': 0, 'prompt.cancelling': 0,
   'prompt.finished': 0, 'prompt.started': 0, 'server.ready': 0, 'server.stopped': 0,
   'agent.message': 3,
@@ -88,7 +89,7 @@ export const EVENT_TYPES = [
   'server.ready', 'server.stopped', 'agent.created', 'agent.state', 'agent.modified',
   'agent.removed', 'agent.session_replaced', 'agent.error', 'agent.usage', 'prompt.queued',
   'prompt.started', 'prompt.cancelling', 'prompt.finished', 'prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered', 'operation.changed',
-  'agent.message', 'tool.call', 'tool.update', 'tool.result', 'agent.plan',
+  'agent.message', 'agent.compaction', 'tool.call', 'tool.update', 'tool.result', 'agent.plan',
   'agent.update', 'permission.requested', 'permission.resolved', 'plugin.error',
 ];
 export const defaultConfigPath = () => join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'org-tui', 'settings.json');
