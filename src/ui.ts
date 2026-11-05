@@ -4,7 +4,7 @@ import { PromptInput } from './prompt-input.js';
 import { ComposeKeyInput, type ComposeSubmitMode } from './compose-keys.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
-import { acceptCommand, commandSpan, matchCommands, validCommandList, type CommandChoice, type CommandSpan } from './command-completion.js';
+import { acceptCommand, commandSpan, commandsForSpan, matchCommands, validCommandList, type CommandChoice, type CommandSpan } from './command-completion.js';
 import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
 import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
@@ -1627,7 +1627,7 @@ export class UI {
     const sourceSeq = recipient ? this.session.store.getCommandSequence(recipient) : undefined;
     const commands = state && validCommandList(state.commands) ? state.commands : [];
     if (this.commandDismissed !== draft) this.commandDismissed = undefined;
-    const results = span && state && this.commandDismissed !== draft ? matchCommands(commands, span.query) : [];
+    const results = span && state && this.commandDismissed !== draft ? matchCommands(commandsForSpan(commands, span), span.query) : [];
     const stamp = state && sourceSeq !== undefined && recipient ? { recipient, generation: state.generation, sessionId: state.sessionId, seq: sourceSeq } : undefined;
     const oldSelected = this.commandResults[this.commandIndex]?.name;
     const draftChanged = this.commandDraft !== draft;

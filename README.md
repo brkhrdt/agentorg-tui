@@ -653,7 +653,7 @@ raw output as sensitive: it can include settings, prompts, and tool arguments.
 
 ## Slash command completion
 
-In chat and tree-prompt composers, type `/` at the beginning of a draft or after whitespace to complete the trailing command token (for example, `Please use /skill:dev`). URLs and `./` paths do not trigger command completion. Tab inserts the completed `/name ` in place and preserves earlier draft text; it never executes a command. Continue with ordinary free-form text and submit explicitly. Up/Down changes selection and Escape dismisses suggestions. Discovery is optional and commands are hidden while the server/source is disconnected or stale. Existing Enter/Alt+Enter/Ctrl+Enter behavior is unchanged.
+In chat and tree-prompt composers, type `/` at the beginning of a draft or after whitespace to complete the trailing command token (for example, `Please use /skill:dev`). At the beginning, suggestions include all advertised commands; after prose, only `skill:` commands are offered, so action commands such as `/compact` stay at the start. URLs and `./` paths do not trigger command completion. Tab inserts the completed `/name ` in place and preserves earlier draft text; it never executes a command. Continue with ordinary free-form text and submit explicitly. Up/Down changes selection and Escape dismisses suggestions. Discovery is optional and commands are hidden while the server/source is disconnected or stale. Existing Enter/Alt+Enter/Ctrl+Enter behavior is unchanged.
 
 ## Development
 

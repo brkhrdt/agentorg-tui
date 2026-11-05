@@ -10,6 +10,9 @@ export function commandSpan(value: string): CommandSpan | undefined {
   if (!match || match[2]!.startsWith('./')) return undefined;
   return { start: match.index + match[1]!.length, query: match[2]! };
 }
+export function commandsForSpan(commands: readonly CommandChoice[], span: CommandSpan): CommandChoice[] {
+  return span.start === 0 ? [...commands] : commands.filter(command => command.name.startsWith('skill:'));
+}
 export function matchCommands(commands: readonly CommandChoice[], query: string): CommandChoice[] {
   const q = query.toLocaleLowerCase();
   return commands.map((command, index) => ({ command, index, name: command.name.toLocaleLowerCase() }))
