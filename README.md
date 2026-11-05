@@ -515,9 +515,9 @@ results replace the latest visible phase in that call's position. Steering event
 with the same ID similarly replace the previous phase through delivery/failure;
 compaction start is replaced by its completion/abort/failure event. With compact
 mode off, each lifecycle event remains separate. Steering renders as `STEER`, and
-compaction as `COMPACTING`/`COMPACTION COMPLETE`, colored by phase. Correlation is
-scoped to agent and process generation; events without an ID remain separate. The
-tree view is unchanged. Thinking and user chunks are
+compaction as `COMPACTING`/`COMPACTION COMPLETE`, colored by phase. Tool/steering
+correlation is scoped to agent and process generation; older compaction events
+without an ID pair by agent and generation. The tree view is unchanged. Thinking and user chunks are
 labeled separately. Generation changes and intervening events prevent chunk
 merging. Prompt result text is not appended again as an assistant response.
 

@@ -570,8 +570,8 @@ export function chatGroups(events: ServerEvent[], settings: Settings, renderings
       ? `${event.agentId}\0${event.generation ?? ''}\0${data.toolCallId}` : undefined;
     const steeringId = ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steering', 'prompt.steered'].includes(event.type) && typeof data.steeringId === 'string' && event.agentId
       ? `${event.agentId}\0${event.generation ?? ''}\0${data.steeringId}` : undefined;
-    const compactionId = settings.compactToolCalls && event.type === 'agent.compaction' && typeof data.compactionId === 'string' && event.agentId
-      ? `${event.agentId}\0${event.generation ?? ''}\0${data.compactionId}` : undefined;
+    const compactionId = settings.compactToolCalls && event.type === 'agent.compaction' && event.agentId
+      ? `${event.agentId}\0${event.generation ?? ''}\0${typeof data.compactionId === 'string' ? data.compactionId : 'legacy'}` : undefined;
     const raw = settings.level(event.type, rendering?.subtype) === 4;
     const steeringTerminal = ['prompt.steer_delivered', 'prompt.steer_failed', 'prompt.steered'].includes(event.type);
     const steeringPhase = ['prompt.steer_submitted', 'prompt.steer_pending', 'prompt.steering'].includes(event.type);

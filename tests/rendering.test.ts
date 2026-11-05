@@ -36,6 +36,10 @@ test('compaction start is replaced by completion when lifecycle compaction is en
   expect(chatGroups([start, end], settings)).toEqual([end]);
   settings.levels['agent.compaction'] = 4;
   expect(chatGroups([start, end], settings)).toEqual([start, end]);
+  settings.levels['agent.compaction'] = 3;
+  const legacyStart = event(3, 'agent.compaction', { phase: 'start', reason: 'manual' });
+  const legacyEnd = event(4, 'agent.compaction', { phase: 'end', reason: 'manual' });
+  expect(chatGroups([legacyStart, legacyEnd], settings)).toEqual([legacyEnd]);
 });
 
 test('steering phases use tool lifecycle colors and compact to latest state when enabled', () => {
