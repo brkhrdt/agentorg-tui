@@ -110,6 +110,7 @@ export class UI {
   private promptBottom = blessed.box({ parent: this.screen, bottom: 2, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
   private mentionPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
   private commandPanel = blessed.list({ parent: this.screen, bottom: 4, height: 4, hidden: true, keys: false, tags: false, style: { selected: { bg: 'blue', fg: 'white', bold: true } } });
+  private commandPanelRows = 0;
   private commandOpen = false;
   private commandResults: CommandChoice[] = [];
   private commandIndex = 0;
@@ -386,13 +387,16 @@ export class UI {
       const previous = thisUI.composer.getValue();
       const compose = thisUI.view === 'chat' || thisUI.view === 'prompt';
       if (compose && key.name === 'escape' && (thisUI.commandOpen || thisUI.mentionOpen || thisUI.composeSpan || thisUI.composeStatus)) {
-        if (thisUI.commandOpen) { thisUI.commandDismissed = thisUI.composer.getValue(); thisUI.commandOpen = false; thisUI.commandPanel.setItems([]); thisUI.commandPanel.hide(); thisUI.draw(); return; }
+        if (thisUI.commandOpen) { thisUI.commandDismissed = thisUI.composer.getValue(); thisUI.commandOpen = false; thisUI.commandPanel.setItems([]); thisUI.commandPanel.hide(); thisUI.resizeComposer(); thisUI.draw(); return; }
         thisUI.dismissComposeCompletion(); return;
       }
       const pathActive = compose && thisUI.composeSpan?.kind === 'path';
       const mentionActive = compose && thisUI.mentionOpen;
       if (compose && thisUI.commandOpen && thisUI.commandResults.length && (key.name === 'up' || key.name === 'down')) {
-        thisUI.commandIndex = (thisUI.commandIndex + (key.name === 'down' ? 1 : -1) + thisUI.commandResults.length) % thisUI.commandResults.length;
+        if (thisUI.commandSelectionStale) {
+          thisUI.commandSelectionStale = false;
+          thisUI.commandIndex = key.name === 'down' ? 0 : thisUI.commandResults.length - 1;
+        } else thisUI.commandIndex = (thisUI.commandIndex + (key.name === 'down' ? 1 : -1) + thisUI.commandResults.length) % thisUI.commandResults.length;
         thisUI.draw(); return;
       }
       if ((pathActive && thisUI.composeCandidates.length || mentionActive && thisUI.mentionResults.length) && (key.name === 'up' || key.name === 'down')) {
@@ -402,7 +406,7 @@ export class UI {
         thisUI.draw(); return;
       }
       if (key.name === 'tab' && compose && !key.ctrl && !key.meta) {
-        if (thisUI.commandOpen) { thisUI.acceptCommandCompletion(); return; }
+        if (thisUI.acceptCommandCompletion()) return;
         const effectiveSpan = thisUI.effectiveComposeSpan(thisUI.composer.getValue());
         if (effectiveSpan?.kind === 'path') {
           if (pathActive) thisUI.acceptComposePath();
@@ -1629,10 +1633,14 @@ export class UI {
     if (this.commandDismissed !== draft) this.commandDismissed = undefined;
     const results = span && state && this.commandDismissed !== draft ? matchCommands(commandsForSpan(commands, span), span.query) : [];
     const stamp = state && sourceSeq !== undefined && recipient ? { recipient, generation: state.generation, sessionId: state.sessionId, seq: sourceSeq } : undefined;
-    const oldSelected = this.commandResults[this.commandIndex]?.name;
+    const oldSelected = this.commandSelectionStale ? undefined : this.commandResults[this.commandIndex]?.name;
     const draftChanged = this.commandDraft !== draft;
-    if (draftChanged) this.commandSelectionStale = false;
-    else if (this.commandOpen && oldSelected && !results.some(command => command.name === oldSelected)) this.commandSelectionStale = true;
+    if (draftChanged) { this.commandSelectionStale = false; this.commandIndex = 0; }
+    else if (oldSelected) {
+      const preservedIndex = results.findIndex(command => command.name === oldSelected);
+      if (preservedIndex >= 0) this.commandIndex = preservedIndex;
+      else { this.commandSelectionStale = true; this.commandIndex = 0; }
+    } else if (!this.commandSelectionStale) this.commandIndex = 0;
     const changed = this.commandOpen !== !!results.length || draftChanged || JSON.stringify(this.commandSource) !== JSON.stringify(stamp) || JSON.stringify(this.commandResults) !== JSON.stringify(results);
     this.commandDraft = draft; this.commandSpan = span; this.commandSource = stamp; this.commandResults = results;
     this.commandIndex = Math.min(this.commandIndex, Math.max(0, results.length - 1));
@@ -1642,22 +1650,27 @@ export class UI {
       this.commandPanel.select(Math.min(this.commandIndex, Math.max(0, Math.min(4, results.length) - 1)));
       this.commandPanel.show();
     } else { this.commandPanel.setItems([]); this.commandPanel.hide(); }
+    this.resizeComposer();
     if (changed && (this.view === 'chat' || this.view === 'prompt')) this.draw();
   }
-  private acceptCommandCompletion(): void {
+  private acceptCommandCompletion(): boolean {
+    if (!commandSpan(this.composer.getValue())) return false;
+    this.refreshCommandCompletion();
+    if (!this.commandOpen || !this.commandResults.length) return false;
     const recipient = this.currentMentionRecipient(), state = recipient ? this.session.store.getCommands(recipient) : undefined;
     const seq = recipient ? this.session.store.getCommandSequence(recipient) : undefined;
     const selected = this.commandResults[this.commandIndex];
-    if (this.commandSelectionStale) { this.commandSelectionStale = false; this.refreshCommandCompletion(); return; }
+    if (this.commandSelectionStale) { this.draw(); return true; }
     if (!recipient || !state || !selected || !this.commandSpan || !this.session.status.startsWith('connected') || this.composer.getValue() !== this.commandDraft || seq !== this.commandSource?.seq || recipient !== this.commandSource?.recipient || state.generation !== this.commandSource?.generation || state.sessionId !== this.commandSource?.sessionId || !validCommandList(state.commands) || !state.commands.some(command => command.name === selected.name)) {
-      this.commandOpen = false; this.commandPanel.hide(); this.refreshCommandCompletion(); return;
+      this.commandOpen = false; this.commandPanel.hide(); this.resizeComposer(); this.refreshCommandCompletion(); return true;
     }
     const accepted = acceptCommand(this.composer.getValue(), this.commandSpan, selected, state.commands);
-    if (accepted === undefined) { this.commandOpen = false; this.commandPanel.hide(); this.refreshCommandCompletion(); return; }
+    if (accepted === undefined) { this.commandOpen = false; this.commandPanel.hide(); this.resizeComposer(); this.refreshCommandCompletion(); return true; }
     this.commandDismissed = undefined; this.commandSelectionStale = false;
     this.composer.setValue(accepted);
     this.saveComposeDraft(accepted);
-    this.commandOpen = false; this.commandPanel.hide(); this.commandResults = []; this.draw();
+    this.commandOpen = false; this.commandPanel.hide(); this.commandResults = []; this.resizeComposer(); this.draw();
+    return true;
   }
   private currentMentionResults(query: string): MentionChoice[] {
     const recipient = this.currentMentionRecipient();
@@ -1858,11 +1871,18 @@ export class UI {
     const previousChatHeight = Number(this.chat.height);
     const previousTreeHeight = Number(this.tree.height);
     const anchor = this.view === 'chat' && !this.follow ? this.captureChatAnchor() : undefined;
-    const rows = this.composer.reflow(Math.max(1, Number(this.screen.height) - (this.composeShift ? 11 : 7)));
+    const screenHeight = Number(this.screen.height);
+    const commandWanted = this.commandResults.length > 0 && this.commandDismissed !== this.commandDraft;
+    this.commandPanelRows = commandWanted ? Math.min(4, Math.max(0, screenHeight - 8)) : 0;
+    this.commandOpen = commandWanted && this.commandPanelRows > 0;
+    const panelRows = Math.max(this.composeShift ? 4 : 0, this.commandOpen ? this.commandPanelRows : 0);
+    const rows = this.composer.reflow(Math.max(1, screenHeight - 7 - panelRows));
+    this.commandPanel.height = Math.max(1, this.commandPanelRows);
+    this.commandPanel.bottom = rows + 4;
     this.promptTop.bottom = rows + 3;
     this.mentionPanel.bottom = rows + 4;
-    this.tree.bottom = rows + (this.composeShift ? 8 : 4);
-    this.chat.bottom = rows + (this.composeShift ? 8 : 4);
+    this.tree.bottom = rows + 4 + panelRows;
+    this.chat.bottom = rows + 4 + panelRows;
     const chatGeometryChanged = this.view === 'chat' && Number(this.chat.height) !== previousChatHeight;
     const treeGeometryChanged = this.view === 'prompt' && Number(this.tree.height) !== previousTreeHeight;
     if (rows !== previous || chatGeometryChanged || treeGeometryChanged) {
@@ -2177,7 +2197,7 @@ export class UI {
     } else this.mentionPanel.hide();
     if (this.view === 'chat' || this.view === 'prompt') {
       if (this.commandOpen) {
-        const window = composeWindow(this.commandResults, this.commandIndex, 4);
+        const window = composeWindow(this.commandResults, this.commandIndex, this.commandPanelRows);
         const lines = window.items.map((command, index) => {
           const clean = (text: string) => text.replace(/[\p{C}\u001b]/gu, '').replace(/\s+/gu, ' ');
           return clip(`${window.start + index === this.commandIndex ? '›' : ' '} /${command.name}${command.description ? ` · ${clean(command.description)}` : ''}${command.input?.hint ? ` (${clean(command.input.hint)})` : ''}`, width);
