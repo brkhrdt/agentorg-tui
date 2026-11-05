@@ -103,7 +103,7 @@ export class UI {
   });
   private chat = blessed.box({
     parent: this.screen, top: 1, bottom: 5, hidden: true, scrollable: true,
-    alwaysScroll: true, tags: false, mouse: true,
+    alwaysScroll: true, tags: false, mouse: true, autoFocus: false,
     scrollbar: { ch: '│', style: { bg: 'gray' } },
   });
   private promptTop = blessed.box({ parent: this.screen, bottom: 4, height: 1, hidden: true, tags: false, style: { fg: 'cyan' } });
