@@ -94,6 +94,8 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | Key | Action |
 | --- | --- |
 | ↑ / ↓ | Select a visible agent (metadata highlighted; configurable colors) |
+| ← | Select the visible parent (root/orphan boundaries do nothing) |
+| → | Select the next sibling in tree order; does not select children (last sibling does nothing) |
 | Tab | Collapse / expand the selected agent's branch (when it has children) |
 | / | Search agents by full ancestry path; space-separated fuzzy terms match independently. Includes folded descendants. Enter reveals, selects and centers the match; Esc cancels. Search never sends a prompt. |
 | Enter | Open a prompt composer; sends a normal prompt when idle or steers the exact active prompt when running |
@@ -118,7 +120,8 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 Jump search matches complete ancestry paths and includes agents hidden under folded branches. Enter reveals the target's ancestors and selects it; Escape returns without changing folds.
 
 Collapsing hides every descendant; expanding restores the branch, including nested
-branches. Collapse choices are local to this TUI instance, survive chat and Escape,
+branches. Left/Right navigate only visible rows and never change folds or reveal hidden
+agents. Collapse choices are local to this TUI instance, survive chat and Escape,
 and reset when the TUI is reopened. In the prompt composer, Tab remains reserved
 for mention completion and does not collapse the tree.
 
