@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { PassThrough } from 'node:stream';
 import blessed from 'blessed';
 import { PromptInput } from '../src/prompt-input.js';

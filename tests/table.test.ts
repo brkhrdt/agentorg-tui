@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import stringWidth from 'string-width';
 import stripAnsi from 'strip-ansi';
 import { renderTable } from '../src/table.js';

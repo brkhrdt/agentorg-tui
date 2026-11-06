@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { AgentEditor } from '../src/agent-editor.js';
 import { Session, type LifecycleMethod } from '../src/session.js';
 import { agent, event, mockServer, respond, send, waitFor } from './helpers.js';

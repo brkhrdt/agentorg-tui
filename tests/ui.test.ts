@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { spawn } from 'node:child_process';
 import { copyFile, chmod, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -38,7 +38,7 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
   const config = join(mock.directory, 'settings.json');
   const terminal = new xterm.Terminal({ cols: 100, rows: 30, allowProposedApi: true });
   const screen = () => Array.from({ length: 30 }, (_, index) => terminal.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n');
-  let command = 'bun src/main.ts';
+  let command = 'node_modules/.bin/tsx src/main.ts';
   if (process.env.ORG_TUI_BINARY) {
     const binary = join(mock.directory, 'org-tui');
     await copyFile(resolve(process.env.ORG_TUI_BINARY), binary);
@@ -46,7 +46,7 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
     command = `'${binary}'`;
   }
   const childProcess = spawn('script', ['-qefc', `stty cols 100 rows 30; ${process.env.ORG_TUI_BINARY ? "PATH='/nonexistent' " : ''}exec ${command} --socket '${mock.path}' --config '${config}'`, '/dev/null'], {
-    cwd: process.env.ORG_TUI_BINARY ? mock.directory : join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: process.env.ORG_TUI_BINARY ? mock.directory : join(import.meta.dirname, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   let exited = false;
   let stderr = '';
@@ -216,13 +216,13 @@ test('terminal lifecycle: empty root/child creation, staged revision-fenced edit
   });
   const terminal = new xterm.Terminal({ cols: 120, rows: 30, allowProposedApi: true });
   const screen = () => Array.from({ length: 30 }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
-  let command = 'bun src/main.ts';
+  let command = 'node_modules/.bin/tsx src/main.ts';
   if (process.env.ORG_TUI_BINARY) {
     const binary = join(mock.directory, 'org-tui');
     await copyFile(resolve(process.env.ORG_TUI_BINARY), binary); await chmod(binary, 0o755); command = `'${binary}'`;
   }
   const childProcess = spawn('script', ['-qefc', `stty cols 120 rows 30; exec ${command} --socket '${mock.path}' --config '${join(mock.directory, 'config.json')}'`, '/dev/null'], {
-    cwd: process.env.ORG_TUI_BINARY ? mock.directory : join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color' }, stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: process.env.ORG_TUI_BINARY ? mock.directory : join(import.meta.dirname, '..'), env: { ...process.env, TERM: 'xterm-256color' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   let exited = false;
   childProcess.stdout.on('data', chunk => terminal.write(chunk));

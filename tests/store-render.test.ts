@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
 import { chatGroups, clean, clip, eventText, renderEvent, renderTreeEvent } from '../src/render.js';

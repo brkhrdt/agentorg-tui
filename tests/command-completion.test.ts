@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { acceptCommand, commandSpan, commandsForSpan, matchCommands, validCommandList } from '../src/command-completion.js';
 const commands = [{ name: 'skill:review', description: 'review', input: { hint: 'free text' } }, { name: 'web-search', description: '' }, { name: 'web', description: '' }];
 test('command completion is prefix-only at draft start and preserves arbitrary arguments', () => {

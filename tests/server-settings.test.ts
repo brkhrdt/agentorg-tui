@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { Session } from '../src/session.js';
 import { ServerSettingsEditor } from '../src/server-settings-editor.js';
 import { StructuredEditor } from '../src/structured-editor.js';

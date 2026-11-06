@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import type { Socket } from 'node:net';
 import { Session } from '../src/session.js';
 import { agent, event, mockServer, respond, send, waitFor } from './helpers.js';

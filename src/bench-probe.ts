@@ -100,7 +100,7 @@ export class TreeProbe {
     return {
       time: new Date().toISOString(), elapsedMs: performance.now() - this.started,
       scope: 'headless Session + Store + renderTable; no terminal paint or history replay',
-      runtime: { bun: Bun.version, width: this.width, frameMs: this.frameMs },
+      runtime: { node: process.version, width: this.width, frameMs: this.frameMs },
       status: this.session.status, readyMs: this.readyMs, frames: this.frames, visibleRows: this.visible.size,
       rowsAdded: this.added, rowsRemoved: this.removed, receivedCreates: this.receivedAdds, receivedRemoves: this.receivedRemoves,
       coalescedRowChanges: this.coalesced, disconnects: this.disconnects, lastNotice: this.lastError,

@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
 import { existsSync } from 'node:fs';
@@ -8,9 +8,9 @@ import { rendererCandidates, rendererIdentityMatch, rendererPreview, rendererSub
 import { validEventRendering, validRendererMetadata, type EventRendering, type ServerEvent, type RendererMetadata } from '../src/protocol.js';
 
 // Optional coordinated-workspace tests: TUI still installs/tests without a core checkout.
-const corePath = join(import.meta.dir, '../../agentorg/src/rendering.ts');
+const corePath = join(import.meta.dirname, '../../agentorg/src/rendering.ts');
 const coreModule = existsSync(corePath) ? await import(corePath) : undefined;
-const MCP_TOOL_NAMES: string[] = coreModule ? (await import(join(import.meta.dir, '../../agentorg/src/mcp-tool-rendering.ts'))).MCP_TOOL_NAMES : [];
+const MCP_TOOL_NAMES: string[] = coreModule ? (await import(join(import.meta.dirname, '../../agentorg/src/mcp-tool-rendering.ts'))).MCP_TOOL_NAMES : [];
 interface CoreRegistry {
   registerHarness(name: string, renderers: unknown[], aliases: (names: string[]) => Record<string, string>): void;
   render(event: ServerEvent, harness: string, defaultId: string, context?: { targetName?: string; parentTargetName?: string; senderName?: string }): EventRendering | undefined;

@@ -8,7 +8,7 @@ const { values } = parseArgs({ options: {
   width: { type: 'string', default: '120' }, 'frame-ms': { type: 'string', default: '16' }, help: { type: 'boolean' },
 } });
 if (values.help) {
-  console.log('bun run bench:probe --socket PATH [--duration 30|0] [--output report.json] [--width 120] [--frame-ms 16]\nMeasures the real TUI session/tree renderer, not terminal paint. History replay is disabled.');
+  console.log('npm run bench:probe --socket PATH [--duration 30|0] [--output report.json] [--width 120] [--frame-ms 16]\nMeasures the real TUI session/tree renderer, not terminal paint. History replay is disabled.');
   process.exit(0);
 }
 if (!values.socket) throw new Error('--socket is required');

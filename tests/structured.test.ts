@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { StructuredEditor, parseTyped } from '../src/structured-editor.js';
 
 test('map editor filters names, validates without losing drafts, and handles special names', () => {

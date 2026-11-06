@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { AgentEditor } from '../src/agent-editor.js';
 import { Session } from '../src/session.js';
 import { UI } from '../src/ui.js';

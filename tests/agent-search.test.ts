@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { agentSearchChoices, matchAgentSearchChoices } from '../src/agent-search.js';
 import { agent } from './helpers.js';
 

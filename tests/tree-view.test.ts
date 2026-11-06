@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { revealTreeAncestors, visibleTreeRows, toggleCollapsedBranch, treeArrowTarget } from '../src/tree-view.js';
 import { agent } from './helpers.js';
 import { Store } from '../src/store.js';

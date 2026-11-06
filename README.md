@@ -4,12 +4,12 @@ A standalone **Bun** terminal client for the Agent Organization Unix-socket API.
 
 ## Run
 
-Requires Bun and an interactive Unix terminal. Start the organization server
+Requires Node.js 22.14+ and npm and an interactive Unix terminal. Start the organization server
 separately, then from this directory:
 
 ```sh
-bun install
-bun start --socket ../.org/server.sock
+npm install
+npm start -- --socket ../.org/server.sock
 ```
 
 The socket defaults to `ORG_SOCKET`, or `.org/server.sock` relative to the
@@ -17,8 +17,8 @@ client's working directory. Use an absolute path when the server runs elsewhere.
 The server and client must have compatible socket filesystem permissions.
 
 ```sh
-bun start --socket /absolute/path/server.sock --config ./settings.json
-bun start --help
+npm start -- --socket /absolute/path/server.sock --config ./settings.json
+npm start -- --help
 ```
 
 An empty organization is displayed as an empty tree. Press `n` to create its
@@ -35,7 +35,7 @@ loaded on demand from paged event history rather than downloaded in snapshots.
 For current state and **new events only at startup**, skip the recent-history download:
 
 ```sh
-bun start --socket /tmp/bench/server.sock --no-history
+npm start -- --socket /tmp/bench/server.sock --no-history
 ```
 
 This does not change server recovery or re-execute old prompts/tools. It simply
@@ -46,7 +46,7 @@ is documented in the benchmark's [RECOVERY.md](../agentorg-plugin-harness-bench/
 For unattended model/render measurements against a running server:
 
 ```sh
-bun run bench:probe --socket /tmp/bench/server.sock --duration 30 --output /tmp/tui-probe.json
+npm run bench:probe --socket /tmp/bench/server.sock --duration 30 --output /tmp/tui-probe.json
 ```
 
 The probe uses `Session`, `Store` and `renderTable`, schedules frames every 16ms
@@ -59,26 +59,25 @@ no live-event latency; fast transitions coalesced into a frame are reported sepa
 
 ## Standalone binary
 
-Build with **Bun 1.4.3+**:
+Build with **Node.js 22.14+** and npm:
 
 ```sh
-bun install --frozen-lockfile
-bun run build                       # dist/org-tui
+npm install --frozen-lockfile
+npm run build                       # dist/org-tui
 ./dist/org-tui --help
 ./dist/org-tui --socket /absolute/path/server.sock
-# Optional cross-compilation:
-bun run build --target=bun-linux-x64
-# Other examples: bun-linux-arm64, bun-darwin-arm64, bun-linux-x64-baseline
+# The standalone executable is built for the host OS/CPU. Run the build on
+# the destination platform; cross-compilation is not supported.-baseline
 ```
 
-Distribute **only `dist/org-tui`**. It includes the runtime, dependencies, and
-fallback terminal data; Bun, Node, `node_modules`, and this repository are not
-needed on the destination. Build for the destination OS/CPU (`-baseline` for
-older x64 CPUs). An interactive Unix terminal and a separately running compatible
+Distribute **only `dist/org-tui`**. It includes the Node.js runtime, dependencies, and
+fallback terminal data; Node, `node_modules`, and this repository are not
+needed on the destination. Build on the destination OS/CPU. Node's SEA executable
+is platform- and architecture-specific. An interactive Unix terminal and a separately running compatible
 organization server are still required; Windows is not supported. Socket/config
 flags and environment defaults are unchanged.
 
-`bun run test:binary` builds the binary, copies it outside the repository, and
+`npm run test:binary` builds the binary, copies it outside the repository, and
 runs the interactive UI test against it. Like the source UI test, it requires
 `script` (util-linux) and `stty` on the development machine.
 
@@ -665,8 +664,8 @@ In chat and tree-prompt composers, type `/` at the beginning of a draft or after
 ## Development
 
 ```sh
-bun test
-bun run typecheck
+npm test
+npm run typecheck
 ```
 
 Tests use deterministic mock Unix servers (no model calls), including fragmented

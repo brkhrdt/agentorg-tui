@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { TreeProbe } from '../src/bench-probe.js';
 import { agent, event, mockServer, respond, send, waitFor } from './helpers.js';
 

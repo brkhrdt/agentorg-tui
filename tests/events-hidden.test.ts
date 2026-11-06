@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { eventText } from '../src/render.js';
 import { Settings } from '../src/settings.js';
 import { Store } from '../src/store.js';

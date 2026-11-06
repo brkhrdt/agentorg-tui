@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { ApiError, RpcClient, validEventRendering, validRendererMetadata, type ServerEvent } from '../src/protocol.js';
 import { event, mockServer, respond, send, waitFor } from './helpers.js';
 

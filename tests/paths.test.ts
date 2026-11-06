@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import type blessed from 'blessed';
 import { enablePathKeys } from '../src/path-input.js';
 import { Session } from '../src/session.js';

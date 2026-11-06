@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { composeSpan, matchComposeCandidates, replaceComposeSpan } from '../src/compose-completion.js';
 
 describe('compose completion spans', () => {

@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { Store } from '../src/store.js';
 import type { Agent, ServerEvent, Snapshot } from '../src/protocol.js';
 const agent = (generation = 'g1', state = 'idle'): Agent => ({ id: 'a', name: 'agent', parentId: null, state, settings: { harness: 'fixture' }, revision: 1, generation, sessionId: 's1', removedAt: null });

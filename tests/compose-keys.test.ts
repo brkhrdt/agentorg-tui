@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { once } from 'node:events';
 import { ComposeKeyInput, type ComposeSubmitMode } from '../src/compose-keys.js';

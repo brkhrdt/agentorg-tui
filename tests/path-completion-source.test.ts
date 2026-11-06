@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { HostPathCompletionSource, type PathCompletionSource } from '../src/path-completion-source.js';
 
 test('host source uses only organization.paths with recipient cwd and kind any, never creation', async () => {

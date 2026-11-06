@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { fuzzyNameScore, matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery } from '../src/mention-completion.js';
 import type { Agent } from '../src/protocol.js';
 

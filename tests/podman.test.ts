@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import xterm from '@xterm/headless';
@@ -151,7 +151,7 @@ test('terminal container choices, not image fields, trigger the existing propaga
   });
   const terminal = new xterm.Terminal({ cols: 110, rows: 30, allowProposedApi: true });
   const screen = () => Array.from({ length: 30 }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
-  const child = spawn('script', ['-qefc', `stty cols 110 rows 30; exec bun src/main.ts --socket '${mock.path}' --config '${join(mock.directory, 'settings.json')}'`, '/dev/null'], { cwd: join(import.meta.dir, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn('script', ['-qefc', `stty cols 110 rows 30; exec node_modules/.bin/tsx src/main.ts --socket '${mock.path}' --config '${join(mock.directory, 'settings.json')}'`, '/dev/null'], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.on('data', data => terminal.write(data));
   const keys = (text: string) => child.stdin.write(text);
   const visible = async (text: string) => {

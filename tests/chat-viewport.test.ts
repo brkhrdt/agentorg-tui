@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import blessed from 'blessed';
 import { PassThrough } from 'node:stream';
 import { chatGroupIdentity, chatGroups } from '../src/render.js';

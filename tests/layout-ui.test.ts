@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { clip } from '../src/render.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
