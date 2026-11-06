@@ -707,6 +707,11 @@ describe('state and transcripts', () => {
 
 describe('static tree previews', () => {
   const message = (text: string, sessionUpdate = 'agent_message_chunk') => event(1, 'agent.message', { sessionUpdate, content: { type: 'text', text } });
+  test('renders Markdown emphasis in bounded text tree previews', () => {
+    const rendered = renderTreeEvent(message('**TREE_MD_SENTINEL**'), 80);
+    expect(stripAnsi(rendered)).toBe('TREE_MD_SENTINEL');
+    expect(rendered).toContain('\x1b[1mTREE_MD_SENTINEL\x1b[0m');
+  });
   test('keeps Markdown source literal and folds blocks into one line without an assistant label', () => {
     const rendered = renderTreeEvent(message('# Heading\n\n**bold** and _italic_ with `code`\n\n- item\n\n```ts\nconst x = 1;\n```'), 120);
     expect(rendered.split('\n')).toHaveLength(1);
