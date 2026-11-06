@@ -6,9 +6,12 @@ import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
-const nodeMajor = Number(process.versions.node.split('.')[0]);
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 14)) throw new Error('Building requires Node.js 22.14 or newer');
+const seaFuse = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
+if (!(await readFile(process.execPath)).includes(Buffer.from(seaFuse))) {
+  throw new Error(`Node ${process.version} has no SEA fuse sentinel; build standalone binaries with a Node 22.14+ executable that supports SEA injection.`);
+}
 await mkdir(dist, { recursive: true });
 const entry = join(dist, 'org-tui.cjs');
 await build({
@@ -41,7 +44,7 @@ if (process.platform === 'darwin') {
   if (sign.status !== 0) process.exit(sign.status ?? 1);
 }
 const injector = join(root, 'node_modules/.bin/postject');
-const injected = spawnSync(injector, [binary, 'NODE_SEA_BLOB', blob, '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2'], { stdio: 'inherit' });
+const injected = spawnSync(injector, [binary, 'NODE_SEA_BLOB', blob, '--sentinel-fuse', seaFuse], { stdio: 'inherit' });
 if (injected.status !== 0) process.exit(injected.status ?? 1);
 await chmod(binary, 0o755);
 await rm(entry); await rm(blob); await rm(join(dist, 'sea-config.json'));

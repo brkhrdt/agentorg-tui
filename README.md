@@ -59,15 +59,15 @@ no live-event latency; fast transitions coalesced into a frame are reported sepa
 
 ## Standalone binary
 
-Build with **Node.js 22.14+** and npm:
+Build with **Node.js 22.14+** and npm using a Node executable that includes the SEA fuse sentinel (Node.js 22.14.0 is tested):
 
 ```sh
 npm ci
-npm run build                       # dist/org-tui
+npm run build                       # dist/org-tui; fails clearly if Node lacks the SEA fuse
 ./dist/org-tui --help
 ./dist/org-tui --socket /absolute/path/server.sock
 # The standalone executable is built for the host OS/CPU. Run the build on
-# the destination platform; cross-compilation is not supported.-baseline
+# the destination platform; cross-compilation is not supported.
 ```
 
 Distribute **only `dist/org-tui`**. It includes the Node.js runtime, dependencies, and
