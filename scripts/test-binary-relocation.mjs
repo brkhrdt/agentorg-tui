@@ -15,7 +15,8 @@ try {
   hidden = true;
   // Launch from outside the checkout with an intentionally unavailable TERM so
   // Blessed must use its embedded xterm terminfo fallback during initialization.
-  const result = spawnSync('timeout', ['3s', binary, '--socket', join(dir, 'missing.sock')], {
+  const command = `${binary} --socket ${join(dir, 'missing.sock')}`;
+  const result = spawnSync('timeout', ['3s', 'script', '-q', '-e', '-c', command, '/dev/null'], {
     cwd: dir,
     env: { ...process.env, PATH: '/usr/bin:/bin', TERM: 'org-tui-no-such-terminfo' },
     encoding: 'utf8',
