@@ -5,7 +5,7 @@ import { ComposeKeyInput, type ComposeSubmitMode } from './compose-keys.js';
 import { matchMentionChoices, mentionChoices, mentionQuery, mentionRedrawRequired, mentionWindow, replaceMentionQuery, type MentionChoice } from './mention-completion.js';
 import { composeSpan, composeWindow, replaceComposeSpan, type ComposeSpan } from './compose-completion.js';
 import { HostPathCompletionSource, type PathCompletionSource } from './path-completion-source.js';
-import type { Agent, Skill, SkillStates, SkillState, ServerSettingsField, ServerSettingsGroup, ContainerProfile, SettingsChoice, ServerEvent, EventRendering } from './protocol.js';
+import { ApiError, type Agent, type Skill, type SkillStates, type SkillState, type ServerSettingsField, type ServerSettingsGroup, type ContainerProfile, type SettingsChoice, type ServerEvent, type EventRendering } from './protocol.js';
 import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, availableTableFields, type TableField, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
@@ -1841,7 +1841,9 @@ export class UI {
       this.composeShift = true; this.draw();
     }).catch(error => {
       if (!current()) return;
-      this.composeCandidates = []; this.composeStatus = (error as Error).message; this.composeShift = true; this.draw();
+      this.composeCandidates = [];
+      this.composeStatus = error instanceof ApiError && error.code === 'INVALID_PATH' && /\s/u.test(lookup.span.query) ? undefined : (error as Error).message;
+      this.composeShift = true; this.draw();
     }).finally(() => {
       this.composeInFlight = false;
       this.drainComposeLookup();
