@@ -1,6 +1,6 @@
 import type { TreeRow } from './store.js';
 
-/** Resolve tree-only arrow navigation against the already-folded visible rows. */
+/** Resolve tree-only arrow navigation against the already-folded visible rows; Right wraps within the visible sibling group. */
 export function treeArrowTarget(rows: readonly TreeRow[], selectedId: string | undefined, direction: 'left' | 'right'): string | undefined {
   const index = rows.findIndex(row => row.agent.id === selectedId);
   if (index < 0) return undefined;
@@ -10,6 +10,9 @@ export function treeArrowTarget(rows: readonly TreeRow[], selectedId: string | u
     return parentId && rows.some(row => row.agent.id === parentId) ? parentId : undefined;
   }
   for (let i = index + 1; i < rows.length; i++) {
+    if (rows[i]!.agent.parentId === selected.agent.parentId) return rows[i]!.agent.id;
+  }
+  for (let i = 0; i < index; i++) {
     if (rows[i]!.agent.parentId === selected.agent.parentId) return rows[i]!.agent.id;
   }
   return undefined;

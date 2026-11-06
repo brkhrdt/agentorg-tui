@@ -95,7 +95,7 @@ footer shows the current mode's keys. Menus are disabled while entering text;
 | --- | --- |
 | ↑ / ↓ | Select a visible agent (metadata highlighted; configurable colors) |
 | ← | Select the visible parent (root/orphan boundaries do nothing) |
-| → | Select the next sibling in tree order; does not select children (last sibling does nothing) |
+| → | Select the next visible sibling in stable name/ID tree order, wrapping from the last to the first sibling of the same group (roots included); a single sibling does nothing. Does not select children or change folds. |
 | Tab | Collapse / expand the selected agent's branch (when it has children) |
 | / | Search agents by full ancestry path; space-separated fuzzy terms match independently. Includes folded descendants. Enter reveals, selects and centers the match; Esc cancels. Search never sends a prompt. |
 | Enter | Open a prompt composer; sends a normal prompt when idle or steers the exact active prompt when running |

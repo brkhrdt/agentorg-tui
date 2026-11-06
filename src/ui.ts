@@ -767,7 +767,7 @@ export class UI {
     ).concat([action('enter', 'Choose selected action', choose), back]);
     if (this.view === 'tree') return [
       action('left', 'Select parent', () => this.navigateTreeArrow('left')),
-      action('right', 'Select next sibling', () => this.navigateTreeArrow('right')),
+      action('right', 'Select next sibling (wrap)', () => this.navigateTreeArrow('right')),
       action('tab', 'Collapse / expand selected branch', () => this.toggleSelectedBranch()),
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
