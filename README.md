@@ -1,6 +1,6 @@
 # Agent Organization TUI
 
-A standalone **Bun** terminal client for the Agent Organization Unix-socket API. No runtime imports from the server repo.
+A standalone **Node.js** terminal client for the Agent Organization Unix-socket API. No runtime imports from the server repo.
 
 ## Run
 
@@ -62,7 +62,7 @@ no live-event latency; fast transitions coalesced into a frame are reported sepa
 Build with **Node.js 22.14+** and npm:
 
 ```sh
-npm install --frozen-lockfile
+npm ci
 npm run build                       # dist/org-tui
 ./dist/org-tui --help
 ./dist/org-tui --socket /absolute/path/server.sock
@@ -671,7 +671,7 @@ npm run typecheck
 Tests use deterministic mock Unix servers (no model calls), including fragmented
 UTF-8 JSONL, response/event races, history replay, database replacement,
 filtering, rendering, presentation-sidecar negotiation, raw preservation, subtype
-level inheritance, renderer previews, and saved settings. The UI test launches the actual Bun CLI
+level inheritance, renderer previews, and saved settings. The UI test launches the actual Node.js CLI
 in a pseudo-terminal via `script` (util-linux) and checks the rendered screen
 using a headless terminal emulator, including selection highlight, `v l`,
 live events, interrupting tree/chat prompts, Escape navigation, empty-tree root

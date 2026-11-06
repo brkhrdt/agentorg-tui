@@ -6,7 +6,7 @@ import xterm from '@xterm/headless';
 import { clip } from '../src/render.js';
 import { agent, event, mockServer, operation, respond, send, waitFor } from './helpers.js';
 
-// Exercise the real Bun CLI in a Unix pseudo-terminal, then inspect its rendered screen.
+// Exercise the real Node.js CLI in a Unix pseudo-terminal, then inspect its rendered screen.
 test('terminal tree selection, interrupt prompt, unified visibility levels, raw chat, live events and Escape', async () => {
   let seq = 3;
   const root = agent('root', null, { name: 'coordinator' });
