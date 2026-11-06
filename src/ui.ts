@@ -11,7 +11,7 @@ import type { SkillChoice } from './skill-selection.js';
 import { chatGroupIdentity, chatGroups, cell, clean, clip, renderEvent } from './render.js';
 import { COLOR_OPTIONS, COLOR_SETTINGS, DEFAULT_COLORS, DEFAULT_TABLE_FIELDS, DEFAULT_HISTORY, HISTORY_FIELDS, historySettings, LEVEL_NAMES, availableTableFields, type TableField, type HistorySettings, type ColorSetting, type Level, Settings } from './settings.js';
 import { renderTable, tableFieldLabel } from './table.js';
-import { revealTreeAncestors, toggleCollapsedBranch, visibleTreeRows } from './tree-view.js';
+import { revealTreeAncestors, toggleCollapsedBranch, treeArrowTarget, visibleTreeRows } from './tree-view.js';
 import { agentSearchChoices, matchAgentSearchChoices, type AgentSearchChoice } from './agent-search.js';
 import { genericPreview, rendererPreview, rendererCandidates, rendererSubtypes } from './renderer-preview.js';
 import { Session, type LifecycleMethod } from './session.js';
@@ -611,6 +611,12 @@ export class UI {
     const rows = this.session.store.tree();
     if (toggleCollapsedBranch(rows, this.collapsedAgentIds, this.selectedAgent)) this.draw();
   }
+  private navigateTreeArrow(direction: 'left' | 'right'): void {
+    if (this.view !== 'tree' || !this.selectedAgent) return;
+    const rows = visibleTreeRows(this.session.store.tree(), this.collapsedAgentIds);
+    const target = treeArrowTarget(rows, this.selectedAgent, direction);
+    if (target && target !== this.selectedAgent) { this.selectedAgent = target; this.draw(); }
+  }
   private createParent(target = this.selected()): Agent | undefined {
     if (target) return target;
     // Never submit a second root just because selection was temporarily lost
@@ -781,6 +787,8 @@ export class UI {
       action(item.key, item.label, () => { this.menuIndex = index; this.chooseAction(); })
     ).concat([action('enter', 'Choose selected action', choose), back]);
     if (this.view === 'tree') return [
+      action('left', 'Select parent', () => this.navigateTreeArrow('left')),
+      action('right', 'Select next sibling (wrap)', () => this.navigateTreeArrow('right')),
       action('tab', 'Collapse / expand selected branch', () => this.toggleSelectedBranch()),
       action('n', 'Create agent', () => this.openEditor(false)),
       ...(this.selected() ? [action('i', 'View all agent info', () => this.openAgentInfo(this.selected())), action('e', 'Modify agent', () => this.openEditor(true)), ...lifecycle,
@@ -2426,7 +2434,7 @@ export class UI {
       this.updating = false;
       if (!tableItems.length && (!this.notice.getContent() || this.notice.getContent().startsWith('No active agents.'))) this.notice.setContent('No active agents. Press n to create a root agent, or a for actions.');
       else if (this.notice.getContent().startsWith('No active agents.')) this.notice.setContent('');
-      this.footer.setContent(this.view === 'prompt' ? ` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'} · Ctrl+C clear` : this.view === 'agent-search' ? ' ↑↓ select · Enter jump · Esc cancel · Ctrl+C clear' : ' ↑↓ select  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit  / jump');
+      this.footer.setContent(this.view === 'prompt' ? ` Enter steer/send · Alt+Enter queue · Ctrl+Enter interrupt+submit  Esc ${this.mentionOpen || this.composeSpan || this.composeStatus ? 'dismiss completion' : 'tree'} · Ctrl+C clear` : this.view === 'agent-search' ? ' ↑↓ select · Enter jump · Esc cancel · Ctrl+C clear' : ' ↑↓ select  ← parent  → sibling  Enter prompt  c chat  z raw events  i info  a actions  n create  e edit  v view  q quit  / jump');
     } else if (this.view === 'actions' || this.view === 'agent-edit' || this.view === 'harness-options' || this.view === 'image-scope' || this.view === 'confirm') {
       this.updating = true;
       this.menu.setItems(this.view === 'actions' ? this.actions.map(action => `${action.key}  ${action.label}`) :

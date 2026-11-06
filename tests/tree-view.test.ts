@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
-import { revealTreeAncestors, visibleTreeRows, toggleCollapsedBranch } from '../src/tree-view.js';
+import { revealTreeAncestors, visibleTreeRows, toggleCollapsedBranch, treeArrowTarget } from '../src/tree-view.js';
 import { agent } from './helpers.js';
+import { Store } from '../src/store.js';
 
 const rows = [
   { agent: agent('root'), depth: 0 },
@@ -11,6 +12,70 @@ const rows = [
   { agent: agent('b1', 'b'), depth: 2 },
 ];
 const ids = (value: typeof rows) => value.map(row => row.agent.id);
+
+test('tree arrows select visible parents and wrap Right within the same sibling group', () => {
+  expect(treeArrowTarget(rows, 'a1', 'left')).toBe('a');
+  expect(treeArrowTarget(rows, 'a', 'left')).toBe('root');
+  expect(treeArrowTarget(rows, 'root', 'left')).toBeUndefined();
+  expect(treeArrowTarget(rows, 'a', 'right')).toBe('b');
+  expect(treeArrowTarget(rows, 'b', 'right')).toBe('a'); // skips descendants in the parent-first projection
+  expect(treeArrowTarget(rows, 'a1', 'right')).toBeUndefined(); // singleton under a
+  expect(treeArrowTarget(rows, 'b1', 'right')).toBeUndefined(); // singleton under b
+  const twoRoots = [...rows, { agent: agent('next-root'), depth: 0 }];
+  expect(treeArrowTarget(twoRoots, 'root', 'right')).toBe('next-root');
+  expect(treeArrowTarget(twoRoots, 'next-root', 'right')).toBe('root');
+  expect(treeArrowTarget(twoRoots, 'b1', 'left')).toBe('b');
+  const groups = [
+    { agent: agent('r'), depth: 0 }, { agent: agent('a', 'r'), depth: 1 }, { agent: agent('a-child', 'a'), depth: 2 },
+    { agent: agent('b', 'r'), depth: 1 }, { agent: agent('c', 'r'), depth: 1 }, { agent: agent('d', 'r'), depth: 1 },
+    { agent: agent('e', 'a-child'), depth: 2 }, { agent: agent('f', 'a-child'), depth: 2 },
+  ];
+  expect(treeArrowTarget(groups, 'b', 'right')).toBe('c');
+  expect(treeArrowTarget(groups, 'd', 'right')).toBe('a');
+  expect(treeArrowTarget(groups, 'e', 'right')).toBe('f');
+  expect(treeArrowTarget(groups, 'f', 'right')).toBe('e'); // never wraps to same-depth cousin b
+  const orphan = [{ agent: agent('unrelated'), depth: 0 }, { agent: agent('orphan', 'missing'), depth: 0 }];
+  expect(treeArrowTarget(orphan, 'orphan', 'left')).toBeUndefined();
+  expect(treeArrowTarget(orphan, 'unrelated', 'right')).toBeUndefined();
+  expect(treeArrowTarget([], 'root', 'left')).toBeUndefined();
+  expect(treeArrowTarget([], 'root', 'right')).toBeUndefined();
+  expect(treeArrowTarget(rows, undefined, 'right')).toBeUndefined();
+  expect(treeArrowTarget(rows, 'gone', 'left')).toBeUndefined();
+  expect(treeArrowTarget(rows, 'gone', 'right')).toBeUndefined();
+});
+
+test('Right follows Store.tree stable name/ID order for nested siblings and roots', () => {
+  const store = new Store();
+  store.install({ seq: 0, agents: [
+    agent('z-root', null, { name: 'Z' }), agent('a-root', null, { name: 'A' }),
+    agent('z', 'a-root', { name: 'z' }), agent('b', 'a-root', { name: 'b' }),
+    agent('id-b', 'a-root', { name: 'same' }), agent('id-a', 'a-root', { name: 'same' }), agent('a', 'a-root', { name: 'a' }),
+  ], operations: [] });
+  const tree = store.tree();
+  expect(ids(tree)).toEqual(['a-root', 'a', 'b', 'id-a', 'id-b', 'z', 'z-root']);
+  expect(treeArrowTarget(tree, 'a', 'right')).toBe('b');
+  expect(treeArrowTarget(tree, 'id-a', 'right')).toBe('id-b');
+  expect(treeArrowTarget(tree, 'z', 'right')).toBe('a');
+  expect(treeArrowTarget(tree, 'z-root', 'right')).toBe('a-root');
+});
+
+test('arrows respect folded projection and do not mutate folds or rows', () => {
+  const collapsed = new Set(['a']);
+  const visible = visibleTreeRows(rows, collapsed);
+  const before = [...visible];
+  expect(treeArrowTarget(visible, 'a', 'right')).toBe('b');
+  expect(treeArrowTarget(visible, 'b', 'right')).toBe('a');
+  expect(treeArrowTarget(visible, 'b', 'left')).toBe('root');
+  expect(treeArrowTarget(visible, 'a1', 'left')).toBeUndefined();
+  expect(treeArrowTarget(visible, 'a1', 'right')).toBeUndefined();
+  expect(visible).toEqual(before);
+  expect([...collapsed]).toEqual(['a']);
+  const rootCollapsed = new Set(['root']);
+  const onlyRoot = visibleTreeRows(rows, rootCollapsed);
+  expect(ids(onlyRoot)).toEqual(['root']);
+  expect(treeArrowTarget(onlyRoot, 'root', 'right')).toBeUndefined();
+  expect([...rootCollapsed]).toEqual(['root']);
+});
 
 test('projection hides all descendants, retains order/depth and unrelated branches', () => {
   expect(ids(visibleTreeRows(rows, new Set(['a', 'b1'])))).toEqual(['root', 'a', 'b', 'b1']);
