@@ -11,7 +11,7 @@
     "start": "tsx src/main.ts",
     "bench:probe": "tsx scripts/bench-probe.ts",
     "build": "node scripts/build.mjs",
-    "test:binary": "npm run build && ORG_TUI_BINARY=./dist/org-tui vitest run tests/ui.test.ts tests/rendering.test.ts tests/layout-ui.test.ts tests/prompt-ui.test.ts tests/compose-drafts-ui.test.ts",
+    "test:binary": "npm run build && node scripts/test-binary-relocation.mjs && ORG_TUI_BINARY=./dist/org-tui vitest run tests/ui.test.ts tests/rendering.test.ts tests/layout-ui.test.ts tests/prompt-ui.test.ts tests/compose-drafts-ui.test.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

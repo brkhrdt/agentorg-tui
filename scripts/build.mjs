@@ -19,9 +19,14 @@ await build({
       build.onLoad({ filter: /[/\\]blessed[/\\]lib[/\\]widget\.js$/ }, () => ({
         contents: ['screen', 'box', 'list', 'textbox', 'textarea'].map(name => `exports.${name} = exports.${name[0].toUpperCase() + name.slice(1)} = require('./widgets/${name}');`).join('\n'), loader: 'js',
       }));
-      build.onLoad({ filter: /[/\\]blessed[/\\]lib[/\\]tput\.js$/ }, async ({ path }) => ({
-        contents: (await readFile(path, 'utf8')).replace("__dirname + '/../usr/xterm'", JSON.stringify(join(dirname(path), '../usr/xterm'))), loader: 'js',
-      }));
+      build.onLoad({ filter: /[/\\]blessed[/\\]lib[/\\]tput\.js$/ }, async ({ path }) => {
+        const terminfo = (await readFile(join(root, 'node_modules/blessed/usr/xterm'))).toString('base64');
+        const embedded = `Buffer.from('${terminfo}', 'base64')`;
+        const source = (await readFile(path, 'utf8'))
+          .replace("Tput.prototype._useXtermInfo = function() {\n  return this.injectTerminfo(__dirname + '/../usr/xterm');\n};", `Tput.prototype._useXtermInfo = function() {\n  return this.inject(this.compile(this.parseTerminfo(${embedded}, 'xterm')));\n};`)
+          .replace("Tput.prototype._useInternalInfo = function(name) {\n  name = path.basename(name);\n  return this.injectTerminfo(__dirname + '/../usr/' + name);\n};", `Tput.prototype._useInternalInfo = function(name) {\n  return this.inject(this.compile(this.parseTerminfo(${embedded}, 'xterm')));\n};`);
+        return { contents: source, loader: 'js' };
+      });
     },
   }],
 });
