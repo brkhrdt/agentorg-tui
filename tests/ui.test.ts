@@ -115,7 +115,18 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
     keys('l'); await visible('Event visibility / rendering levels');
     keys('?'); await visible('Keys · levels');
     keys('\x1b'); await visible('Event visibility / rendering levels');
-    keys('\x1b[B\x1b[B0'); // agent.message, alphabetically third.
+    const selectedLevelType = () => screen().split('\n').find((row, index) => row.trimStart().startsWith('agent.') && terminal.buffer.active.getLine(index)?.getCell(0)?.getBgColor() === 4)?.trim().split(/\s+/u)[0];
+    const selectMessageLevel = async () => {
+      let selectedType = selectedLevelType();
+      for (let index = 0; selectedType !== 'agent.message' && index < 100; index++) {
+        keys('\x1b[B');
+        await waitFor(() => selectedLevelType() !== selectedType);
+        selectedType = selectedLevelType();
+      }
+      expect(selectedType).toBe('agent.message');
+    };
+    await selectMessageLevel();
+    keys('0');
     await visible('agent.message');
     await waitFor(() => screen().includes('Saved '));
     expect(JSON.parse(await readFile(config, 'utf8')).levels['agent.message']).toBe(0);
@@ -127,11 +138,13 @@ test('terminal tree selection, interrupt prompt, unified visibility levels, raw 
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(screen()).not.toContain('Live worker answer');
     keys('v'); await visible('View settings'); keys('l'); await visible('Event visibility / rendering levels');
-    keys('\x1b[B\x1b[B3'); await visible('3 full');
+    await selectMessageLevel();
+    keys('3'); await visible('3 full');
     keys('\x1b'); await visible('Live worker answer');
 
     keys('v'); await visible('View settings'); keys('l'); await visible('Event visibility / rendering levels');
-    keys('\x1b[B\x1b[B4'); await visible('4 raw');
+    await selectMessageLevel();
+    keys('4'); await visible('4 raw');
     keys('\x1b'); await visible('LATEST TRACKED EVENT');
     keys('c'); await visible('Chat · coordinator / worker');
     await visible('"sessionUpdate": "agent_message_chunk"');
