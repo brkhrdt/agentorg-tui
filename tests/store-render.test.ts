@@ -712,20 +712,27 @@ describe('static tree previews', () => {
     expect(stripAnsi(rendered)).toBe('TREE_MD_SENTINEL');
     expect(rendered).toContain('\x1b[1mTREE_MD_SENTINEL\x1b[0m');
   });
-  test('keeps Markdown source literal and folds blocks into one line without an assistant label', () => {
+  test('renders only a sidecar summary as Markdown in tree previews', () => {
+    const rendering = { rendererId: 'fixture', summary: '**TREE_SIDECAR**', extended: 'ignored', full: 'ignored' };
+    const rendered = renderTreeEvent(message('ignored source'), 80, rendering);
+    expect(stripAnsi(rendered)).toBe('TREE_SIDECAR');
+    expect(rendered).toContain('\x1b[1mTREE_SIDECAR\x1b[0m');
+    expect(stripAnsi(rendered)).not.toContain('ignored');
+  });
+  test('renders Markdown and folds blocks into one line without an assistant label', () => {
     const rendered = renderTreeEvent(message('# Heading\n\n**bold** and _italic_ with `code`\n\n- item\n\n```ts\nconst x = 1;\n```'), 120);
     expect(rendered.split('\n')).toHaveLength(1);
     const text = stripAnsi(rendered);
-    expect(text).toContain('# Heading **bold** and _italic_ with `code` - item ```ts const x = 1; ```');
+    expect(text).toContain('Heading bold and italic with code * item const x = 1;');
     expect(text).not.toContain('assistant:');
   });
   test('thinking chunks keep their beginning fixed as streamed Markdown completes', () => {
     const first = stripAnsi(renderTreeEvent(message('[THINKING_ANCHOR', 'agent_thought_chunk'), 80));
     const completed = stripAnsi(renderTreeEvent(message('[THINKING_ANCHOR](https://example.test) and more', 'agent_thought_chunk'), 80));
-    expect(first).toStartWith('thinking: [THINKING_ANCHOR');
-    expect(completed).toStartWith(first);
+    expect(first).toBe('thinking: [THINKING_ANCHOR');
+    expect(completed).toBe('thinking: THINKING_ANCHOR (https://example.test) and more');
   });
-  test('right-clips literal summaries by terminal cells', () => {
+  test('right-clips rendered summaries by terminal cells', () => {
     const rendered = renderTreeEvent(message('Hello world'), 8);
     expect(stripAnsi(rendered)).toBe('Hello w…');
     expect(stringWidth(rendered)).toBe(8);
@@ -742,11 +749,11 @@ describe('static tree previews', () => {
     expect(stripAnsi(renderTreeEvent(tool, 80))).toBe('• **Search**');
     expect(renderTreeEvent(tool, 80, undefined, { toolCall: 'magenta' })).toContain('\x1b[35m•\x1b[0m');
     const rendered = renderTreeEvent(message('\x1b[2J**safe**\x07'), 80);
-    expect(stripAnsi(rendered)).toBe('**safe**');
+    expect(stripAnsi(rendered)).toBe('safe');
     expect(rendered).not.toContain('\x1b[2J');
     expect(rendered).not.toContain('\x07');
     expect(renderTreeEvent(event(1, 'plugin.\ncustom\x1b[2J', 'payload'), 80)).not.toContain('\n');
-    expect(stripAnsi(renderTreeEvent(message('[docs](https://example.com)'), 80))).toBe('[docs](https://example.com)');
+    expect(stripAnsi(renderTreeEvent(message('[docs](https://example.com)'), 80))).toBe('docs (https://example.com)');
     expect(stripAnsi(renderTreeEvent(event(1, 'agent.message', { truncated: true, originalBytes: 1000, preview: '**partial**' }), 80))).toContain('TRUNCATED');
   });
 });

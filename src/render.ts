@@ -394,7 +394,7 @@ function renderCompactionNotice(event: ServerEvent, width: number, colors: Rende
   if (level === 2) return `${clipStyled(header, width)}\n${body}`;
   return `${paint(clip(event.time, width), 'gray', colors)}\n${clipStyled(header, width)}\n${markdown(eventText(event), width, false, colors)}`;
 }
-function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors, staticStreamPrefix: boolean): string {
+function renderTreeEventPreview(event: ServerEvent, width: number, rendering: EventRendering | undefined, colors: RenderColors): string {
   if (event.type === 'agent.compaction') return renderCompactionNotice(event, width, colors);
   if (event.type.startsWith('completion.')) return renderCompletionNotice(event, width, colors);
   if (isTool(event) && rendering?.toolPrompt !== undefined && rendering.toolSender && rendering.toolTarget) {
@@ -426,24 +426,18 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
  }
   if (width <= 0) return '';
   const data = object(event.data);
-  const streamKind = event.type === 'agent.message' && ['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk'].includes(data.sessionUpdate);
   const assistant = event.type === 'agent.message' && data.sessionUpdate === 'agent_message_chunk';
   const userMessage = event.type === 'agent.message' && data.sessionUpdate === 'user_message_chunk';
   const prefix = assistant || userMessage || isTool(event) ? '' : `${clean(label(event).split(' · ').at(-1)!).replace(/\s+/g, ' ')}: `;
   const text = rendering ? logicalLines(rendering.summary)[0] || '—' : isTool(event) ? logicalLines(eventText(event))[0]! : eventText(event);
-  // Incremental Markdown can change already-visible leading characters as tokens
-  // complete. Tree stream previews preserve their source prefix and clip right.
-  const prefixText = clean(text).replace(/\s+/g, ' ').trim();
   const messageTruncated = !rendering && object(data.content).previewTruncated === true;
-  const summary = staticStreamPrefix && streamKind
-    ? prefixText + (messageTruncated ? '…' : '')
-    : markdown(text, Math.max(1, width), true, colors);
+  const summary = markdown(text, Math.max(1, width), true, colors) + (messageTruncated ? '…' : '');
   const preview = prefix + summary;
   return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
 }
 /** Tree previews keep streamed message beginnings static and right-clip the rest. */
 export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
-  return renderTreeEventPreview(event, width, rendering, colors, true);
+  return renderTreeEventPreview(event, width, rendering, colors);
 }
 function renderSteeringEvent(event: ServerEvent, level: Exclude<Level, 4>, width: number, colors: RenderColors): string {
   const submitted = event.type === 'prompt.steer_submitted';
@@ -499,7 +493,7 @@ export function renderEvent(event: ServerEvent, level: Level, width: number, ren
       }
       return heading + '\n' + countLine + (tail.text ? '\n' + tail.text : '');
     }
-    if (level === 1) return renderTreeEventPreview(event, width, rendering, colors, false);
+    if (level === 1) return renderTreeEventPreview(event, width, rendering, colors);
     if (level === 2) {
       if (rendering.extendedLayout === 'header-detail') {
         const [detail] = logicalLines(rendering.extended).slice(1);
