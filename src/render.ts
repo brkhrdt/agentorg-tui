@@ -435,7 +435,9 @@ function renderTreeEventPreview(event: ServerEvent, width: number, rendering: Ev
   const preview = prefix + summary;
   return clipStyled(isTool(event) ? toolHeader(preview, event, rendering?.subtype, colors, rendering) : preview, width);
 }
-/** Tree previews keep streamed message beginnings static and right-clip the rest. */
+/** Tree previews render accumulated Markdown as a bounded, right-clipped single-line summary.
+ * Store retains the input prefix; rendered delimiters may change as tokens complete.
+ */
 export function renderTreeEvent(event: ServerEvent, width: number, rendering?: EventRendering, colors: RenderColors = {}): string {
   return renderTreeEventPreview(event, width, rendering, colors);
 }
