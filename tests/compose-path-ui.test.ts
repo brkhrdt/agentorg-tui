@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { agent, mockServer, operation, respond, waitFor } from './helpers.js';
+import { agent, mockServer, operation, respond, send, waitFor } from './helpers.js';
 import { terminalClient } from './terminal.js';
 
 for (const view of ['chat', 'prompt'] as const) {
@@ -405,6 +405,66 @@ for (const view of ['chat', 'prompt'] as const) {
     } finally { await tui.close(); await mock.close(); }
   });
 }
+
+for (const view of ['chat', 'prompt'] as const) {
+  test(`${view} prose after a mention and explicit path trigger preserves draft and submission when lookup rejects INVALID_PATH`, async () => {
+  const pathInputs: string[] = [];
+  const prompts: any[] = [];
+  let pendingPath: { socket: import('node:net').Socket; id: string } | undefined;
+  const draft = "ok i mean update @feat-agent-capabilities's master/main so that it is the same as ./git, then have the subagent merge its changes into master/main";
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } }), agent('feat-agent-capabilities', 'root', { name: 'feat-agent-capabilities' })], operations: [], capabilities: { pathCompletion: true } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+    else if (request.method === 'organization.paths') { pathInputs.push(request.params.input); pendingPath = { socket, id: request.id }; }
+    else if (request.method === 'agent.prompt') { prompts.push(request.params); respond(socket, request.id, operation('completed')); }
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });
+  try {
+    await tui.visible('Root');
+    if (view === 'chat') { tui.keys('c'); await tui.visible('Chat · Root'); }
+    else { tui.keys('\r'); await tui.visible('Prompt · Root'); }
+    tui.keys('ok i mean update @feat-agent-capabilities'); await tui.visible('› @feat-agent-capabilities');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(pathInputs).toEqual([]);
+    expect(tui.screen()).toContain('› @feat-agent-capabilities');
+    tui.keys("'s master/main so that it is the same as ");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(pathInputs).toEqual([]);
+    tui.keys('./git, then have the subagent merge its changes into master/main');
+    await waitFor(() => !!pendingPath);
+    expect(pathInputs).toEqual(['./git, then have the subagent merge its changes into master/main']);
+    expect(tui.screen().replace(/\s+/gu, ' ')).toContain(draft);
+    send(pendingPath!.socket, { kind: 'response', id: pendingPath!.id, ok: false, error: { code: 'INVALID_PATH', message: 'Invalid path' } });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const invalidPathVisible = tui.screen().includes('INVALID_PATH: Invalid path');
+    expect(tui.screen().replace(/\s+/gu, ' ')).toContain(draft);
+    tui.keys('\r'); await waitFor(() => prompts.length === 1);
+    expect(prompts[0]).toMatchObject({ agentId: 'root', text: draft });
+    expect(invalidPathVisible).toBe(false);
+  } finally { await tui.close(); await mock.close(); }
+  });
+}
+
+test('whitespace path completion keeps non-INVALID_PATH errors visible', async () => {
+  const pathInputs: string[] = [];
+  const mock = await mockServer((socket, request) => {
+    if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [agent('root', null, { name: 'Root', settings: { harness: 'pi', cwd: '/recipient' } })], operations: [], capabilities: { pathCompletion: true } });
+    else if (request.method === 'events.history') respond(socket, request.id, { events: [], oldestSeq: 0, latestSeq: 0, expired: false, hasMore: false });
+    else if (request.method === 'organization.paths') {
+      pathInputs.push(request.params.input);
+      send(socket, { kind: 'response', id: request.id, ok: false, error: { code: 'UNAVAILABLE', message: 'Path service failed' } });
+    }
+  });
+  const tui = terminalClient(mock.path, mock.directory, { cols: 120, rows: 30 });
+  try {
+    await tui.visible('Root'); tui.keys('c'); await tui.visible('Chat · Root');
+    tui.keys('./git, then prose');
+    await waitFor(() => pathInputs.length > 0);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(pathInputs).toEqual(['./git, then prose']);
+    expect(tui.screen()).toContain('UNAVAILABLE: Path service failed');
+  } finally { await tui.close(); await mock.close(); }
+});
 
 test('only explicit ./ starts completion after prose; bare slash paths remain literal', async () => {
   const requests: any[] = [];
