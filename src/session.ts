@@ -78,6 +78,7 @@ export class Session extends EventEmitter {
   serverCwd = '';
   pathCompletion = false;
   podmanEnabled = false;
+  hostExecutionEnabled = false;
   settingsFields: PluginField[] = [];
   serverSettingsCapability?: ServerSettingsCapability;
   renderingCapability?: RenderingCapability;
@@ -234,6 +235,7 @@ export class Session extends EventEmitter {
     }
     const podman = snapshot.capabilities?.plugins?.podman as { endpoints?: { modify?: string; volumes?: string; configureVolume?: string; profiles?: string; images?: string; defaults?: string }; modelDiscovery?: boolean } | undefined;
     this.podmanEnabled = typeof podman?.endpoints?.modify === 'string';
+    this.hostExecutionEnabled = (podman as { hostExecution?: { rootsOnly?: boolean } } | undefined)?.hostExecution?.rootsOnly === true;
     this.podmanModify = podman?.endpoints?.modify ?? '';
     this.podmanVolumes = podman?.endpoints?.volumes ?? '';
     this.podmanConfigureVolume = podman?.endpoints?.configureVolume ?? '';
