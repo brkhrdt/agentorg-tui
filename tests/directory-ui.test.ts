@@ -83,7 +83,7 @@ test('Podman grants reuse server cwd completion for add/edit/remove without crea
     keys('/'); await visible('Filter: type freely'); keys('\x15existing\x1b'); await visible('filter: existing');
     keys('d'); await visible('No matching entries'); keys('S'); await visible('Modify agent');
     expect(changes).toHaveLength(0); keys('S'); await waitFor(() => changes.length === 1);
-    expect(changes[0]).toEqual({ agentId: 'root', expectedRevision: 1, settings: { extensions: { other: { preserved: true }, podman: { image: null, readOnlyDirs: ['/server/start/space dir'], readWriteDirs: ['/project'] } } } });
+    expect(changes[0]).toEqual({ agentId: 'root', expectedRevision: 1, settings: { extensions: { other: { preserved: true }, podman: { executionEnvironment: 'container', image: null, readOnlyDirs: ['/server/start/space dir'], readWriteDirs: ['/project'] } } } });
     expect(paths.every(p => p.base === '/server/start' && p.kind === 'directory' && p.limit === 5 && !p.create)).toBe(true);
   } finally { await ui.close(); await mock.close(); }
 }, 30_000);

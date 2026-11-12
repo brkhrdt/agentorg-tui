@@ -874,10 +874,11 @@ export class UI {
     const editor = this.editor!; const index = this.menuIndex;
     let catalog: { revision: number; profiles: ContainerProfile[] };
     const back = () => { this.setView('agent-edit'); this.menuIndex = index; this.draw(); };
-    await this.openChoices('Container', async () => {
+    await this.openChoices(editor.parentId === null && this.session.hostExecutionEnabled ? 'Execution environment' : 'Container', async () => {
       catalog = await this.session.listProfiles();
-      return catalog.profiles.map(p => ({ value: p.id, label: `${p.name} · ${p.image} · ${p.network}` }));
+      return [ ...(editor.parentId === null && this.session.hostExecutionEnabled ? [{ value: '__host__', label: 'Host · full server-user access' }] : []), ...catalog.profiles.map(p => ({ value: p.id, label: `${p.name} · ${p.image} · ${p.network}` })) ];
     }, { back, choose: value => {
+      if (value === '__host__') { editor.selectHost(); back(); this.showNotice('Host runs with full server-user access; only this root agent changes environment.'); return; }
       const profile = catalog.profiles.find(p => p.id === value);
       if (!profile) return;
       editor.selectProfile(profile, catalog.revision); back();
@@ -1219,7 +1220,8 @@ export class UI {
     let containerCatalog: { revision: number; profiles: ContainerProfile[] } | undefined;
     // Modern child drafts inherit from their parent; selecting Default would pin
     // the server defaults instead. Legacy servers retain their grant-only drafts.
-    if (!modify && (!parent || !this.session.podmanProfilesEnabled)) {
+    const parentRunsHost = !!parent && (parent.settings.extensions?.podman as { executionEnvironment?: string } | undefined)?.executionEnvironment === 'host';
+    if (!modify && (!parent || !this.session.podmanProfilesEnabled || parentRunsHost)) {
       try {
         if (this.session.podmanProfilesEnabled) containerCatalog = await this.session.listProfiles();
         else if (this.session.podmanDefaultsEnabled) defaults = await this.session.containerGrantDefaults();
@@ -1234,7 +1236,7 @@ export class UI {
       if (this.closing || this.sending || request !== this.editorRequest || this.view !== view || this.editor !== previous) return;
     }
     this.editor = new AgentEditor(modify ? target!.parentId : parent?.id ?? null, modify ? target : undefined, this.session.podmanEnabled, this.session.settingsFields, this.session.podmanVolumesEnabled, this.session.podmanProfilesEnabled, this.session.agentProfilesEnabled,
-      this.session.skillsEnabled ? { skills: { namespace: this.session.skillsNamespace, catalog: this.session.skillCatalog } } : undefined);
+      this.session.skillsEnabled ? { skills: { namespace: this.session.skillsNamespace, catalog: this.session.skillCatalog } } : undefined, this.session.hostExecutionEnabled);
     if (!modify) {
       this.editor.values.harness = parent?.settings.harness ?? this.session.harnesses[0]!;
       this.editor.values.model = parent?.settings.model ?? '';
@@ -1244,7 +1246,7 @@ export class UI {
       this.editor.values.cwd = this.pathBase ? `${this.pathBase.replace(/\/$/, '')}/` : '';
       if (defaults) for (const key of PODMAN_FIELDS) this.editor.values[key] = JSON.stringify(defaults[key]);
       const defaultProfile = containerCatalog?.profiles.find(profile => profile.id === 'default');
-      if (defaultProfile && containerCatalog) this.editor.selectProfile(defaultProfile, containerCatalog.revision);
+      if (defaultProfile && containerCatalog && (parent || !this.session.hostExecutionEnabled)) this.editor.selectProfile(defaultProfile, containerCatalog.revision);
     }
     this.setView('agent-edit');
   }

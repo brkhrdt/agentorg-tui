@@ -18,7 +18,8 @@ export class AgentEditor {
   private readonly baseFields: readonly AgentField[];
   get fields(): readonly AgentField[] {
     const pi = this.agentProfilesEnabled && this.values.harness === 'pi';
-    return this.baseFields.filter(field => field === 'thinking' ? pi : field !== 'options' || !pi || !!this.agentId);
+    return this.baseFields.filter(field => field === 'thinking' ? pi : field !== 'options' || !pi || !!this.agentId)
+      .filter(field => !this.hostExecution || !(PODMAN_FIELDS as readonly string[]).includes(field));
   }
   private selectedProfile?: { profile: ContainerProfile; revision: number };
   private selectedAgentProfile?: AgentProfile;
@@ -28,11 +29,15 @@ export class AgentEditor {
   private skillDraft?: SkillSelectionDraft;
   private skillsExplicit = false;
   private readonly podmanEnabled: boolean;
+  private readonly hostExecutionEnabled: boolean;
+  private hostExecution: boolean;
   private readonly volumesEnabled: boolean;
   private readonly pluginSpecs = new Map<AgentField, PluginField>();
   private readonly explicit = new Set<AgentField>();
-  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false, private readonly agentProfilesEnabled = false, options?: { skills?: { namespace: string; catalog: Skill[] } }) {
+  constructor(readonly parentId: string | null, agent?: Agent, podmanEnabled = false, pluginFields: PluginField[] = [], volumesEnabled = false, profilesEnabled = false, private readonly agentProfilesEnabled = false, options?: { skills?: { namespace: string; catalog: Skill[] } }, hostExecutionEnabled = false) {
     this.podmanEnabled = podmanEnabled || !!agent?.settings.extensions?.podman;
+    this.hostExecutionEnabled = hostExecutionEnabled && parentId === null;
+    this.hostExecution = agent ? (agent.settings.extensions?.podman as { executionEnvironment?: string } | undefined)?.executionEnvironment === 'host' : this.hostExecutionEnabled;
     const grants = agent?.settings.extensions?.podman as Record<string, unknown> | undefined;
     this.volumesEnabled = volumesEnabled || !!grants?.readOnlyVolumes || !!grants?.readWriteVolumes;
     for (const spec of pluginFields) {
@@ -46,7 +51,7 @@ export class AgentEditor {
       const existing = extension && typeof extension === 'object' && !Array.isArray(extension) ? extension as SkillStates : {};
       this.skillDraft = new SkillSelectionDraft(options.skills.catalog, existing);
     }
-    this.baseFields = [...AGENT_FIELDS.flatMap(field => field === 'model' && agentProfilesEnabled ? [field, 'thinking' as const] : [field]), ...(this.skillDraft ? ['skills' as const] : []), ...(this.podmanEnabled && profilesEnabled ? ['container' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
+    this.baseFields = [...AGENT_FIELDS.flatMap(field => field === 'model' && agentProfilesEnabled ? [field, 'thinking' as const] : [field]), ...(this.skillDraft ? ['skills' as const] : []), ...((this.podmanEnabled && profilesEnabled || this.hostExecutionEnabled) ? ['container' as const] : []), ...(this.podmanEnabled ? PODMAN_FIELDS.filter(field => this.volumesEnabled || !field.endsWith('Volumes')) : []), ...this.pluginSpecs.keys()];
     this.agentId = agent?.id;
     this.revision = agent?.revision;
     this.values = Object.fromEntries(AGENT_FIELDS.map(field => {
@@ -58,7 +63,7 @@ export class AgentEditor {
     this.values.thinking = String((agent?.settings.options as Record<string, unknown> | undefined)?.thinking ?? '');
     const piProfile = (agent?.settings.extensions?.pi as { profile?: { name?: string } } | undefined)?.profile;
     if (piProfile) this.agentLabel = `${agent?.settings.harness} — ${piProfile.name ?? 'Default'}`;
-    this.values.container = podman?.profile?.name ?? (podman?.image ? 'Custom / legacy' : this.parentId ? 'Inherited' : 'Default');
+    this.values.container = this.hostExecution ? 'Host' : podman?.profile?.name ?? (podman?.image ? 'Custom / legacy' : this.parentId ? 'Inherited' : 'Default');
     this.values.readOnlyDirs = JSON.stringify(podman?.readOnlyDirs ?? []);
     this.values.readWriteDirs = JSON.stringify(podman?.readWriteDirs ?? []);
     this.values.readOnlyVolumes = JSON.stringify(podman?.readOnlyVolumes ?? []);
@@ -129,7 +134,13 @@ export class AgentEditor {
     if (Object.hasOwn(this.skillDraft.states, name)) this.skillsExplicit = true;
     this.skillDraft.remove(name);
   }
+  selectHost(): void {
+    if (!this.hostExecutionEnabled) throw new Error('Host execution is available only for root agents');
+    this.hostExecution = true; this.selectedProfile = undefined; this.values.container = 'Host';
+    for (const field of PODMAN_FIELDS) this.values[field] = field.endsWith('Dirs') || field.endsWith('Volumes') ? '[]' : '';
+  }
   selectProfile(profile: ContainerProfile, revision: number): void {
+    this.hostExecution = false;
     this.selectedProfile = { profile: structuredClone(profile), revision };
     this.values.container = profile.name;
     if (profile.cwd) this.values.cwd = profile.cwd;
@@ -141,7 +152,7 @@ export class AgentEditor {
   label(field: AgentField): string {
     if (field === 'skills') return 'Skills:';
     const spec = this.pluginSpecs.get(field);
-    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'harness' ? 'Agent' : field === 'thinking' ? 'Thinking' : field === 'container' ? 'Container' : field;
+    return spec ? `${spec.namespace}.${spec.label ?? spec.key}` : field === 'harness' ? 'Agent' : field === 'thinking' ? 'Thinking' : field === 'container' ? (this.hostExecutionEnabled ? 'Execution environment' : 'Container') : field;
   }
   stage(field: AgentField, text: string): void {
     const spec = this.pluginSpecs.get(field);
@@ -179,6 +190,7 @@ export class AgentEditor {
   }
   get imageChanged(): boolean {
     try {
+      if (this.hostExecution !== ((JSON.parse(this.original.extensions).podman?.executionEnvironment) === 'host')) return false;
       const old = JSON.parse(this.original.extensions).podman?.image ?? null;
       const next = this.selectedProfile?.profile.image ?? JSON.parse(this.values.extensions).podman?.image ?? null;
       return next !== old;
@@ -208,7 +220,7 @@ export class AgentEditor {
       if (field === 'name' || field === 'metadata') params[field] = value;
       else settings[field] = value;
     }
-    if (this.podmanEnabled && (!this.agentId || this.selectedProfile !== undefined || PODMAN_FIELDS.some(field => this.values[field] !== this.original[field]))) {
+    if (this.podmanEnabled && (!this.agentId || this.selectedProfile !== undefined || this.hostExecution !== ((JSON.parse(this.original.extensions).podman?.executionEnvironment) === 'host') || PODMAN_FIELDS.some(field => this.values[field] !== this.original[field]))) {
       const grants = (field: typeof PODMAN_FIELDS[number]): string[] => {
         let value: unknown;
         const message = `${field} must be a JSON array of ${field.endsWith('Volumes') ? 'volume names' : 'paths'}`;
@@ -220,10 +232,11 @@ export class AgentEditor {
       if (this.agentId && this.values.extensions !== this.original.extensions && Object.hasOwn(extensions, 'podman')) throw new Error('Edit Podman fields or extensions.podman, not both');
       const prior = !this.agentId ? {} : (JSON.parse(this.original.extensions).podman ?? {}) as Record<string, unknown>;
       const selected = this.selectedProfile;
-      settings.extensions = { ...extensions, podman: { ...prior,
+      settings.extensions = { ...extensions, podman: this.hostExecution ? { executionEnvironment: 'host' } : { ...prior,
+        executionEnvironment: 'container',
         ...(selected && { profile: { id: selected.profile.id, name: selected.profile.name, revision: selected.revision },
           runtime: { network: selected.profile.network, containerUid: selected.profile.containerUid, containerGid: selected.profile.containerGid, env: [...selected.profile.env] },
-          image: selected.profile.image,
+          image: selected.profile.image, imageInherited: false,
           configGrants: { readOnlyDirs: [...selected.profile.readOnlyDirs], readWriteDirs: [...selected.profile.readWriteDirs],
             readOnlyVolumes: [...selected.profile.readOnlyVolumes], readWriteVolumes: [...selected.profile.readWriteVolumes] } }),
         readOnlyDirs: grants('readOnlyDirs'), readWriteDirs: grants('readWriteDirs'),

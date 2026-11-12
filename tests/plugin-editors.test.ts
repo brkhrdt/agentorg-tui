@@ -35,6 +35,29 @@ test('generic descriptors preserve sibling fields, absent fields, revision fence
   expect(pluginFields({ demo: { fields: [{ key: 'future', editor: 'new-kind' }, { key: 'x', editor: 'list' }, { key: 'x', editor: 'text' }, { key: '', editor: 'list' }] } })).toEqual([{ namespace: 'demo', key: 'x', editor: 'list' }]);
 });
 
+test('Host environment is offered only to roots, clears container grants, and preserves unrelated extensions', () => {
+  const root = agent('root', null, { settings: { harness: 'fixture', cwd: '/host/path', extensions: { podman: { executionEnvironment: 'container', readWriteDirs: ['/x'], image: 'old' }, other: { retained: true } } } });
+  const editor = new AgentEditor(null, root, true, [], false, true, false, undefined, true);
+  expect(editor.fields).toContain('container');
+  editor.selectHost();
+  expect(editor.fields).not.toContain('readWriteDirs');
+  expect(editor.params().settings.extensions).toEqual({ podman: { executionEnvironment: 'host' }, other: { retained: true } });
+  const freshRoot = new AgentEditor(null, undefined, true, [], false, true, false, undefined, true);
+  freshRoot.values.harness = 'fixture';
+  expect(freshRoot.display('container')).toBe('Host');
+  expect(freshRoot.params().settings.extensions).toEqual({ podman: { executionEnvironment: 'host' } });
+  const child = new AgentEditor('root', undefined, true, [], false, true, false, undefined, true);
+  expect(child.fields).toContain('container');
+  expect(() => child.selectHost()).toThrow('only for root');
+});
+
+test('reselecting a container profile clears inherited image provenance', () => {
+  const root = agent('root', null, { settings: { harness: 'fixture', cwd: '/project', extensions: { podman: { executionEnvironment: 'container', image: 'old:v1', imageInherited: true, runtime: { network: 'pasta', containerUid: 1000, containerGid: 1000 }, configGrants: { readOnlyDirs: [], readWriteDirs: [], readOnlyVolumes: [], readWriteVolumes: [] } } } } });
+  const editor = new AgentEditor(null, root, true, [], false, true);
+  editor.selectProfile({ id: 'new', name: 'New', image: 'new:v1', network: 'none', containerUid: 2000, containerGid: 2000, env: [], cwd: '', readOnlyDirs: [], readWriteDirs: [], readOnlyVolumes: [], readWriteVolumes: [] }, 3);
+  expect((editor.params().settings.extensions as any).podman).toMatchObject({ image: 'new:v1', imageInherited: false });
+});
+
 test('session discovers plugin editor hints without plugin endpoints', async () => {
   const mock = await mockServer((socket, request) => {
     if (request.method === 'organization.snapshot') respond(socket, request.id, { seq: 0, agents: [], operations: [], capabilities: { settingsEditors: descriptors } });
